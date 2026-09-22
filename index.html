@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PharmPulse rPPG 健康檢測</title>
+  <!-- 引入 LINE LIFF SDK -->
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <!-- 引入 Chart.js 圖表庫 -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f5f7fa; margin: 0; padding: 20px; color: #333; }
+    .container { max-width: 500px; margin: 0 auto; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }
+    h2 { text-align: center; color: #1DB954; margin-top: 0; }
+    
+    .user-info { background: #eef9f2; padding: 10px 15px; border-radius: 8px; margin-bottom: 20px; font-size: 14px; text-align: center; }
+    
+    .btn-group { display: flex; gap: 10px; margin-bottom: 20px; }
+    button { flex: 1; padding: 12px; font-size: 15px; font-weight: bold; background-color: #06C755; color: white; border: none; border-radius: 8px; cursor: pointer; transition: background 0.2s; }
+    button:hover { background-color: #05b34c; }
+    button:disabled { background-color: #cccccc; cursor: not-allowed; }
+    button.btn-secondary { background-color: #007bff; }
+    button.btn-secondary:hover { background-color: #0056b3; }
+
+    /* Card & Badges */
+    .card { border: 1px solid #e1e8ed; border-radius: 10px; padding: 15px; margin-top: 15px; background: #fff; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: bold; color: white; }
+    .badge-GREEN { background-color: #28a745; }
+    .badge-YELLOW { background-color: #ffc107; color: #333; }
+    .badge-RED { background-color: #dc3545; }
+
+    /* Spinner */
+    .spinner { display: none; width: 30px; height: 30px; border: 4px solid #f3f3f3; border-top: 4px solid #06C755; border-radius: 50%; animation: spin 1s linear infinite; margin: 15px auto; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+    /* Chart Container */
+    .chart-box { margin-top: 15px; background: #fff; padding: 10px; border-radius: 8px; border: 1px solid #e1e8ed; }
+
+    /* History List */
+    .history-item { border-left: 4px solid #007bff; padding: 10px 15px; margin-bottom: 10px; background: #f8f9fa; border-radius: 0 8px 8px 0; font-size: 14px; }
+    .history-item.GREEN { border-left-color: #28a745; }
+    .history-item.YELLOW { border-left-color: #ffc107; }
+    .history-item.RED { border-left-color: #dc3545; }
+    .history-date { font-size: 12px; color: #6c757d; }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <h2>PharmPulse 健康檢測</h2>
+    
+    <div class="user-info">
+      LINE User ID: <strong id="display-user-id">載入中...</strong>
+    </div>
+
+    <div class="btn-group">
+      <button id="btn-analyze" onclick="startMeasurement()">開始檢測</button>
+      <button id="btn-history" class="btn-secondary" onclick="fetchHistory()">查看歷史紀錄</button>
+    </div>
+
+    <!-- 載入動畫 -->
+    <div id="loading-spinner" class="spinner"></div>
+
+    <!-- 即時分析結果 -->
+    <div id="result-card" class="card" style="display:none;">
+      <h3>最新分析結果</h3>
+      <p><strong>健康狀態：</strong> <span id="res-light-badge" class="badge">GREEN</span></p>
+      <p><strong>平均心率：</strong> <span id="res-hr">--</span> bpm</p>
+      <p><strong>HRV (SDNN)：</strong> <span id="res-hrv">--</span> ms</p>
+      <p><strong>壓力指數：</strong> <span id="res-stress">--</span> / 100</p>
+      <p><strong>健康建議：</strong> <span id="res-summary">--</span></p>
+    </div>
+
+    <!-- 歷史紀錄與圖表容器 -->
+    <div id="history-container" style="display:none; margin-top:20px;">
+      <h3>歷史數據趨勢圖</h3>
+      <div class="chart-box">
+        <canvas id="healthChart"></canvas>
+      </div>
+
+      <h3 style="margin-top:20px;">詳細紀錄列表 (<span id="history-count">0</span>)</h3>
+      <div id="history-list"></div>
+    </div>
+  </div>
+
+  <script>
+    // 請確認你的 ngrok 網址
+    const BASE_URL = "https://move-pebbly-outspoken.ngrok-free.dev";
+    // 如果有 LIFF ID 請填入，沒有請留空測試
+    const MY_LIFF_ID = "2011686844-4moxcFdy"; 
+
+    let currentUserId = "U_TEST_USER_001"; // 預設測試 ID
+    let trendChart = null; // 儲存 Chart.js 實例
+
+    // 1. LIFF 初始化與身份識別
+    async function initLIFF() {
+      try {
+        if (MY_LIFF_ID) {
+          await liff.init({ liffId: MY_LIFF_ID });
+          if (liff.isLoggedIn()) {
+            const profile = await liff.getProfile();
+            currentUserId = profile.userId;
+          } else {
+            liff.login();
+            return;
+          }
+        }
+      } catch (err) {
+        console.warn("LIFF 初始化失敗或未在 LINE 環境中：", err);
+      } finally {
+        document.getElementById("display-user-id").innerText = currentUserId;
+      }
+    }
+    initLIFF();
+
+    // 控制 Spinner 與按鈕狀態
+    function setLoading(isLoading) {
+      document.getElementById("loading-spinner").style.display = isLoading ? "block" : "none";
+      document.getElementById("btn-analyze").disabled = isLoading;
+      document.getElementById("btn-history").disabled = isLoading;
+    }
+
+    // 2. 呼叫健康分析 API (POST)
+    async function startMeasurement() {
+      setLoading(true);
+      document.getElementById("result-card").style.display = "none";
+      document.getElementById("history-container").style.display = "none";
+
+      try {
+        const response = await fetch(`${BASE_URL}/api/v1/rppg/analyze`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "ngrok-skip-browser-warning": "true"
+          },
+          body: JSON.stringify({
+            user_line_id: currentUserId,
+            measurement_duration_sec: 30,
+            is_fallback: true
+          })
+        });
+
+        const result = await response.json();
+
+        if (result.status === "success") {
+          const data = result.data;
+          
+          document.getElementById("res-hr").innerText = data.heart_rate;
+          document.getElementById("res-hrv").innerText = data.hrv_sdnn;
+          document.getElementById("res-stress").innerText = data.stress_score;
+          document.getElementById("res-summary").innerText = data.summary;
+
+          const badge = document.getElementById("res-light-badge");
+          badge.innerText = data.health_light;
+          badge.className = `badge badge-${data.health_light}`;
+
+          document.getElementById("result-card").style.display = "block";
+        } else {
+          alert("檢測失敗，請稍後再試。");
+        }
+      } catch (error) {
+        console.error("API Error:", error);
+        alert("無法連線至伺服器，請確認 ngrok 狀態。");
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    // 3. 呼叫歷史紀錄 API (GET) 並繪製圖表
+    async function fetchHistory() {
+      setLoading(true);
+      document.getElementById("result-card").style.display = "none";
+
+      try {
+        const response = await fetch(`${BASE_URL}/api/v1/rppg/history/${currentUserId}`, {
+          method: "GET",
+          headers: {
+            "ngrok-skip-browser-warning": "true"
+          }
+        });
+
+        const result = await response.json();
+
+        if (result.status === "success") {
+          const records = result.records;
+          document.getElementById("history-count").innerText = result.count;
+          
+          const listContainer = document.getElementById("history-list");
+          listContainer.innerHTML = "";
+
+          if (records.length === 0) {
+            listContainer.innerHTML = "<p style='color:#777; text-align:center;'>尚無歷史紀錄</p>";
+          } else {
+            // 圖表數據：依時間正序 (舊 -> 新)
+            const chronologicalRecords = [...records].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+            renderChart(chronologicalRecords);
+
+            // 列表顯示：依時間倒序 (新 -> 舊)
+            const reverseRecords = [...chronologicalRecords].reverse();
+            reverseRecords.forEach(item => {
+              const itemDiv = document.createElement("div");
+              itemDiv.className = `history-item ${item.health_light}`;
+              itemDiv.innerHTML = `
+                <div class="history-date">${item.created_at}</div>
+                <div><strong>心率：</strong> ${item.heart_rate} bpm | <strong>HRV：</strong> ${item.hrv_sdnn} ms</div>
+                <div><strong>壓力：</strong> ${item.stress_score} | <strong>燈號：</strong> <span class="badge badge-${item.health_light}">${item.health_light}</span></div>
+              `;
+              listContainer.appendChild(itemDiv);
+            });
+          }
+
+          document.getElementById("history-container").style.display = "block";
+        }
+      } catch (error) {
+        console.error("Fetch History Error:", error);
+        alert("讀取歷史紀錄失敗。");
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    // 4. 繪製 Chart.js 趨勢圖
+    function renderChart(records) {
+      const ctx = document.getElementById('healthChart').getContext('2d');
+      
+      // 擷取時間 (只顯示 月-日 時:分)
+      const labels = records.map(r => {
+        const d = new Date(r.created_at);
+        return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+      });
+
+      const heartRates = records.map(r => r.heart_rate);
+      const stressScores = records.map(r => r.stress_score);
+
+      // 如果已有舊圖表，先銷毀避免重疊
+      if (trendChart) {
+        trendChart.destroy();
+      }
+
+      trendChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [
+            {
+              label: '平均心率 (bpm)',
+              data: heartRates,
+              borderColor: '#e74c3c',
+              backgroundColor: 'rgba(231, 76, 60, 0.1)',
+              tension: 0.3,
+              fill: true
+            },
+            {
+              label: '壓力指數',
+              data: stressScores,
+              borderColor: '#3498db',
+              backgroundColor: 'rgba(52, 152, 219, 0.1)',
+              tension: 0.3,
+              fill: true
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            legend: {
+              position: 'bottom'
+            }
+          },
+          scales: {
+            y: {
+              beginAtZero: false
+            }
+          }
+        }
+      });
+    }
+  </script>
+</body>
+</html>
