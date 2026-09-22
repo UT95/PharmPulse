@@ -10,8 +10,9 @@ from sqlalchemy.orm import Session
 
 from database import Base, engine, get_db
 
-# --- 設定 LINE Messaging API Channel Access Token ---
-LINE_ACCESS_TOKEN = "OY4STLbaxgzEcml7d6mM/3Ke8rvqhFUpe9vnra3229SBjFdBSb/MvUJ87HFL45SuUS6O3TUWl48yYFHyj1EEp9J7CPUJYkRGCiGT/skQkaL48bCtlN2SzYegfXpbrjbe3L9Kuv6NF428HgUuNZrI9gdB04t89/1O/w1cDnyilFU="  # 👈 請填入你的 Token
+import os
+
+LINE_ACCESS_TOKEN = os.getenv("LINE_ACCESS_TOKEN", "")
 
 app = FastAPI(title="PharmPulse C2C API", version="1.0.0")
 
