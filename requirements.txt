@@ -3,3 +3,4 @@ uvicorn
 line-bot-sdk
 requests
 pydantic
+sqlalchemy
