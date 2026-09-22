@@ -1,2 +1,5 @@
 fastapi
 uvicorn
+line-bot-sdk
+requests
+pydantic
