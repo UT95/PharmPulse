@@ -12,7 +12,8 @@ from database import Base, engine, get_db
 
 import os
 
-LINE_ACCESS_TOKEN = os.getenv("LINE_ACCESS_TOKEN", "")
+LINE_ACCESS_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
+LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 
 app = FastAPI(title="PharmPulse C2C API", version="1.0.0")
 
