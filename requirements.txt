@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+line-bot-sdk
+requests
+pydantic
+sqlalchemy
+psycopg2-binary
+numpy
+scipy
