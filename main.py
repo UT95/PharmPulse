@@ -89,7 +89,7 @@ def auto_migrate_db():
             print(f" DB Connection error during migration: {e}")
 
 # ----------------------------------------------------
-# 5. 前端頁面託管路由 (解決 404 Not Found 問題)
+# 5. 前端頁面託管路由
 # ----------------------------------------------------
 @app.get("/")
 @app.get("/liff")
