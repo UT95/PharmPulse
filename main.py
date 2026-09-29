@@ -71,20 +71,27 @@ def get_db():
         db.close()
 
 # ----------------------------------------------------
-# 4. 啟動時自動修正 PostgreSQL 欄位
+# 4. 啟動時自動檢查並補齊 PostgreSQL 所有缺少欄位
 # ----------------------------------------------------
 @app.on_event("startup")
 def auto_migrate_db():
+    """安全新增 user_uuid, summary, action_advice 欄位"""
     if "postgresql" in DATABASE_URL:
         try:
             with engine.connect() as conn:
-                try:
-                    conn.execute(text("ALTER TABLE rppg_records ADD COLUMN IF NOT EXISTS user_uuid VARCHAR(255);"))
-                    conn.commit()
-                    print(" Successfully ensured 'user_uuid' column exists.")
-                except Exception as ex:
-                    conn.rollback()
-                    print(f" Migration info: {ex}")
+                columns_to_add = [
+                    ("user_uuid", "VARCHAR(255)"),
+                    ("summary", "TEXT"),
+                    ("action_advice", "TEXT")
+                ]
+                for col_name, col_type in columns_to_add:
+                    try:
+                        conn.execute(text(f"ALTER TABLE rppg_records ADD COLUMN IF NOT EXISTS {col_name} {col_type};"))
+                        conn.commit()
+                        print(f" Successfully ensured '{col_name}' column exists.")
+                    except Exception as ex:
+                        conn.rollback()
+                        print(f" Migration info for {col_name}: {ex}")
         except Exception as e:
             print(f" DB Connection error during migration: {e}")
 
