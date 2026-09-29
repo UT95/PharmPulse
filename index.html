@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PharmPulse - rPPG 健康檢測</title>
+  <title>PharmPulse - 健康檢測與歷史紀錄</title>
   <!-- 載入 LINE LIFF SDK -->
   <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <style>
@@ -16,7 +16,7 @@
       flex-direction: column;
       align-items: center;
       min-height: 100vh;
-      padding: 20px;
+      padding: 16px;
     }
     .container {
       width: 100%;
@@ -24,11 +24,38 @@
       background: #ffffff;
       border-radius: 16px;
       box-shadow: 0 4px 20px rgba(0,0,0,0.08);
-      padding: 24px;
+      padding: 20px;
       text-align: center;
     }
-    h1 { font-size: 1.5rem; color: #1DB446; margin-bottom: 8px; }
-    p.subtitle { font-size: 0.9rem; color: #666; margin-bottom: 20px; }
+    
+    /* Tab 分頁標籤頁風格 */
+    .tab-nav {
+      display: flex;
+      border-bottom: 2px solid #eee;
+      margin-bottom: 20px;
+    }
+    .tab-btn {
+      flex: 1;
+      padding: 12px;
+      border: none;
+      background: none;
+      font-size: 1rem;
+      font-weight: bold;
+      color: #888;
+      cursor: pointer;
+      border-bottom: 3px solid transparent;
+      transition: all 0.2s;
+    }
+    .tab-btn.active {
+      color: #1DB446;
+      border-bottom-color: #1DB446;
+    }
+
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    h1 { font-size: 1.4rem; color: #1DB446; margin-bottom: 6px; }
+    p.subtitle { font-size: 0.85rem; color: #666; margin-bottom: 16px; }
     
     .video-wrapper {
       position: relative;
@@ -37,17 +64,16 @@
       background: #000;
       border-radius: 12px;
       overflow: hidden;
-      margin-bottom: 20px;
+      margin-bottom: 16px;
     }
     video {
       width: 100%;
       height: 100%;
       object-fit: cover;
-      transform: scaleX(-1); /* 鏡像顯示 */
+      transform: scaleX(-1);
     }
     canvas { display: none; }
 
-    /* 臉部對齊框內引導 */
     .face-overlay {
       position: absolute;
       top: 50%;
@@ -70,21 +96,18 @@
       border: none;
       border-radius: 8px;
       cursor: pointer;
-      transition: background 0.2s;
     }
     .btn:disabled { background-color: #ccc; cursor: not-allowed; }
     
     .status-card {
-      margin-top: 20px;
+      margin-top: 16px;
       padding: 16px;
       background: #f8f9fa;
       border-radius: 8px;
       border-left: 4px solid #1DB446;
       text-align: left;
     }
-    .status-card h3 { font-size: 1rem; margin-bottom: 6px; }
-    .status-card p { font-size: 0.9rem; color: #555; }
-    
+
     .progress-bar {
       width: 100%;
       height: 8px;
@@ -100,42 +123,77 @@
       background: #1DB446;
       transition: width 0.1s linear;
     }
+
+    /* 歷史紀錄卡片列表 */
+    .history-item {
+      background: #f8f9fa;
+      border-radius: 10px;
+      padding: 14px;
+      margin-bottom: 12px;
+      text-align: left;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.03);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .history-info h4 { font-size: 1.1rem; color: #333; }
+    .history-info p { font-size: 0.8rem; color: #777; margin-top: 4px; }
+    .badge-green { background: #e8f8ec; color: #1DB446; padding: 4px 8px; border-radius: 6px; font-weight: bold; font-size: 0.85rem; }
   </style>
 </head>
 <body>
 
 <div class="container">
-  <h1>PharmPulse 健康量測</h1>
-  <p class="subtitle">請將臉部對準框線，維持靜止進行光學心率分析</p>
-
-  <div class="video-wrapper">
-    <video id="webcam" autoplay playsinline muted></video>
-    <div class="face-overlay"></div>
-  </div>
-  
-  <canvas id="canvas"></canvas>
-
-  <button id="startBtn" class="btn" onclick="startMeasurement()">開始 5 秒心率量測</button>
-
-  <div class="progress-bar" id="progressBar">
-    <div class="progress-fill" id="progressFill"></div>
+  <!-- 頁面切換標籤 -->
+  <div class="tab-nav">
+    <button class="tab-btn active" onclick="switchTab('measureTab')">實時量測</button>
+    <button class="tab-btn" onclick="switchTab('historyTab')">歷史紀錄</button>
   </div>
 
-  <div class="status-card" id="resultCard" style="display:none;">
-    <h3 id="resultTitle">分析結果</h3>
-    <p id="resultBpm">心率: -- BPM</p>
-    <p id="resultStatus">評估: --</p>
+  <!-- 分頁 1: 實時鏡頭量測 -->
+  <div id="measureTab" class="tab-content active">
+    <h1>PharmPulse 健康量測</h1>
+    <p class="subtitle">請將臉部對準框線，維持靜止進行光學心率分析</p>
+
+    <div class="video-wrapper">
+      <video id="webcam" autoplay playsinline muted></video>
+      <div class="face-overlay"></div>
+    </div>
+    
+    <canvas id="canvas"></canvas>
+
+    <button id="startBtn" class="btn" onclick="startMeasurement()">開始 5 秒心率量測</button>
+
+    <div class="progress-bar" id="progressBar">
+      <div class="progress-fill" id="progressFill"></div>
+    </div>
+
+    <div class="status-card" id="resultCard" style="display:none;">
+      <h3 id="resultTitle">分析結果</h3>
+      <p id="resultBpm">心率: -- BPM</p>
+      <p id="resultStatus">評估: --</p>
+    </div>
+  </div>
+
+  <!-- 分頁 2: 歷史紀錄清單 -->
+  <div id="historyTab" class="tab-content">
+    <h1>過往檢測紀錄</h1>
+    <p class="subtitle">讀取自雲端資料庫之個人生理數據分析紀錄</p>
+    
+    <div id="historyList">
+      <p style="color: #999; margin-top: 20px;">載入歷史紀錄中...</p>
+    </div>
   </div>
 </div>
 
 <script>
   const MY_LIFF_ID = "2011686844-4moxcFdy"; // 你的 LIFF ID
-  let userLineId = "U_GUEST_TESTER";
+  let userLineId = "U1234567890abcdef1234567890abcdef"; // 預設測試 ID
   let video, canvas, ctx;
   let greenSignals = [];
   let isMeasuring = false;
-  const TARGET_SAMPLES = 150; // 5 秒 (30 fps * 5)
-  let animationFrameId;
+  const TARGET_SAMPLES = 150; // 5 秒
+  let cameraInitialized = false;
 
   async function initLIFF() {
     try {
@@ -143,15 +201,14 @@
       if (liff.isLoggedIn()) {
         const profile = await liff.getProfile();
         userLineId = profile.userId;
-      } else {
-        liff.login();
       }
     } catch (err) {
-      console.warn("LIFF 初始化失敗或在瀏覽器獨立環境測試:", err);
+      console.warn("LIFF 初始化模式:", err);
     }
   }
 
   async function initCamera() {
+    if (cameraInitialized) return;
     video = document.getElementById("webcam");
     canvas = document.getElementById("canvas");
     ctx = canvas.getContext("2d");
@@ -162,27 +219,37 @@
         audio: false
       });
       video.srcObject = stream;
+      cameraInitialized = true;
     } catch (err) {
-      alert("無法存取視訊鏡頭，請確認已授予權限。");
+      console.warn("鏡頭權限未開啟或不在相機環境中");
+    }
+  }
+
+  function switchTab(tabId) {
+    document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+
+    if (tabId === 'measureTab') {
+      document.querySelectorAll('.tab-btn')[0].classList.add('active');
+      document.getElementById('measureTab').classList.add('active');
+      initCamera();
+    } else {
+      document.querySelectorAll('.tab-btn')[1].classList.add('active');
+      document.getElementById('historyTab').classList.add('active');
+      loadHistory();
     }
   }
 
   function startMeasurement() {
     if (isMeasuring) return;
-    
     isMeasuring = true;
     greenSignals = [];
     
-    const btn = document.getElementById("startBtn");
-    const progressBar = document.getElementById("progressBar");
-    const progressFill = document.getElementById("progressFill");
-    const resultCard = document.getElementById("resultCard");
-
-    btn.disabled = true;
-    btn.innerText = "量測中，請保持靜止...";
-    progressBar.style.display = "block";
-    progressFill.style.width = "0%";
-    resultCard.style.display = "none";
+    document.getElementById("startBtn").disabled = true;
+    document.getElementById("startBtn").innerText = "量測中，請保持靜止...";
+    document.getElementById("progressBar").style.display = "block";
+    document.getElementById("progressFill").style.width = "0%";
+    document.getElementById("resultCard").style.display = "none";
 
     captureFrame();
   }
@@ -192,33 +259,26 @@
 
     canvas.width = video.videoWidth || 640;
     canvas.height = video.videoHeight || 480;
-
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // 擷取中心 ROI (臉部區域) 的綠光通道均值
     const roiWidth = Math.floor(canvas.width * 0.3);
     const roiHeight = Math.floor(canvas.height * 0.3);
     const roiX = Math.floor((canvas.width - roiWidth) / 2);
     const roiY = Math.floor((canvas.height - roiHeight) / 2);
 
     const frameData = ctx.getImageData(roiX, roiY, roiWidth, roiHeight).data;
-    let greenSum = 0;
-    let pixelCount = 0;
+    let greenSum = 0, pixelCount = 0;
 
     for (let i = 0; i < frameData.length; i += 4) {
-      greenSum += frameData[i + 1]; // G 通道
+      greenSum += frameData[i + 1];
       pixelCount++;
     }
 
-    const avgGreen = greenSum / pixelCount;
-    greenSignals.push(avgGreen);
-
-    // 更新進度條
-    const progressPercent = Math.min(100, (greenSignals.length / TARGET_SAMPLES) * 100);
-    document.getElementById("progressFill").style.width = progressPercent + "%";
+    greenSignals.push(greenSum / pixelCount);
+    document.getElementById("progressFill").style.width = Math.min(100, (greenSignals.length / TARGET_SAMPLES) * 100) + "%";
 
     if (greenSignals.length < TARGET_SAMPLES) {
-      animationFrameId = requestAnimationFrame(captureFrame);
+      requestAnimationFrame(captureFrame);
     } else {
       finishMeasurement();
     }
@@ -226,29 +286,20 @@
 
   async function finishMeasurement() {
     isMeasuring = false;
-    const btn = document.getElementById("startBtn");
-    btn.innerText = "分析中...";
+    document.getElementById("startBtn").innerText = "分析中...";
 
     try {
       const response = await fetch("/api/v1/analyze-rppg", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          user_line_id: userLineId,
-          green_signals: greenSignals,
-          fps: 30
-        })
+        body: JSON.stringify({ user_line_id: userLineId, green_signals: greenSignals, fps: 30 })
       });
 
       const resData = await response.json();
-
       if (response.ok) {
         document.getElementById("resultTitle").innerText = "分析完成！";
-        
-        // 處理不同後端資料結構之相容
         const hr = resData.heart_rate || (resData.data && resData.data.heart_rate) || "--";
         document.getElementById("resultBpm").innerText = `心率: ${hr} BPM`;
-        
         const summary = resData.message || (resData.data && resData.data.summary) || "檢測成功";
         document.getElementById("resultStatus").innerText = `狀態: ${summary}`;
         document.getElementById("resultCard").style.display = "block";
@@ -258,14 +309,42 @@
     } catch (err) {
       alert("網路連線錯誤，請稍後再試。");
     } finally {
-      btn.disabled = false;
-      btn.innerText = "重新量測";
+      document.getElementById("startBtn").disabled = false;
+      document.getElementById("startBtn").innerText = "重新量測";
       document.getElementById("progressBar").style.display = "none";
     }
   }
 
-  window.onload = () => {
-    initLIFF();
+  async function loadHistory() {
+    const listContainer = document.getElementById("historyList");
+    listContainer.innerHTML = '<p style="color: #999;">載入中...</p>';
+
+    try {
+      const res = await fetch(`/api/v1/rppg/history/${userLineId}`);
+      if (!res.ok) throw new Error("讀取失敗");
+      const historyData = await res.json();
+
+      if (!historyData || historyData.length === 0) {
+        listContainer.innerHTML = '<p style="color: #888; margin-top: 20px;">尚無歷史量測紀錄</p>';
+        return;
+      }
+
+      listContainer.innerHTML = historyData.map(item => `
+        <div class="history-item">
+          <div class="history-info">
+            <h4>${item.heart_rate} BPM</h4>
+            <p>量測時間: ${new Date(item.created_at).toLocaleString()}</p>
+          </div>
+          <span class="badge-green">${item.health_light || '良好'}</span>
+        </div>
+      `).join('');
+    } catch (err) {
+      listContainer.innerHTML = '<p style="color: #e74c3c;">無法載入歷史紀錄，請確認網路連線。</p>';
+    }
+  }
+
+  window.onload = async () => {
+    await initLIFF();
     initCamera();
   };
 </script>
