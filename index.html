@@ -3,282 +3,204 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PharmPulse - rPPG 照護檢測</title>
+  <title>PharmPulse - rPPG 量測</title>
+  <!-- LIFF SDK -->
   <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <!-- MediaPipe Face Mesh CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background-color: #f4f6f9; color: #333;
-      display: flex; flex-direction: column; align-items: center; min-height: 100vh; padding: 16px;
-    }
-    .container {
-      width: 100%; max-width: 480px; background: #fff; border-radius: 16px;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.08); padding: 20px; text-align: center;
-    }
-    .tab-nav { display: flex; border-bottom: 2px solid #eee; margin-bottom: 20px; }
-    .tab-btn {
-      flex: 1; padding: 12px; border: none; background: none; font-size: 1rem;
-      font-weight: bold; color: #888; cursor: pointer; border-bottom: 3px solid transparent;
-    }
-    .tab-btn.active { color: #1DB954; border-bottom-color: #1DB954; }
-    .tab-content { display: none; }
-    .tab-content.active { display: block; }
-
-    h1 { font-size: 1.4rem; color: #1DB954; margin-bottom: 6px; }
-    p.subtitle { font-size: 0.85rem; color: #666; margin-bottom: 16px; }
-
-    /* 視訊視窗與人臉 Oval Mask 遮罩 */
-    .video-wrapper {
-      position: relative; width: 100%; aspect-ratio: 4 / 3; background: #000;
-      border-radius: 16px; overflow: hidden; margin-bottom: 16px;
-    }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; background: #f8f9fa; margin: 0; padding: 20px; }
+    .container { max-width: 480px; margin: 0 auto; background: white; padding: 20px; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
+    h2 { color: #1DB954; margin-bottom: 8px; }
+    .video-wrapper { position: relative; width: 320px; height: 320px; margin: 15px auto; border-radius: 50%; overflow: hidden; border: 4px solid #1DB954; }
     video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
-    canvas { display: none; }
-
-    .face-oval-mask {
-      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-      background: rgba(0, 0, 0, 0.45);
-      mask: radial-gradient(ellipse 45% 60% at 50% 50%, transparent 99%, black 100%);
-      -webkit-mask: radial-gradient(ellipse 45% 60% at 50% 50%, transparent 99%, black 100%);
-      pointer-events: none;
-    }
-    .face-oval-border {
-      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-      width: 45%; height: 60%; border: 3px dashed #1DB954; border-radius: 50%;
-      pointer-events: none; animation: pulse 2s infinite;
-    }
-    @keyframes pulse { 0% { opacity: 0.6; } 50% { opacity: 1; } 100% { opacity: 0.6; } }
-
-    .timer-overlay {
-      position: absolute; top: 12px; right: 12px; background: rgba(0,0,0,0.6);
-      color: #fff; padding: 6px 12px; border-radius: 20px; font-weight: bold; font-size: 0.9rem;
-    }
-
-    .btn {
-      width: 100%; padding: 14px; font-size: 1rem; font-weight: bold; color: #fff;
-      background-color: #1DB954; border: none; border-radius: 10px; cursor: pointer;
-    }
-    .btn:disabled { background-color: #ccc; cursor: not-allowed; }
-
-    .progress-bar { width: 100%; height: 8px; background: #eee; border-radius: 4px; overflow: hidden; margin-top: 12px; display: none; }
-    .progress-fill { height: 100%; width: 0%; background: #1DB954; transition: width 0.1s linear; }
-
-    .status-card { margin-top: 16px; padding: 16px; background: #f8f9fa; border-radius: 10px; border-left: 4px solid #1DB954; text-align: left; }
-    .history-item { background: #f8f9fa; border-radius: 10px; padding: 12px 16px; margin-bottom: 10px; text-align: left; display: flex; justify-content: space-between; align-items: center; }
+    canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; transform: scaleX(-1); }
+    .status-badge { display: inline-block; padding: 6px 16px; border-radius: 20px; font-weight: bold; font-size: 14px; background: #e9ecef; color: #495057; margin-bottom: 10px; }
+    .btn { background: #1DB954; color: white; border: none; padding: 12px 28px; border-radius: 24px; font-size: 16px; font-weight: bold; cursor: pointer; width: 100%; max-width: 280px; }
+    .btn:disabled { background: #adb5bd; cursor: not-allowed; }
   </style>
 </head>
 <body>
-
-<div class="container">
-  <div class="tab-nav">
-    <button class="tab-btn active" onclick="switchTab('measureTab')">實時量測</button>
-    <button class="tab-btn" onclick="switchTab('historyTab')">歷史紀錄</button>
-  </div>
-
-  <!-- 分頁 1: 實時量測 -->
-  <div id="measureTab" class="tab-content active">
-    <h1>PharmPulse 脈搏分析</h1>
-    <p class="subtitle">請將臉部置於框內，保持靜止 10 秒</p>
-
+  <div class="container">
+    <h2>PharmPulse 脈搏量測</h2>
+    <p style="color: #6c757d; font-size: 14px;">請將臉部置於框內並保持靜止</p>
+    
     <div class="video-wrapper">
       <video id="webcam" autoplay playsinline muted></video>
-      <div class="face-oval-mask"></div>
-      <div class="face-oval-border"></div>
-      <div class="timer-overlay" id="timerDisplay">10s</div>
+      <canvas id="output_canvas"></canvas>
     </div>
 
-    <canvas id="canvas"></canvas>
-
-    <button id="startBtn" class="btn" onclick="startMeasurement()">開始 10 秒精準檢測</button>
-
-    <div class="progress-bar" id="progressBar">
-      <div class="progress-fill" id="progressFill"></div>
-    </div>
-
-    <div class="status-card" id="resultCard" style="display:none;">
-      <h3 id="resultTitle">分析完成</h3>
-      <p id="resultBpm" style="font-size: 1.2rem; font-weight: bold; margin-top: 4px;">心率: -- BPM</p>
-      <p id="resultStatus" style="font-size: 0.9rem; color: #666; margin-top: 2px;">評估: --</p>
-    </div>
+    <div id="status" class="status-badge">初始化鏡頭與臉部偵測...</div>
+    <br>
+    <button id="start-btn" class="btn" disabled onclick="startMeasurement()">開始 10 秒量測</button>
   </div>
 
-  <!-- 分頁 2: 歷史紀錄 -->
-  <div id="historyTab" class="tab-content">
-    <h1>歷史檢測紀錄</h1>
-    <p class="subtitle">個人生理量測數據庫</p>
-    <div id="historyList"><p style="color: #999;">載入中...</p></div>
-  </div>
-</div>
+  <script>
+    let userLineId = "U_TEST_USER";
+    let isFaceDetected = false;
+    let isMeasuring = false;
+    let rgbSignals = [[], [], []]; // [Red, Green, Blue]
+    let frameCount = 0;
 
-<script>
-  const MY_LIFF_ID = "2011686844-4moxcFdy";
-  let userLineId = "U1234567890abcdef1234567890abcdef";
-  let video, canvas, ctx;
-  let rSignals = [], gSignals = [], bSignals = [];
-  let isMeasuring = false;
-  const DURATION_SEC = 10;
-  const TARGET_FPS = 30;
-  const TOTAL_SAMPLES = DURATION_SEC * TARGET_FPS;
+    const videoElement = document.getElementById('webcam');
+    const canvasElement = document.getElementById('output_canvas');
+    const canvasCtx = canvasElement.getContext('2d');
+    const statusText = document.getElementById('status');
+    const startBtn = document.getElementById('start-btn');
 
-  async function initLIFF() {
-    try {
-      await liff.init({ liffId: MY_LIFF_ID });
-      if (liff.isLoggedIn()) {
-        const profile = await liff.getProfile();
-        userLineId = profile.userId;
+    // 初始化 LIFF
+    async function initLIFF() {
+      try {
+        await liff.init({ liffId: "YOUR_LIFF_ID" }); // 替換為你的 LIFF ID
+        if (liff.isLoggedIn()) {
+          const profile = await liff.getProfile();
+          userLineId = profile.userId;
+        }
+      } catch (err) {
+        console.log("LIFF Init Skip / Browser Mode", err);
       }
-    } catch (err) { console.warn("LIFF 瀏覽器測試模式"); }
-  }
-
-  async function initCamera() {
-    video = document.getElementById("webcam");
-    canvas = document.getElementById("canvas");
-    ctx = canvas.getContext("2d");
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }, audio: false
-      });
-      video.srcObject = stream;
-    } catch (err) { alert("無法開啟鏡頭權限"); }
-  }
-
-  function switchTab(tabId) {
-    document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-    if (tabId === 'measureTab') {
-      document.querySelectorAll('.tab-btn')[0].classList.add('active');
-      document.getElementById('measureTab').classList.add('active');
-    } else {
-      document.querySelectorAll('.tab-btn')[1].classList.add('active');
-      document.getElementById('historyTab').classList.add('active');
-      loadHistory();
     }
-  }
+    initLIFF();
 
-  function startMeasurement() {
-    if (isMeasuring) return;
-    isMeasuring = true;
-    rSignals = []; gSignals = []; bSignals = [];
+    // 設定 MediaPipe Face Mesh
+    const faceMesh = new FaceMesh({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+    });
 
-    document.getElementById("startBtn").disabled = true;
-    document.getElementById("startBtn").innerText = "量測中，請保持靜止...";
-    document.getElementById("progressBar").style.display = "block";
-    document.getElementById("progressFill").style.width = "0%";
-    document.getElementById("resultCard").style.display = "none";
+    faceMesh.setOptions({
+      maxNumFaces: 1,
+      refineLandmarks: false,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
 
-    captureFrame();
-  }
+    faceMesh.onResults(onResults);
 
-  function captureFrame() {
-    if (!isMeasuring) return;
+    function onResults(results) {
+      canvasCtx.save();
+      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
 
-    canvas.width = video.videoWidth || 640;
-    canvas.height = video.videoHeight || 480;
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+        isFaceDetected = true;
+        const landmarks = results.multiFaceLandmarks[0];
 
-    // 擷取中心橢圓區域 40% x 50%
-    const roiW = Math.floor(canvas.width * 0.4);
-    const roiH = Math.floor(canvas.height * 0.5);
-    const roiX = Math.floor((canvas.width - roiW) / 2);
-    const roiY = Math.floor((canvas.height - roiH) / 2);
+        if (!isMeasuring) {
+          statusText.innerText = "臉部已對準，請點擊開始量測";
+          statusText.style.background = "#d4edda";
+          statusText.style.color = "#155724";
+          startBtn.disabled = false;
+        }
 
-    const frameData = ctx.getImageData(roiX, roiY, roiW, roiH).data;
-    let rSum = 0, gSum = 0, bSum = 0, count = 0;
-
-    for (let i = 0; i < frameData.length; i += 4) {
-      rSum += frameData[i];
-      gSum += frameData[i + 1];
-      bSum += frameData[i + 2];
-      count++;
-    }
-
-    rSignals.push(rSum / count);
-    gSignals.push(gSum / count);
-    bSignals.push(bSum / count);
-
-    const currentSamples = gSignals.length;
-    const progress = Math.min(100, (currentSamples / TOTAL_SAMPLES) * 100);
-    document.getElementById("progressFill").style.width = progress + "%";
-
-    const remainingSec = Math.max(0, Math.ceil(DURATION_SEC - (currentSamples / TARGET_FPS)));
-    document.getElementById("timerDisplay").innerText = `${remainingSec}s`;
-
-    if (currentSamples < TOTAL_SAMPLES) {
-      requestAnimationFrame(captureFrame);
-    } else {
-      finishMeasurement();
-    }
-  }
-
-  async function finishMeasurement() {
-    isMeasuring = false;
-    document.getElementById("startBtn").innerText = "POS 演算法分析中...";
-
-    try {
-      const response = await fetch("/api/v1/analyze-rppg", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          user_line_id: userLineId,
-          rgb_signals: [rSignals, gSignals, bSignals],
-          fps: TARGET_FPS
-        })
-      });
-
-      const resData = await response.json();
-      if (response.ok) {
-        const data = resData.data || resData;
-        document.getElementById("resultBpm").innerText = `心率: ${data.heart_rate} BPM`;
-        document.getElementById("resultStatus").innerText = `評估: ${data.summary}`;
-        document.getElementById("resultCard").style.display = "block";
+        // 取額頭區域特徵點 (Keypoint 10 附近) 進行 RGB 訊號採樣
+        if (isMeasuring) {
+          sampleROIColor(landmarks);
+        }
       } else {
-        alert("分析失敗: " + (resData.detail || "伺服器異常"));
+        isFaceDetected = false;
+        if (!isMeasuring) {
+          statusText.innerText = "未偵測到臉部，請對準鏡頭";
+          statusText.style.background = "#f8d7da";
+          statusText.style.color = "#721c24";
+          startBtn.disabled = true;
+        }
       }
-    } catch (err) {
-      alert("網路連線錯誤，請稍後再試。");
-    } finally {
-      document.getElementById("startBtn").disabled = false;
-      document.getElementById("startBtn").innerText = "重新量測";
-      document.getElementById("progressBar").style.display = "none";
-      document.getElementById("timerDisplay").innerText = "10s";
+      canvasCtx.restore();
     }
-  }
 
-  async function loadHistory() {
-    const listContainer = document.getElementById("historyList");
-    listContainer.innerHTML = '<p style="color: #999;">載入中...</p>';
+    // 從額頭 ROI 區域抽取平均 RGB 值
+    function sampleROIColor(landmarks) {
+      const foreheadIndex = 10; // 額頭中心點
+      const x = Math.floor(landmarks[foreheadIndex].x * canvasElement.width);
+      const y = Math.floor(landmarks[foreheadIndex].y * canvasElement.height);
+      
+      // 擷取 20x20 像素小區域
+      try {
+        const imgData = canvasCtx.getImageData(Math.max(0, x - 10), Math.max(0, y - 10), 20, 20);
+        let rSum = 0, gSum = 0, bSum = 0;
+        const totalPixels = imgData.data.length / 4;
 
-    try {
-      const res = await fetch(`/api/v1/rppg/history/${userLineId}`);
-      const resJson = await res.json();
-      const list = Array.isArray(resJson) ? resJson : (resJson.data || resJson.records || []);
+        for (let i = 0; i < imgData.data.length; i += 4) {
+          rSum += imgData.data[i];
+          gSum += imgData.data[i + 1];
+          bSum += imgData.data[i + 2];
+        }
 
-      if (list.length === 0) {
-        listContainer.innerHTML = '<p style="color: #888; margin-top: 20px;">尚無歷史紀錄</p>';
-        return;
+        rgbSignals[0].push(rSum / totalPixels);
+        rgbSignals[1].push(gSum / totalPixels);
+        rgbSignals[2].push(bSum / totalPixels);
+      } catch (e) {
+        console.error("ROI sampling error", e);
       }
-
-      listContainer.innerHTML = list.map(item => `
-        <div class="history-item">
-          <div>
-            <h4 style="font-size:1.1rem;">${item.heart_rate} BPM</h4>
-            <p style="font-size:0.75rem; color:#888;">${new Date(item.created_at).toLocaleString()}</p>
-          </div>
-          <span style="background:#e8f8ec; color:#1DB954; padding:4px 8px; border-radius:6px; font-weight:bold; font-size:0.8rem;">
-            ${item.health_light || 'GREEN'}
-          </span>
-        </div>
-      `).join('');
-    } catch (err) {
-      listContainer.innerHTML = '<p style="color: #e74c3c;">無法載入歷史紀錄</p>';
     }
-  }
 
-  window.onload = async () => {
-    await initLIFF();
-    initCamera();
-  };
-</script>
+    // 啟動攝影機
+    const camera = new Camera(videoElement, {
+      onFrame: async () => {
+        canvasElement.width = videoElement.videoWidth;
+        canvasElement.height = videoElement.videoHeight;
+        await faceMesh.send({ image: videoElement });
+      },
+      width: 640,
+      height: 480
+    });
+    camera.start();
+
+    // 開始 10 秒量測流程
+    async function startMeasurement() {
+      if (!isFaceDetected) return;
+
+      isMeasuring = true;
+      startBtn.disabled = true;
+      rgbSignals = [[], [], []];
+      
+      let countdown = 10;
+      statusText.style.background = "#fff3cd";
+      statusText.style.color = "#856404";
+
+      const timer = setInterval(() => {
+        countdown--;
+        statusText.innerText = `量測中... 剩餘 ${countdown} 秒 (請保持靜止)`;
+
+        if (countdown <= 0) {
+          clearInterval(timer);
+          isMeasuring = false;
+          submitData();
+        }
+      }, 1000);
+    }
+
+    // 送出數據至 API
+    async function submitData() {
+      statusText.innerText = "分析中，請稍候...";
+      try {
+        const response = await fetch('/api/v1/analyze-rppg', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_line_id: userLineId,
+            rgb_signals: rgbSignals,
+            fps: 30
+          })
+        });
+
+        const resData = await response.json();
+        if (resData.status === "success") {
+          statusText.innerText = `量測完成！心率：${resData.data.heart_rate} BPM`;
+          statusText.style.background = "#d4edda";
+          statusText.style.color = "#155724";
+          alert(`量測成功！\n心率：${resData.data.heart_rate} BPM\n請至 LINE 聊天室查看趨勢圖報告。`);
+        } else {
+          throw new Error("API error");
+        }
+      } catch (err) {
+        statusText.innerText = "分析失敗，請重新嘗試";
+        statusText.style.background = "#f8d7da";
+        alert("網路連線或分析發生錯誤，請重試");
+      } finally {
+        startBtn.disabled = false;
+      }
+    }
+  </script>
 </body>
 </html>
