@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>PharmPulse 生理量測與處置建議</title>
+    <title>PharmPulse 生理量測與 AI 處置建議</title>
     <!-- LINE LIFF SDK -->
     <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
     <!-- Bootstrap 5 CSS -->
@@ -61,7 +61,14 @@
             border: none;
             box-shadow: 0 4px 12px rgba(0,0,0,0.05);
         }
-        /* 同意條款 Modal 風格 */
+        /* AI 建議專屬卡片樣式 */
+        .ai-advice-card {
+            background-color: #f0fdf4;
+            border-left: 5px solid #198754;
+            border-radius: 8px;
+            padding: 12px 15px;
+            transition: all 0.3s ease;
+        }
         .modal-content {
             border-radius: 16px;
             border: none;
@@ -74,7 +81,7 @@
         <!-- 頁首標題 -->
         <div class="my-3">
             <h4 class="fw-bold text-success">💚 PharmPulse 生理照護</h4>
-            <p class="text-muted small">對準面部保持靜止 10-15 秒，即可分析生理指標並提供處置建議</p>
+            <p class="text-muted small">對準面部保持靜止 10-15 秒，即可分析生理指標並提供 AI 處置建議</p>
         </div>
 
         <!-- 攝影機視訊區塊 -->
@@ -104,7 +111,7 @@
         <!-- 即時數據顯示區 -->
         <div class="card card-result p-3 text-start bg-white mb-3">
             <h6 class="fw-bold text-secondary mb-3">📊 最近一次量測結果</h6>
-            <div class="row text-center">
+            <div class="row text-center mb-3">
                 <div class="col-4 border-end">
                     <span class="text-muted small d-block">即時心率</span>
                     <strong id="display-hr" class="fs-4 text-danger">--</strong> <span class="small">BPM</span>
@@ -118,6 +125,46 @@
                     <strong id="display-stress" class="fs-4 text-dark">--</strong>
                 </div>
             </div>
+
+            <!-- 🤖 AI 行動處置建議即時顯示區塊 -->
+            <div id="ai-advice-container" class="ai-advice-card mt-2 d-none">
+                <div class="d-flex align-items-center mb-1">
+                    <span class="badge bg-success me-2">🤖 AI 處置建議</span>
+                    <small id="ai-summary-text" class="text-muted fw-bold"></small>
+                </div>
+                <p id="ai-advice-text" class="small text-dark mb-0 style-advice-content" style="white-space: pre-line;"></p>
+            </div>
+        </div>
+    </div>
+
+    <!-- 🤖 AI 分析與處置建議 彈出視窗 Modal -->
+    <div class="modal fade" id="adviceModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content p-3">
+                <div class="modal-header border-0 pb-0">
+                    <h5 class="modal-title fw-bold text-success">🤖 PharmPulse AI 健康分析報告</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body text-start">
+                    <div class="alert alert-light border mb-3">
+                        <div class="row text-center">
+                            <div class="col-4"><small class="text-muted">心率</small><br><b id="modal-hr" class="text-danger">--</b> <small>BPM</small></div>
+                            <div class="col-4"><small class="text-muted">HRV</small><br><b id="modal-hrv" class="text-primary">--</b> <small>ms</small></div>
+                            <div class="col-4"><small class="text-muted">壓力</small><br><b id="modal-stress" class="text-dark">--</b></div>
+                        </div>
+                    </div>
+                    
+                    <h6 class="fw-bold text-secondary mb-1">📋 摘要說明：</h6>
+                    <p id="modal-summary" class="small text-muted mb-3"></p>
+
+                    <h6 class="fw-bold text-success mb-1">💡 AI 行動處置建議：</h6>
+                    <div class="p-3 bg-light rounded border text-secondary small" id="modal-advice" style="white-space: pre-line; line-height: 1.6;">
+                    </div>
+                </div>
+                <div class="modal-footer border-0 pt-0">
+                    <button type="button" class="btn btn-success w-100 fw-bold" data-bs-dismiss="modal">我知道了，同步至 LINE</button>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -129,12 +176,12 @@
                     <h5 class="modal-header-title fw-bold text-success">📜 個人資料告知與服務條款</h5>
                 </div>
                 <div class="modal-body text-secondary small" style="max-height: 250px; overflow-y: auto;">
-                    <p>感謝您使用 PharmPulse 慢性病照護平台。為了提供準確的生理數據量測與行動處置建議服務，我們需要存取您的 LINE 基本識別碼與攝影機影像。</p>
+                    <p>感謝您使用 PharmPulse 慢性病照護平台。為了提供準確的生理數據量測與 AI 行動處置建議服務，我們需要存取您的 LINE 基本識別碼與攝影機影像。</p>
                     <h6>資料蒐集與保護聲明：</h6>
                     <ul>
                         <li><strong>影像處理：</strong>您的臉部影像僅於手機前端本地端即時運算 rPPG 信號，不會儲存或上傳原始視訊檔。</li>
                         <li><strong>數據安全：</strong>量測產生之生理統計數據（心率、HRV、壓力值）均妥善去識別化加密存儲。</li>
-                        <li><strong>處置建議：</strong>系統提供之建議僅供健康維護參考，若身體極度不適請儘速就醫。</li>
+                        <li><strong>處置建議：</strong>系統提供之 AI 建議僅供健康維護參考，若身體極度不適請儘速就醫。</li>
                     </ul>
                 </div>
                 <div class="modal-footer border-0 pt-0">
@@ -263,6 +310,9 @@
             statusText.innerText = "量測中，請保持面部靜止並面向光源...";
             statusText.className = "alert alert-warning py-2 small fw-bold mb-3";
 
+            // 隱藏舊的 AI 建議區塊
+            document.getElementById('ai-advice-container').classList.add('d-none');
+
             canvas.width = 100;
             canvas.height = 100;
 
@@ -300,9 +350,9 @@
             progressBar.style.width = `${progress}%`;
         }
 
-        // --- 7. 數據提交與行動處置建議彈窗（包含 action_advice）---
+        // --- 7. 數據提交與同步呈現 AI 建議 (submitData) ---
         async function submitData() {
-            statusText.innerText = "加密分析中，請稍候...";
+            statusText.innerText = "AI 正在分析生理數據並生成建議，請稍候...";
             statusText.className = "alert alert-info py-2 small fw-bold mb-3";
 
             try {
@@ -326,23 +376,40 @@
                     document.getElementById('display-hrv').innerText = data.hrv_sdnn;
                     document.getElementById('display-stress').innerText = data.stress_score;
 
+                    // 2. 更新與顯示 AI 建議卡片
+                    const adviceContainer = document.getElementById('ai-advice-container');
+                    document.getElementById('ai-summary-text').innerText = data.summary || "";
+                    document.getElementById('ai-advice-text').innerText = data.action_advice || "目前狀況良好，請持續保持規律作息與用藥。";
+
+                    // 依據健康燈號設定 AI 卡片風格
+                    if (data.health_light === 'RED') {
+                        adviceContainer.style.backgroundColor = '#fff5f5';
+                        adviceContainer.style.borderLeftColor = '#dc3545';
+                    } else if (data.health_light === 'YELLOW') {
+                        adviceContainer.style.backgroundColor = '#fff9e6';
+                        adviceContainer.style.borderLeftColor = '#ffc107';
+                    } else {
+                        adviceContainer.style.backgroundColor = '#f0fdf4';
+                        adviceContainer.style.borderLeftColor = '#198754';
+                    }
+                    adviceContainer.classList.remove('d-none');
+
+                    // 3. 更新與開啟 AI 分析 Modal 彈窗
+                    document.getElementById('modal-hr').innerText = data.heart_rate;
+                    document.getElementById('modal-hrv').innerText = data.hrv_sdnn;
+                    document.getElementById('modal-stress').innerText = data.stress_score;
+                    document.getElementById('modal-summary').innerText = data.summary || "無異常數據";
+                    document.getElementById('modal-advice').innerText = data.action_advice || "請保持良好的生活習慣。";
+
+                    const adviceModal = new bootstrap.Modal(document.getElementById('adviceModal'));
+                    adviceModal.show();
+
+                    // 更新頂部狀態語
                     statusText.innerText = `量測完成！健康狀態：${data.health_light}`;
                     statusText.className = data.health_light === 'GREEN' 
                         ? "alert alert-success py-2 small fw-bold mb-3" 
                         : (data.health_light === 'YELLOW' ? "alert alert-warning py-2 small fw-bold mb-3" : "alert alert-danger py-2 small fw-bold mb-3");
 
-                    // 2. 彈出視窗呈現即時數據與行動處置建議（action_advice）
-                    alert(
-                        `【PharmPulse 生理量測評估】\n\n` +
-                        `💓 心率：${data.heart_rate} BPM\n` +
-                        `📊 HRV：${data.hrv_sdnn} ms\n` +
-                        `🧠 壓力指數：${data.stress_score}\n\n` +
-                        `-----------------------------\n` +
-                        `📋 狀態簡評：\n${data.summary}\n\n` +
-                        `${data.action_advice}\n\n` +
-                        `-----------------------------\n` +
-                        `💡 詳細分析與處置指引卡片已同步推播至您的 LINE 聊天室。`
-                    );
                 } else {
                     throw new Error("API 回傳失敗");
                 }
