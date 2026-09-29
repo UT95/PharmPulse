@@ -3,197 +3,123 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PharmPulse - 健康檢測與歷史紀錄</title>
-  <!-- 載入 LINE LIFF SDK -->
+  <title>PharmPulse - rPPG 照護檢測</title>
   <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      background-color: #f4f6f9;
-      color: #333;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      min-height: 100vh;
-      padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: #f4f6f9; color: #333;
+      display: flex; flex-direction: column; align-items: center; min-height: 100vh; padding: 16px;
     }
     .container {
-      width: 100%;
-      max-width: 480px;
-      background: #ffffff;
-      border-radius: 16px;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.08);
-      padding: 20px;
-      text-align: center;
+      width: 100%; max-width: 480px; background: #fff; border-radius: 16px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.08); padding: 20px; text-align: center;
     }
-    
-    /* Tab 分頁標籤頁風格 */
-    .tab-nav {
-      display: flex;
-      border-bottom: 2px solid #eee;
-      margin-bottom: 20px;
-    }
+    .tab-nav { display: flex; border-bottom: 2px solid #eee; margin-bottom: 20px; }
     .tab-btn {
-      flex: 1;
-      padding: 12px;
-      border: none;
-      background: none;
-      font-size: 1rem;
-      font-weight: bold;
-      color: #888;
-      cursor: pointer;
-      border-bottom: 3px solid transparent;
-      transition: all 0.2s;
+      flex: 1; padding: 12px; border: none; background: none; font-size: 1rem;
+      font-weight: bold; color: #888; cursor: pointer; border-bottom: 3px solid transparent;
     }
-    .tab-btn.active {
-      color: #1DB446;
-      border-bottom-color: #1DB446;
-    }
-
+    .tab-btn.active { color: #1DB954; border-bottom-color: #1DB954; }
     .tab-content { display: none; }
     .tab-content.active { display: block; }
 
-    h1 { font-size: 1.4rem; color: #1DB446; margin-bottom: 6px; }
+    h1 { font-size: 1.4rem; color: #1DB954; margin-bottom: 6px; }
     p.subtitle { font-size: 0.85rem; color: #666; margin-bottom: 16px; }
-    
+
+    /* 視訊視窗與人臉 Oval Mask 遮罩 */
     .video-wrapper {
-      position: relative;
-      width: 100%;
-      aspect-ratio: 4 / 3;
-      background: #000;
-      border-radius: 12px;
-      overflow: hidden;
-      margin-bottom: 16px;
+      position: relative; width: 100%; aspect-ratio: 4 / 3; background: #000;
+      border-radius: 16px; overflow: hidden; margin-bottom: 16px;
     }
-    video {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      transform: scaleX(-1);
-    }
+    video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
     canvas { display: none; }
 
-    .face-overlay {
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      width: 60%;
-      height: 70%;
-      border: 3px dashed rgba(27, 180, 70, 0.8);
-      border-radius: 50%;
+    .face-oval-mask {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0, 0, 0, 0.45);
+      mask: radial-gradient(ellipse 45% 60% at 50% 50%, transparent 99%, black 100%);
+      -webkit-mask: radial-gradient(ellipse 45% 60% at 50% 50%, transparent 99%, black 100%);
       pointer-events: none;
+    }
+    .face-oval-border {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      width: 45%; height: 60%; border: 3px dashed #1DB954; border-radius: 50%;
+      pointer-events: none; animation: pulse 2s infinite;
+    }
+    @keyframes pulse { 0% { opacity: 0.6; } 50% { opacity: 1; } 100% { opacity: 0.6; } }
+
+    .timer-overlay {
+      position: absolute; top: 12px; right: 12px; background: rgba(0,0,0,0.6);
+      color: #fff; padding: 6px 12px; border-radius: 20px; font-weight: bold; font-size: 0.9rem;
     }
 
     .btn {
-      width: 100%;
-      padding: 14px;
-      font-size: 1rem;
-      font-weight: bold;
-      color: #fff;
-      background-color: #1DB446;
-      border: none;
-      border-radius: 8px;
-      cursor: pointer;
+      width: 100%; padding: 14px; font-size: 1rem; font-weight: bold; color: #fff;
+      background-color: #1DB954; border: none; border-radius: 10px; cursor: pointer;
     }
     .btn:disabled { background-color: #ccc; cursor: not-allowed; }
-    
-    .status-card {
-      margin-top: 16px;
-      padding: 16px;
-      background: #f8f9fa;
-      border-radius: 8px;
-      border-left: 4px solid #1DB446;
-      text-align: left;
-    }
 
-    .progress-bar {
-      width: 100%;
-      height: 8px;
-      background: #eee;
-      border-radius: 4px;
-      overflow: hidden;
-      margin-top: 10px;
-      display: none;
-    }
-    .progress-fill {
-      height: 100%;
-      width: 0%;
-      background: #1DB446;
-      transition: width 0.1s linear;
-    }
+    .progress-bar { width: 100%; height: 8px; background: #eee; border-radius: 4px; overflow: hidden; margin-top: 12px; display: none; }
+    .progress-fill { height: 100%; width: 0%; background: #1DB954; transition: width 0.1s linear; }
 
-    /* 歷史紀錄卡片列表 */
-    .history-item {
-      background: #f8f9fa;
-      border-radius: 10px;
-      padding: 14px;
-      margin-bottom: 12px;
-      text-align: left;
-      box-shadow: 0 2px 5px rgba(0,0,0,0.03);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-    .history-info h4 { font-size: 1.1rem; color: #333; }
-    .history-info p { font-size: 0.8rem; color: #777; margin-top: 4px; }
-    .badge-green { background: #e8f8ec; color: #1DB446; padding: 4px 8px; border-radius: 6px; font-weight: bold; font-size: 0.85rem; }
+    .status-card { margin-top: 16px; padding: 16px; background: #f8f9fa; border-radius: 10px; border-left: 4px solid #1DB954; text-align: left; }
+    .history-item { background: #f8f9fa; border-radius: 10px; padding: 12px 16px; margin-bottom: 10px; text-align: left; display: flex; justify-content: space-between; align-items: center; }
   </style>
 </head>
 <body>
 
 <div class="container">
-  <!-- 頁面切換標籤 -->
   <div class="tab-nav">
     <button class="tab-btn active" onclick="switchTab('measureTab')">實時量測</button>
     <button class="tab-btn" onclick="switchTab('historyTab')">歷史紀錄</button>
   </div>
 
-  <!-- 分頁 1: 實時鏡頭量測 -->
+  <!-- 分頁 1: 實時量測 -->
   <div id="measureTab" class="tab-content active">
-    <h1>PharmPulse 健康量測</h1>
-    <p class="subtitle">請將臉部對準框線，維持靜止進行光學心率分析</p>
+    <h1>PharmPulse 脈搏分析</h1>
+    <p class="subtitle">請將臉部置於框內，保持靜止 10 秒</p>
 
     <div class="video-wrapper">
       <video id="webcam" autoplay playsinline muted></video>
-      <div class="face-overlay"></div>
+      <div class="face-oval-mask"></div>
+      <div class="face-oval-border"></div>
+      <div class="timer-overlay" id="timerDisplay">10s</div>
     </div>
-    
+
     <canvas id="canvas"></canvas>
 
-    <button id="startBtn" class="btn" onclick="startMeasurement()">開始 5 秒心率量測</button>
+    <button id="startBtn" class="btn" onclick="startMeasurement()">開始 10 秒精準檢測</button>
 
     <div class="progress-bar" id="progressBar">
       <div class="progress-fill" id="progressFill"></div>
     </div>
 
     <div class="status-card" id="resultCard" style="display:none;">
-      <h3 id="resultTitle">分析結果</h3>
-      <p id="resultBpm">心率: -- BPM</p>
-      <p id="resultStatus">評估: --</p>
+      <h3 id="resultTitle">分析完成</h3>
+      <p id="resultBpm" style="font-size: 1.2rem; font-weight: bold; margin-top: 4px;">心率: -- BPM</p>
+      <p id="resultStatus" style="font-size: 0.9rem; color: #666; margin-top: 2px;">評估: --</p>
     </div>
   </div>
 
-  <!-- 分頁 2: 歷史紀錄清單 -->
+  <!-- 分頁 2: 歷史紀錄 -->
   <div id="historyTab" class="tab-content">
-    <h1>過往檢測紀錄</h1>
-    <p class="subtitle">讀取自雲端資料庫之個人生理數據分析紀錄</p>
-    
-    <div id="historyList">
-      <p style="color: #999; margin-top: 20px;">載入歷史紀錄中...</p>
-    </div>
+    <h1>歷史檢測紀錄</h1>
+    <p class="subtitle">個人生理量測數據庫</p>
+    <div id="historyList"><p style="color: #999;">載入中...</p></div>
   </div>
 </div>
 
 <script>
-  const MY_LIFF_ID = "2011686844-4moxcFdy"; // 你的 LIFF ID
-  let userLineId = "U1234567890abcdef1234567890abcdef"; // 預設測試 ID
+  const MY_LIFF_ID = "2011686844-4moxcFdy";
+  let userLineId = "U1234567890abcdef1234567890abcdef";
   let video, canvas, ctx;
-  let greenSignals = [];
+  let rSignals = [], gSignals = [], bSignals = [];
   let isMeasuring = false;
-  const TARGET_SAMPLES = 150; // 5 秒
-  let cameraInitialized = false;
+  const DURATION_SEC = 10;
+  const TARGET_FPS = 30;
+  const TOTAL_SAMPLES = DURATION_SEC * TARGET_FPS;
 
   async function initLIFF() {
     try {
@@ -202,37 +128,27 @@
         const profile = await liff.getProfile();
         userLineId = profile.userId;
       }
-    } catch (err) {
-      console.warn("LIFF 初始化模式:", err);
-    }
+    } catch (err) { console.warn("LIFF 瀏覽器測試模式"); }
   }
 
   async function initCamera() {
-    if (cameraInitialized) return;
     video = document.getElementById("webcam");
     canvas = document.getElementById("canvas");
     ctx = canvas.getContext("2d");
-
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
-        audio: false
+        video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }, audio: false
       });
       video.srcObject = stream;
-      cameraInitialized = true;
-    } catch (err) {
-      console.warn("鏡頭權限未開啟或不在相機環境中");
-    }
+    } catch (err) { alert("無法開啟鏡頭權限"); }
   }
 
   function switchTab(tabId) {
     document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-    document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
-
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
     if (tabId === 'measureTab') {
       document.querySelectorAll('.tab-btn')[0].classList.add('active');
       document.getElementById('measureTab').classList.add('active');
-      initCamera();
     } else {
       document.querySelectorAll('.tab-btn')[1].classList.add('active');
       document.getElementById('historyTab').classList.add('active');
@@ -240,43 +156,11 @@
     }
   }
 
-  // 歷史紀錄渲染優化
-function renderHistoryItem(item) {
-  const bpm = item.heart_rate || "--";
-  const dateStr = item.created_at ? new Date(item.created_at).toLocaleString('zh-TW', {
-    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
-  }) : "未知時間";
-  
-  const light = item.health_light || "GREEN";
-  const lightColors = {
-    'GREEN': { bg: '#e6f4ea', text: '#137333', label: '良好' },
-    'YELLOW': { bg: '#fef7e0', text: '#b06000', label: '注意' },
-    'RED': { bg: '#fce8e6', text: '#c5221f', label: '警告' }
-  };
-  const style = lightColors[light] || lightColors['GREEN'];
-
-  return `
-    <div style="display:flex; justify-content:space-between; align-items:center; padding:12px 16px; border-bottom:1px solid #f0f0f0;">
-      <div>
-        <div style="font-size: 1.2rem; font-weight: bold; color: #202124;">
-          ${bpm} <span style="font-size: 0.8rem; color: #5f6368; font-weight: normal;">BPM</span>
-        </div>
-        <div style="font-size: 0.75rem; color: #70757a; margin-top: 2px;">
-          ${dateStr}
-        </div>
-      </div>
-      <span style="background-color: ${style.bg}; color: ${style.text}; font-size: 0.75rem; font-weight: 600; padding: 4px 10px; border-radius: 12px;">
-        ${style.label}
-      </span>
-    </div>
-  `;
-}
-
   function startMeasurement() {
     if (isMeasuring) return;
     isMeasuring = true;
-    greenSignals = [];
-    
+    rSignals = []; gSignals = []; bSignals = [];
+
     document.getElementById("startBtn").disabled = true;
     document.getElementById("startBtn").innerText = "量測中，請保持靜止...";
     document.getElementById("progressBar").style.display = "block";
@@ -293,23 +177,34 @@ function renderHistoryItem(item) {
     canvas.height = video.videoHeight || 480;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    const roiWidth = Math.floor(canvas.width * 0.3);
-    const roiHeight = Math.floor(canvas.height * 0.3);
-    const roiX = Math.floor((canvas.width - roiWidth) / 2);
-    const roiY = Math.floor((canvas.height - roiHeight) / 2);
+    // 擷取中心橢圓區域 40% x 50%
+    const roiW = Math.floor(canvas.width * 0.4);
+    const roiH = Math.floor(canvas.height * 0.5);
+    const roiX = Math.floor((canvas.width - roiW) / 2);
+    const roiY = Math.floor((canvas.height - roiH) / 2);
 
-    const frameData = ctx.getImageData(roiX, roiY, roiWidth, roiHeight).data;
-    let greenSum = 0, pixelCount = 0;
+    const frameData = ctx.getImageData(roiX, roiY, roiW, roiH).data;
+    let rSum = 0, gSum = 0, bSum = 0, count = 0;
 
     for (let i = 0; i < frameData.length; i += 4) {
-      greenSum += frameData[i + 1];
-      pixelCount++;
+      rSum += frameData[i];
+      gSum += frameData[i + 1];
+      bSum += frameData[i + 2];
+      count++;
     }
 
-    greenSignals.push(greenSum / pixelCount);
-    document.getElementById("progressFill").style.width = Math.min(100, (greenSignals.length / TARGET_SAMPLES) * 100) + "%";
+    rSignals.push(rSum / count);
+    gSignals.push(gSum / count);
+    bSignals.push(bSum / count);
 
-    if (greenSignals.length < TARGET_SAMPLES) {
+    const currentSamples = gSignals.length;
+    const progress = Math.min(100, (currentSamples / TOTAL_SAMPLES) * 100);
+    document.getElementById("progressFill").style.width = progress + "%";
+
+    const remainingSec = Math.max(0, Math.ceil(DURATION_SEC - (currentSamples / TARGET_FPS)));
+    document.getElementById("timerDisplay").innerText = `${remainingSec}s`;
+
+    if (currentSamples < TOTAL_SAMPLES) {
       requestAnimationFrame(captureFrame);
     } else {
       finishMeasurement();
@@ -318,25 +213,27 @@ function renderHistoryItem(item) {
 
   async function finishMeasurement() {
     isMeasuring = false;
-    document.getElementById("startBtn").innerText = "分析中...";
+    document.getElementById("startBtn").innerText = "POS 演算法分析中...";
 
     try {
       const response = await fetch("/api/v1/analyze-rppg", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_line_id: userLineId, green_signals: greenSignals, fps: 30 })
+        body: JSON.stringify({
+          user_line_id: userLineId,
+          rgb_signals: [rSignals, gSignals, bSignals],
+          fps: TARGET_FPS
+        })
       });
 
       const resData = await response.json();
       if (response.ok) {
-        document.getElementById("resultTitle").innerText = "分析完成！";
-        const hr = resData.heart_rate || (resData.data && resData.data.heart_rate) || "--";
-        document.getElementById("resultBpm").innerText = `心率: ${hr} BPM`;
-        const summary = resData.message || (resData.data && resData.data.summary) || "檢測成功";
-        document.getElementById("resultStatus").innerText = `狀態: ${summary}`;
+        const data = resData.data || resData;
+        document.getElementById("resultBpm").innerText = `心率: ${data.heart_rate} BPM`;
+        document.getElementById("resultStatus").innerText = `評估: ${data.summary}`;
         document.getElementById("resultCard").style.display = "block";
       } else {
-        alert("分析失敗: " + (resData.detail || "伺服器錯誤"));
+        alert("分析失敗: " + (resData.detail || "伺服器異常"));
       }
     } catch (err) {
       alert("網路連線錯誤，請稍後再試。");
@@ -344,60 +241,37 @@ function renderHistoryItem(item) {
       document.getElementById("startBtn").disabled = false;
       document.getElementById("startBtn").innerText = "重新量測";
       document.getElementById("progressBar").style.display = "none";
+      document.getElementById("timerDisplay").innerText = "10s";
     }
   }
 
   async function loadHistory() {
     const listContainer = document.getElementById("historyList");
-    if (!listContainer) return;
-    
-    listContainer.innerHTML = '<p style="color: #999; text-align: center;">載入中...</p>';
+    listContainer.innerHTML = '<p style="color: #999;">載入中...</p>';
 
     try {
-      const apiUrl = `${window.location.origin}/api/v1/rppg/history/${userLineId}`;
-      console.log("正在請求歷史紀錄:", apiUrl);
-
-      const res = await fetch(apiUrl);
-      if (!res.ok) {
-        throw new Error(`HTTP Error ${res.status}`);
-      }
-
+      const res = await fetch(`/api/v1/rppg/history/${userLineId}`);
       const resJson = await res.json();
-      console.log("歷史紀錄回傳資料:", resJson);
-
-      // 提取資料陣列：支援 resJson.data、resJson.records 或直接陣列
-      const list = Array.isArray(resJson) 
-        ? resJson 
-        : (resJson.data || resJson.records || []);
+      const list = Array.isArray(resJson) ? resJson : (resJson.data || resJson.records || []);
 
       if (list.length === 0) {
-        listContainer.innerHTML = '<p style="color: #888; text-align: center; margin-top: 20px;">尚無歷史量測紀錄</p>';
+        listContainer.innerHTML = '<p style="color: #888; margin-top: 20px;">尚無歷史紀錄</p>';
         return;
       }
 
-      listContainer.innerHTML = list.map(item => {
-        const bpm = item.heart_rate || item.bpm || "--";
-        const dateStr = item.created_at ? new Date(item.created_at).toLocaleString() : "未知時間";
-        const light = item.health_light || "GREEN";
-        
-        let badgeClass = "badge-green";
-        if (light === "YELLOW") badgeClass = "badge-yellow";
-        if (light === "RED") badgeClass = "badge-red";
-
-        return `
-          <div class="history-item" style="border-bottom: 1px solid #eee; padding: 10px 0; display: flex; justify-content: space-between; align-items: center;">
-            <div class="history-info">
-              <h4 style="margin: 0; font-size: 1.1rem; color: #333;">${bpm} <span style="font-size: 0.8rem; font-weight: normal;">BPM</span></h4>
-              <p style="margin: 4px 0 0 0; font-size: 0.8rem; color: #888;">${dateStr}</p>
-            </div>
-            <span class="${badgeClass}" style="font-size: 0.8rem; padding: 2px 8px; border-radius: 4px;">${light}</span>
+      listContainer.innerHTML = list.map(item => `
+        <div class="history-item">
+          <div>
+            <h4 style="font-size:1.1rem;">${item.heart_rate} BPM</h4>
+            <p style="font-size:0.75rem; color:#888;">${new Date(item.created_at).toLocaleString()}</p>
           </div>
-        `;
-      }).join('');
-
+          <span style="background:#e8f8ec; color:#1DB954; padding:4px 8px; border-radius:6px; font-weight:bold; font-size:0.8rem;">
+            ${item.health_light || 'GREEN'}
+          </span>
+        </div>
+      `).join('');
     } catch (err) {
-      console.error("載入歷史紀錄失敗:", err);
-      listContainer.innerHTML = `<p style="color: #e74c3c; text-align: center; font-size: 0.85rem;">無法載入歷史紀錄 (${err.message})<br>請確認網路連線或稍後再試</p>`;
+      listContainer.innerHTML = '<p style="color: #e74c3c;">無法載入歷史紀錄</p>';
     }
   }
 
