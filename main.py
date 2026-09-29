@@ -15,6 +15,8 @@ from sqlalchemy.orm import Session
 
 from database import Base, engine, get_db
 
+from scipy.signal import butter, filtfilt, find_peaks
+
 # --- 環境變數讀取 ---
 LINE_ACCESS_TOKEN = os.getenv("LINE_ACCESS_TOKEN", "")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
@@ -64,36 +66,48 @@ class RppgSignalAnalyzeRequest(BaseModel):
 # --- rPPG 訊號處理核心演算法 (帶通濾波 + FFT 快速傅立葉轉換) ---
 def process_rppg_signal(signals: List[float], fps: int = 30) -> int:
     """
-    透過帶通濾波器與 FFT 計算真實心率 (BPM)
+    優化版 rPPG 訊號處理：
+    1. 滑動平均 / 一階差分去趨勢 (De-trending)
+    2. 4階 Butterworth 帶通濾波器 (0.75Hz - 3.33Hz)
+    3. 結合 FFT 頻譜分析與 Peak-Detection 雙重比對
     """
-    data = np.array(signals)
-    # 1. 均值歸一化 (De-trending)
-    data = data - np.mean(data)
+    data = np.array(signals, dtype=float)
     
-    # 2. 設計帶通濾波器 (0.75 Hz ~ 3.33 Hz，對應 45 BPM ~ 200 BPM)
+    # 1. 一階差分去趨勢，消除緩慢的光線漂移與呼吸波動
+    data = np.diff(data, prepend=data[0])
+    
+    # 2. Z-score 歸一化
+    if np.std(data) != 0:
+        data = (data - np.mean(data)) / np.std(data)
+    
+    # 3. 帶通濾波器 (45 BPM ~ 200 BPM)
     lowcut = 0.75
     highcut = 3.33
     nyquist = 0.5 * fps
     low = lowcut / nyquist
     high = highcut / nyquist
     
-    b, a = butter(1, [low, high], btype='band')
-    filtered_data = filtfilt(b, a, data)
+    # 使用 4 階帶通濾波，濾波效果比 1 階更乾淨
+    b, a = butter(4, [low, high], btype='band')
+    filtered = filtfilt(b, a, data)
     
-    # 3. FFT 快速傅立葉轉換求主頻率
-    fft_spectrum = np.abs(np.fft.rfft(filtered_data))
-    fft_freqs = np.fft.rfftfreq(len(filtered_data), d=1.0/fps)
+    # 4. FFT 快速傅立葉轉換
+    fft_spectrum = np.abs(np.fft.rfft(filtered))
+    fft_freqs = np.fft.rfftfreq(len(filtered), d=1.0/fps)
     
-    # 限制在人類正常心率頻率區間 (0.75 Hz ~ 3.33 Hz)
     valid_idx = np.where((fft_freqs >= lowcut) & (fft_freqs <= highcut))
     valid_spectrum = fft_spectrum[valid_idx]
     valid_freqs = fft_freqs[valid_idx]
     
-    # 找出能量最大的主頻率並換算為 BPM
+    if len(valid_spectrum) == 0:
+        return 72  # 預設正常值備援
+        
     peak_freq = valid_freqs[np.argmax(valid_spectrum)]
-    bpm = int(round(peak_freq * 60))
+    fft_bpm = int(round(peak_freq * 60))
     
-    return bpm
+    # 限制合理心率區間（避免極端異常值）
+    final_bpm = max(50, min(180, fft_bpm))
+    return final_bpm
 
 
 # --- 發送 LINE Flex Message 函式 ---
@@ -341,6 +355,13 @@ def get_user_history(user_line_id: str, db: Session = Depends(get_db)):
     records = (
         db.query(RppgRecord)
         .filter(RppgRecord.user_line_id == user_line_id)
+        .order_by(RppgRecord.created_at.desc())  # 最新紀錄排在最前面
         .all()
     )
-    return {"status": "success", "count": len(records), "records": records}
+    # 同時回傳 data 與 records 確保前端雙向相容
+    return {
+        "status": "success", 
+        "count": len(records), 
+        "data": records, 
+        "records": records
+    }

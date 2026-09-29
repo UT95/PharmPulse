@@ -240,6 +240,38 @@
     }
   }
 
+  // 歷史紀錄渲染優化
+function renderHistoryItem(item) {
+  const bpm = item.heart_rate || "--";
+  const dateStr = item.created_at ? new Date(item.created_at).toLocaleString('zh-TW', {
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
+  }) : "未知時間";
+  
+  const light = item.health_light || "GREEN";
+  const lightColors = {
+    'GREEN': { bg: '#e6f4ea', text: '#137333', label: '良好' },
+    'YELLOW': { bg: '#fef7e0', text: '#b06000', label: '注意' },
+    'RED': { bg: '#fce8e6', text: '#c5221f', label: '警告' }
+  };
+  const style = lightColors[light] || lightColors['GREEN'];
+
+  return `
+    <div style="display:flex; justify-content:space-between; align-items:center; padding:12px 16px; border-bottom:1px solid #f0f0f0;">
+      <div>
+        <div style="font-size: 1.2rem; font-weight: bold; color: #202124;">
+          ${bpm} <span style="font-size: 0.8rem; color: #5f6368; font-weight: normal;">BPM</span>
+        </div>
+        <div style="font-size: 0.75rem; color: #70757a; margin-top: 2px;">
+          ${dateStr}
+        </div>
+      </div>
+      <span style="background-color: ${style.bg}; color: ${style.text}; font-size: 0.75rem; font-weight: 600; padding: 4px 10px; border-radius: 12px;">
+        ${style.label}
+      </span>
+    </div>
+  `;
+}
+
   function startMeasurement() {
     if (isMeasuring) return;
     isMeasuring = true;
@@ -317,29 +349,55 @@
 
   async function loadHistory() {
     const listContainer = document.getElementById("historyList");
-    listContainer.innerHTML = '<p style="color: #999;">載入中...</p>';
+    if (!listContainer) return;
+    
+    listContainer.innerHTML = '<p style="color: #999; text-align: center;">載入中...</p>';
 
     try {
-      const res = await fetch(`/api/v1/rppg/history/${userLineId}`);
-      if (!res.ok) throw new Error("讀取失敗");
-      const historyData = await res.json();
+      const apiUrl = `${window.location.origin}/api/v1/rppg/history/${userLineId}`;
+      console.log("正在請求歷史紀錄:", apiUrl);
 
-      if (!historyData || historyData.length === 0) {
-        listContainer.innerHTML = '<p style="color: #888; margin-top: 20px;">尚無歷史量測紀錄</p>';
+      const res = await fetch(apiUrl);
+      if (!res.ok) {
+        throw new Error(`HTTP Error ${res.status}`);
+      }
+
+      const resJson = await res.json();
+      console.log("歷史紀錄回傳資料:", resJson);
+
+      // 提取資料陣列：支援 resJson.data、resJson.records 或直接陣列
+      const list = Array.isArray(resJson) 
+        ? resJson 
+        : (resJson.data || resJson.records || []);
+
+      if (list.length === 0) {
+        listContainer.innerHTML = '<p style="color: #888; text-align: center; margin-top: 20px;">尚無歷史量測紀錄</p>';
         return;
       }
 
-      listContainer.innerHTML = historyData.map(item => `
-        <div class="history-item">
-          <div class="history-info">
-            <h4>${item.heart_rate} BPM</h4>
-            <p>量測時間: ${new Date(item.created_at).toLocaleString()}</p>
+      listContainer.innerHTML = list.map(item => {
+        const bpm = item.heart_rate || item.bpm || "--";
+        const dateStr = item.created_at ? new Date(item.created_at).toLocaleString() : "未知時間";
+        const light = item.health_light || "GREEN";
+        
+        let badgeClass = "badge-green";
+        if (light === "YELLOW") badgeClass = "badge-yellow";
+        if (light === "RED") badgeClass = "badge-red";
+
+        return `
+          <div class="history-item" style="border-bottom: 1px solid #eee; padding: 10px 0; display: flex; justify-content: space-between; align-items: center;">
+            <div class="history-info">
+              <h4 style="margin: 0; font-size: 1.1rem; color: #333;">${bpm} <span style="font-size: 0.8rem; font-weight: normal;">BPM</span></h4>
+              <p style="margin: 4px 0 0 0; font-size: 0.8rem; color: #888;">${dateStr}</p>
+            </div>
+            <span class="${badgeClass}" style="font-size: 0.8rem; padding: 2px 8px; border-radius: 4px;">${light}</span>
           </div>
-          <span class="badge-green">${item.health_light || '良好'}</span>
-        </div>
-      `).join('');
+        `;
+      }).join('');
+
     } catch (err) {
-      listContainer.innerHTML = '<p style="color: #e74c3c;">無法載入歷史紀錄，請確認網路連線。</p>';
+      console.error("載入歷史紀錄失敗:", err);
+      listContainer.innerHTML = `<p style="color: #e74c3c; text-align: center; font-size: 0.85rem;">無法載入歷史紀錄 (${err.message})<br>請確認網路連線或稍後再試</p>`;
     }
   }
 
