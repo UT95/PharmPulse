@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PharmPulse - rPPG 量測</title>
+  <title>PharmPulse - 生理監控與量測</title>
   <!-- LIFF SDK -->
   <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <!-- MediaPipe Face Mesh CDN -->
@@ -19,6 +19,10 @@
     .status-badge { display: inline-block; padding: 6px 16px; border-radius: 20px; font-weight: bold; font-size: 14px; background: #e9ecef; color: #495057; margin-bottom: 10px; }
     .btn { background: #1DB954; color: white; border: none; padding: 12px 28px; border-radius: 24px; font-size: 16px; font-weight: bold; cursor: pointer; width: 100%; max-width: 280px; }
     .btn:disabled { background: #adb5bd; cursor: not-allowed; }
+
+    /* Modal 樣式 */
+    .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); display: none; justify-content: center; align-items: center; z-index: 9999; }
+    .modal-box { background: white; width: 88%; max-width: 400px; padding: 24px; border-radius: 16px; text-align: left; max-height: 80vh; overflow-y: auto; }
   </style>
 </head>
 <body>
@@ -31,17 +35,34 @@
       <canvas id="output_canvas"></canvas>
     </div>
 
-    <div id="status" class="status-badge">初始化鏡頭與臉部偵測...</div>
+    <div id="status" class="status-badge">初始化鏡頭與對焦系統...</div>
     <br>
     <button id="start-btn" class="btn" disabled onclick="startMeasurement()">開始 10 秒量測</button>
   </div>
 
+  <!-- 免責聲明與隱私條款 Modal -->
+  <div id="consent-modal" class="modal-overlay">
+    <div class="modal-box">
+      <h3 style="margin-top:0; color:#1DB954;">服務條款與隱私聲明</h3>
+      <div style="font-size:13px; color:#495057; line-height:1.6; border:1px solid #e9ecef; padding:12px; border-radius:8px; background:#f8f9fa; margin-bottom:15px;">
+        <strong>一、生理數據採集與分析</strong><br>
+        本服務透過影像遠端光學心率 (rPPG) 技術採集您的臉部影像訊號，僅用於即時心率與壓力指數評估。<br><br>
+        <strong>二、醫療免責聲明 (Medical Disclaimer)</strong><br>
+        PharmPulse 所提供之生理數據結果<strong>不構成任何醫療診斷、處方或處置建議</strong>。若感到身體不適，請務必尋求專業醫師診治。<br><br>
+        <strong>三、個資保護與數據加密</strong><br>
+        您的生理數據將採用去識別化 (Pseudonymization) 機制進行安全防護，不會向未授權第三方透露。
+      </div>
+      <button onclick="acceptTerms()" style="width:100%; background:#1DB954; color:white; border:none; padding:12px; border-radius:24px; font-weight:bold; font-size:16px; cursor:pointer;">我已閱讀並同意條款</button>
+    </div>
+  </div>
+
   <script>
     let userLineId = "U_TEST_USER";
+    let idToken = "TEST_TOKEN";
     let isFaceDetected = false;
     let isMeasuring = false;
-    let rgbSignals = [[], [], []]; // [Red, Green, Blue]
-    let frameCount = 0;
+    let hasAgreedTerms = false;
+    let rgbSignals = [[], [], []];
 
     const videoElement = document.getElementById('webcam');
     const canvasElement = document.getElementById('output_canvas');
@@ -52,18 +73,59 @@
     // 初始化 LIFF
     async function initLIFF() {
       try {
-        await liff.init({ liffId: "YOUR_LIFF_ID" }); // 替換為你的 LIFF ID
+        await liff.init({ liffId: "YOUR_LIFF_ID" }); // 請替換為您的 LIFF ID
         if (liff.isLoggedIn()) {
           const profile = await liff.getProfile();
           userLineId = profile.userId;
+          idToken = liff.getIDToken() || "TEST_TOKEN";
         }
       } catch (err) {
-        console.log("LIFF Init Skip / Browser Mode", err);
+        console.log("LIFF 模式初始化 (或測試環境)", err);
+      } finally {
+        checkUserConsent();
       }
     }
     initLIFF();
 
-    // 設定 MediaPipe Face Mesh
+    // 查驗條款同意狀態
+    async function checkUserConsent() {
+      try {
+        const res = await fetch(`/api/v1/user/consent-status/${userLineId}`);
+        const data = await res.json();
+        if (data.agreed) {
+          hasAgreedTerms = true;
+        } else {
+          document.getElementById('consent-modal').style.display = 'flex';
+        }
+      } catch (e) {
+        console.error("Check consent error", e);
+      }
+    }
+
+    // 簽署條款
+    async function acceptTerms() {
+      try {
+        const res = await fetch('/api/v1/user/consent', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_line_id: userLineId,
+            id_token: idToken,
+            terms_version: "v1.0"
+          })
+        });
+        const data = await res.json();
+        if (data.status === "success") {
+          hasAgreedTerms = true;
+          document.getElementById('consent-modal').style.display = 'none';
+          if (isFaceDetected) startBtn.disabled = false;
+        }
+      } catch (err) {
+        alert("條款簽署失敗，請重新嘗試");
+      }
+    }
+
+    // MediaPipe Face Mesh
     const faceMesh = new FaceMesh({
       locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
     });
@@ -89,10 +151,9 @@
           statusText.innerText = "臉部已對準，請點擊開始量測";
           statusText.style.background = "#d4edda";
           statusText.style.color = "#155724";
-          startBtn.disabled = false;
+          if (hasAgreedTerms) startBtn.disabled = false;
         }
 
-        // 取額頭區域特徵點 (Keypoint 10 附近) 進行 RGB 訊號採樣
         if (isMeasuring) {
           sampleROIColor(landmarks);
         }
@@ -108,13 +169,12 @@
       canvasCtx.restore();
     }
 
-    // 從額頭 ROI 區域抽取平均 RGB 值
+    // 額頭特徵點 (Index 10) 顏色採樣
     function sampleROIColor(landmarks) {
-      const foreheadIndex = 10; // 額頭中心點
+      const foreheadIndex = 10;
       const x = Math.floor(landmarks[foreheadIndex].x * canvasElement.width);
       const y = Math.floor(landmarks[foreheadIndex].y * canvasElement.height);
-      
-      // 擷取 20x20 像素小區域
+
       try {
         const imgData = canvasCtx.getImageData(Math.max(0, x - 10), Math.max(0, y - 10), 20, 20);
         let rSum = 0, gSum = 0, bSum = 0;
@@ -134,7 +194,7 @@
       }
     }
 
-    // 啟動攝影機
+    // 啟動相機
     const camera = new Camera(videoElement, {
       onFrame: async () => {
         canvasElement.width = videoElement.videoWidth;
@@ -146,14 +206,14 @@
     });
     camera.start();
 
-    // 開始 10 秒量測流程
+    // 10 秒量測流程
     async function startMeasurement() {
-      if (!isFaceDetected) return;
+      if (!isFaceDetected || !hasAgreedTerms) return;
 
       isMeasuring = true;
       startBtn.disabled = true;
       rgbSignals = [[], [], []];
-      
+
       let countdown = 10;
       statusText.style.background = "#fff3cd";
       statusText.style.color = "#856404";
@@ -170,15 +230,16 @@
       }, 1000);
     }
 
-    // 送出數據至 API
+    // 數據提交
     async function submitData() {
-      statusText.innerText = "分析中，請稍候...";
+      statusText.innerText = "加密分析中，請稍候...";
       try {
         const response = await fetch('/api/v1/analyze-rppg', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             user_line_id: userLineId,
+            id_token: idToken,
             rgb_signals: rgbSignals,
             fps: 30
           })
@@ -189,14 +250,14 @@
           statusText.innerText = `量測完成！心率：${resData.data.heart_rate} BPM`;
           statusText.style.background = "#d4edda";
           statusText.style.color = "#155724";
-          alert(`量測成功！\n心率：${resData.data.heart_rate} BPM\n請至 LINE 聊天室查看趨勢圖報告。`);
+          alert(`量測成功！\n心率：${resData.data.heart_rate} BPM\n報告已推送至您的 LINE 聊天室。`);
         } else {
           throw new Error("API error");
         }
       } catch (err) {
         statusText.innerText = "分析失敗，請重新嘗試";
         statusText.style.background = "#f8d7da";
-        alert("網路連線或分析發生錯誤，請重試");
+        alert("分析發生錯誤，請重試");
       } finally {
         startBtn.disabled = false;
       }
