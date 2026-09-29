@@ -1,3 +1,4 @@
+import json
 import os
 import random
 from datetime import datetime, timedelta, timezone
@@ -25,7 +26,7 @@ def get_taipei_now():
 # --- 環境變數讀取 ---
 LINE_ACCESS_TOKEN = os.getenv("LINE_ACCESS_TOKEN", "").strip()
 
-app = FastAPI(title="PharmPulse C2C API", version="1.3.0")
+app = FastAPI(title="PharmPulse C2C API", version="1.3.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -110,13 +111,36 @@ def process_pos_rppg(rgb_signals: np.ndarray, fps: int = 30) -> int:
         return 75
 
 
+# 使用 json.dumps 避免 f-string 解析百分比符號拋出 Exception
 def generate_trend_chart_url(history_bpms: List[int]) -> str:
     labels = [f"t{i+1}" for i in range(len(history_bpms))]
-    labels_str = ",".join([f'"{l}"' for l in labels])
-    data_str = ",".join(map(str, history_bpms))
     
-    chart_json = f'{{"type":"line","data":{{"labels":[{labels_str}],"datasets":[{"label":"BPM","data":[{data_str}],"borderColor":"%231DB954","fill":false}]}}}}'
-    encoded = urllib.parse.quote(chart_json, safe='')
+    chart_config = {
+        "type": "line",
+        "data": {
+            "labels": labels,
+            "datasets": [
+                {
+                    "label": "BPM",
+                    "data": history_bpms,
+                    "borderColor": "#1DB954",
+                    "backgroundColor": "rgba(29, 185, 84, 0.1)",
+                    "fill": True
+                }
+            ]
+        },
+        "options": {
+            "plugins": {
+                "legend": {"display": False}
+            },
+            "scales": {
+                "y": {"min": 40, "max": 150}
+            }
+        }
+    }
+    
+    json_str = json.dumps(chart_config)
+    encoded = urllib.parse.quote(json_str)
     return f"https://quickchart.io/chart?c={encoded}&w=500&h=250&bkg=white"
 
 
@@ -190,7 +214,6 @@ def serve_liff_page():
 @app.post("/api/v1/analyze-rppg")
 def analyze_rppg_signal(request: RppgSignalAnalyzeRequest, db: Session = Depends(get_db)):
     try:
-        # 自動捕捉可能出現的 user_line_id 或是 userId 欄位
         user_id = request.user_line_id or request.userId or "U_UNKNOWN"
         fps = request.fps or 30
 
@@ -221,7 +244,6 @@ def analyze_rppg_signal(request: RppgSignalAnalyzeRequest, db: Session = Depends
         db.commit()
         db.refresh(db_record)
 
-        # 非阻塞發送 LINE 推播，失敗不會影響 API 成功回應
         try:
             push_line_message(
                 user_id=user_id,
