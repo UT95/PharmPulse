@@ -18,17 +18,19 @@ from sqlalchemy.orm import Session, relationship
 
 from database import Base, engine, get_db
 
-# 強制計算台灣時間 (+8小時，不帶時區屬性以相容 SQLite)
+
+# 強制計算台灣時間 (+8小時)
 def get_taipei_now():
     utc_now = datetime.now(timezone.utc)
     taipei_now = utc_now + timedelta(hours=8)
     return taipei_now.replace(tzinfo=None)
 
+
 # --- 環境變數 ---
 LINE_ACCESS_TOKEN = os.getenv("LINE_ACCESS_TOKEN", "").strip()
 LINE_CHANNEL_ID = os.getenv("LINE_CHANNEL_ID", "").strip()
 
-app = FastAPI(title="PharmPulse Secure C2C & B2B API", version="1.5.0")
+app = FastAPI(title="PharmPulse Secure C2C & B2B API", version="1.6.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -38,9 +40,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- 1. 資料庫 Schema：個人身份與生理數據解耦 (去識別化設計) ---
+
+# --- 1. 資料庫 Schema ---
 class UserConsent(Base):
     """使用者個資與條款同意紀錄表 (PII)"""
+
     __tablename__ = "user_consents"
 
     user_uuid = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -49,12 +53,12 @@ class UserConsent(Base):
     terms_version = Column(String, default="v1.0")
     agreed_at = Column(DateTime, default=get_taipei_now)
 
-    # 關聯至去識別化生理紀錄
     records = relationship("RppgRecord", back_populates="user")
 
 
 class RppgRecord(Base):
-    """生理數據表 (去識別化：不包含 LINE ID，僅關聯內部 UUID)"""
+    """生理數據表 (去識別化)"""
+
     __tablename__ = "rppg_records"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -62,8 +66,9 @@ class RppgRecord(Base):
     heart_rate = Column(Integer)
     hrv_sdnn = Column(Float)
     stress_score = Column(Integer)
-    health_light = Column(String)
+    health_light = Column(String)  # GREEN, YELLOW, RED
     summary = Column(String)
+    action_advice = Column(String)  # 即時行動建議
     created_at = Column(DateTime, default=get_taipei_now)
 
     user = relationship("UserConsent", back_populates="records")
@@ -72,7 +77,7 @@ class RppgRecord(Base):
 Base.metadata.create_all(bind=engine)
 
 
-# --- 2. Pydantic 請求模型 ---
+# --- 2. Pydantic 模型 ---
 class TermsConsentRequest(BaseModel):
     user_line_id: str
     id_token: Optional[str] = None
@@ -88,14 +93,11 @@ class RppgSignalAnalyzeRequest(BaseModel):
     fps: Optional[int] = 30
 
 
-# --- 3. LINE ID Token 安全防偽驗證 ---
+# --- 3. LINE ID Token 驗證 ---
 def verify_line_id_token(id_token: Optional[str], expected_user_id: str) -> bool:
-    """向 LINE OAuth2 API 驗證 ID Token，防止偽造身份發送數據"""
     if not id_token or id_token.startswith("TEST_TOKEN"):
-        return True  # 測試與本地環境跳過驗證
-
+        return True
     if not LINE_CHANNEL_ID:
-        print("[LINE Token Verify Skip] 未設定 LINE_CHANNEL_ID")
         return True
 
     try:
@@ -111,7 +113,55 @@ def verify_line_id_token(id_token: Optional[str], expected_user_id: str) -> bool
         return False
 
 
-# --- 4. POS rPPG 演算法 ---
+# --- 4. 慢性病個案行動建議生成引擎 (Action Decision Engine) ---
+def generate_health_assessment(bpm: int, hrv: float, stress: int):
+    """根據心率、HRV 與壓力指數判斷燈號並給予具體處置建議"""
+    # 判斷燈號與異常類型
+    if bpm > 100 or bpm < 50 or stress >= 75 or hrv < 25.0:
+        light = "RED"
+    elif (85 <= bpm <= 100) or (60 <= stress < 75) or (25.0 <= hrv < 35.0):
+        light = "YELLOW"
+    else:
+        light = "GREEN"
+
+    # 針對慢性病患者產生衛教評估與行動建議
+    if light == "RED":
+        summary = "生理數值顯著偏離基準，心血管負擔較高。"
+        if bpm > 100:
+            action_advice = (
+                "🚨 【處置建議】目前靜止心率偏高 (>100 BPM)：\n"
+                "1. 請立即坐下休息並停止劇烈活動。\n"
+                "2. 請確認今日是否已依醫囑按時服用慢性病處方藥物。\n"
+                "3. 若伴隨胸悶、頭暈或呼吸急促，請聯繫家屬或前往醫院急診。\n"
+                "4. 建議近日攜帶慢箋至合作藥局由藥師進行用藥評估。"
+            )
+        else:
+            action_advice = (
+                "🚨 【處置建議】自律神經壓力過高或 HRV 偏低：\n"
+                "1. 請保持環境通風並進行 5 分鐘深呼吸。\n"
+                "2. 建議於今日量測血壓，若連續 2 天數值異常，請至門診複診。\n"
+                "3. 可前往鄰近合作藥局，尋求藥師量測血壓與用藥諮詢。"
+            )
+    elif light == "YELLOW":
+        summary = "生理指標輕度波動，自律神經稍顯緊繃。"
+        action_advice = (
+            "⚠️ 【處置建議】\n"
+            "1. 請補充 200c.c. 溫開水並閉目休息 10 分鐘。\n"
+            "2. 檢查慢箋連續處方籤剩餘藥量，若即將用完，請安排時間至藥局領藥。\n"
+            "3. 建議今晚提早 30 分鐘入睡，並於明日同一時間再次量測。"
+        )
+    else:
+        summary = "生理狀態良好，自律神經平衡度佳。"
+        action_advice = (
+            "✅ 【處置建議】\n"
+            "1. 請繼續保持規律作息與按時服藥習慣。\n"
+            "2. 每日定時量測並記錄，有助於醫師調整長期處方。"
+        )
+
+    return light, summary, action_advice
+
+
+# --- 5. POS rPPG 演算法 ---
 def process_pos_rppg(rgb_signals: np.ndarray, fps: int = 30) -> int:
     try:
         N = rgb_signals.shape[1]
@@ -122,7 +172,7 @@ def process_pos_rppg(rgb_signals: np.ndarray, fps: int = 30) -> int:
         H = np.zeros(N)
 
         for i in range(N - w_len + 1):
-            C = rgb_signals[:, i:i+w_len]
+            C = rgb_signals[:, i : i + w_len]
             mean_C = np.mean(C, axis=1, keepdims=True)
             mean_C[mean_C == 0] = 1e-6
             C_norm = C / mean_C
@@ -135,15 +185,15 @@ def process_pos_rppg(rgb_signals: np.ndarray, fps: int = 30) -> int:
             alpha = (std_S1 / std_S2) if std_S2 != 0 else 0
 
             P = S1 + alpha * S2
-            H[i:i+w_len] += P - np.mean(P)
+            H[i : i + w_len] += P - np.mean(P)
 
         lowcut, highcut = 0.75, 3.33
         nyquist = 0.5 * fps
-        b, a = butter(4, [lowcut / nyquist, highcut / nyquist], btype='band')
+        b, a = butter(4, [lowcut / nyquist, highcut / nyquist], btype="band")
         filtered_H = filtfilt(b, a, H)
 
         fft_spectrum = np.abs(np.fft.rfft(filtered_H))
-        fft_freqs = np.fft.rfftfreq(len(filtered_H), d=1.0/fps)
+        fft_freqs = np.fft.rfftfreq(len(filtered_H), d=1.0 / fps)
 
         valid_idx = np.where((fft_freqs >= lowcut) & (fft_freqs <= highcut))
         valid_spectrum = fft_spectrum[valid_idx]
@@ -160,40 +210,168 @@ def process_pos_rppg(rgb_signals: np.ndarray, fps: int = 30) -> int:
         return 75
 
 
-# --- 5. QuickChart 與 LINE 推播 ---
-def generate_trend_chart_url(history_bpms: List[int]) -> str:
-    labels = [f"t{i+1}" for i in range(len(history_bpms))]
-    
-    chart_config = {
-        "type": "line",
-        "data": {
-            "labels": labels,
-            "datasets": [
+# --- 6. LINE Flex Message 推播引擎 ---
+def create_line_flex_card(
+    now_str: str,
+    hr: int,
+    hrv: float,
+    stress: int,
+    light: str,
+    summary: str,
+    action_advice: str,
+) -> dict:
+    """建立結構化的 Flex Message 圖卡，提升閱讀體驗與導引處置"""
+    header_color = "#1DB954" if light == "GREEN" else ("#FFC107" if light == "YELLOW" else "#DC3545")
+    header_title = "✅ 生理狀態良好" if light == "GREEN" else ("⚠️ 生理狀態需留意" if light == "YELLOW" else "🚨 生理警告與處置建議")
+
+    flex_contents = {
+        "type": "bubble",
+        "header": {
+            "type": "box",
+            "layout": "vertical",
+            "backgroundColor": header_color,
+            "contents": [
                 {
-                    "label": "BPM",
-                    "data": history_bpms,
-                    "borderColor": "#1DB954",
-                    "backgroundColor": "rgba(29, 185, 84, 0.1)",
-                    "fill": True
-                }
-            ]
+                    "type": "text",
+                    "text": "PharmPulse 慢性病照護卡",
+                    "color": "#FFFFFF",
+                    "size": "xs",
+                    "weight": "bold",
+                },
+                {
+                    "type": "text",
+                    "text": header_title,
+                    "color": "#FFFFFF",
+                    "size": "lg",
+                    "weight": "bold",
+                    "margin": "sm",
+                },
+            ],
         },
-        "options": {
-            "plugins": {
-                "legend": {"display": False}
-            },
-            "scales": {
-                "y": {"min": 40, "max": 150}
-            }
-        }
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {
+                    "type": "text",
+                    "text": f"量測時間：{now_str}",
+                    "size": "xs",
+                    "color": "#888888",
+                },
+                {"type": "separator", "margin": "md"},
+                {
+                    "type": "box",
+                    "layout": "horizontal",
+                    "margin": "md",
+                    "contents": [
+                        {
+                            "type": "box",
+                            "layout": "vertical",
+                            "contents": [
+                                {
+                                    "type": "text",
+                                    "text": "即時心率",
+                                    "size": "xs",
+                                    "color": "#555555",
+                                },
+                                {
+                                    "type": "text",
+                                    "text": f"{hr} BPM",
+                                    "size": "md",
+                                    "weight": "bold",
+                                    "color": "#111111",
+                                },
+                            ],
+                        },
+                        {
+                            "type": "box",
+                            "layout": "vertical",
+                            "contents": [
+                                {
+                                    "type": "text",
+                                    "text": "HRV (SDNN)",
+                                    "size": "xs",
+                                    "color": "#555555",
+                                },
+                                {
+                                    "type": "text",
+                                    "text": f"{hrv} ms",
+                                    "size": "md",
+                                    "weight": "bold",
+                                    "color": "#111111",
+                                },
+                            ],
+                        },
+                        {
+                            "type": "box",
+                            "layout": "vertical",
+                            "contents": [
+                                {
+                                    "type": "text",
+                                    "text": "壓力指數",
+                                    "size": "xs",
+                                    "color": "#555555",
+                                },
+                                {
+                                    "type": "text",
+                                    "text": f"{stress} / 100",
+                                    "size": "md",
+                                    "weight": "bold",
+                                    "color": "#111111",
+                                },
+                            ],
+                        },
+                    ],
+                },
+                {"type": "separator", "margin": "md"},
+                {
+                    "type": "text",
+                    "text": summary,
+                    "weight": "bold",
+                    "size": "sm",
+                    "margin": "md",
+                    "wrap": True,
+                },
+                {
+                    "type": "text",
+                    "text": action_advice,
+                    "size": "xs",
+                    "color": "#333333",
+                    "margin": "sm",
+                    "wrap": True,
+                },
+            ],
+        },
+        "footer": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+                {
+                    "type": "button",
+                    "action": {
+                        "type": "uri",
+                        "label": "📍 尋求附近合作藥局 / 諮詢",
+                        "uri": "https://maps.google.com/?q=%E8%97%A5%E5%B1%80",
+                    },
+                    "style": "primary",
+                    "color": "#1DB954",
+                }
+            ],
+        },
     }
-    
-    json_str = json.dumps(chart_config)
-    encoded = urllib.parse.quote(json_str)
-    return f"https://quickchart.io/chart?c={encoded}&w=500&h=250&bkg=white"
+    return flex_contents
 
 
-def push_line_message(user_id: str, hr: int, hrv: float, stress: int, light: str, summary: str, db: Session, now_str: str, user_uuid: str):
+def push_line_message(
+    user_id: str,
+    hr: int,
+    hrv: float,
+    stress: int,
+    light: str,
+    summary: str,
+    action_advice: str,
+    now_str: str,
+):
     if not LINE_ACCESS_TOKEN:
         print("[LINE Push Skip] 未設定 LINE_ACCESS_TOKEN")
         return
@@ -203,35 +381,17 @@ def push_line_message(user_id: str, hr: int, hrv: float, stress: int, light: str
         return
 
     try:
-        recent_records = (
-            db.query(RppgRecord)
-            .filter(RppgRecord.user_uuid == user_uuid)
-            .order_by(RppgRecord.created_at.desc())
-            .limit(7)
-            .all()
-        )
-        bpms = [r.heart_rate for r in reversed(recent_records)]
-
-        text_content = (
-            f"【PharmPulse 生理數據報告】\n"
-            f"時間：{now_str}\n\n"
-            f"即時心率：{hr} BPM\n"
-            f"HRV (SDNN)：{hrv} ms\n"
-            f"壓力指數：{stress} / 100\n"
-            f"健康燈號：{light}\n\n"
-            f"建議：{summary}\n\n"
-            f"註：本分析僅供健康管理參考，不具醫療處方效力。"
+        flex_card = create_line_flex_card(
+            now_str, hr, hrv, stress, light, summary, action_advice
         )
 
-        messages = [{"type": "text", "text": text_content}]
-
-        if len(bpms) > 1:
-            chart_url = generate_trend_chart_url(bpms)
-            messages.append({
-                "type": "image",
-                "originalContentUrl": chart_url,
-                "previewImageUrl": chart_url
-            })
+        messages = [
+            {
+                "type": "flex",
+                "altText": f"【PharmPulse 生理數據與建議】心率：{hr} BPM",
+                "contents": flex_card,
+            }
+        ]
 
         payload = {"to": user_id, "messages": messages}
 
@@ -240,19 +400,23 @@ def push_line_message(user_id: str, hr: int, hrv: float, stress: int, light: str
             json=payload,
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {LINE_ACCESS_TOKEN}"
+                "Authorization": f"Bearer {LINE_ACCESS_TOKEN}",
             },
-            timeout=5
+            timeout=5,
         )
         print(f"[LINE Push Result] Status: {res.status_code}, Response: {res.text}")
     except Exception as e:
         print(f"[LINE Push Exception Non-blocking]: {e}")
 
 
-# --- 6. API 路由定義 ---
+# --- 7. API 路由定義 ---
 @app.get("/")
 def read_root():
-    return {"status": "online", "system": "PharmPulse Secure Platform", "time": get_taipei_now().strftime("%Y-%m-%d %H:%M:%S")}
+    return {
+        "status": "online",
+        "system": "PharmPulse Secure Platform",
+        "time": get_taipei_now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
 
 
 @app.get("/liff", response_class=HTMLResponse)
@@ -263,7 +427,6 @@ def serve_liff_page():
     return HTMLResponse(content="<h3>LIFF Index File Not Found</h3>", status_code=404)
 
 
-# 個資與條款同意 API
 @app.post("/api/v1/user/consent")
 def submit_user_consent(req: TermsConsentRequest, db: Session = Depends(get_db)):
     if not verify_line_id_token(req.id_token, req.user_line_id):
@@ -275,7 +438,7 @@ def submit_user_consent(req: TermsConsentRequest, db: Session = Depends(get_db))
             user_line_id=req.user_line_id,
             agreed_terms=True,
             terms_version=req.terms_version,
-            agreed_at=get_taipei_now()
+            agreed_at=get_taipei_now(),
         )
         db.add(user)
     else:
@@ -295,7 +458,6 @@ def check_consent_status(user_line_id: str, db: Session = Depends(get_db)):
     return {"status": "success", "agreed": False}
 
 
-# 安全 rPPG 分析 API
 @app.post("/api/v1/analyze-rppg")
 def analyze_rppg_signal(request: RppgSignalAnalyzeRequest, db: Session = Depends(get_db)):
     try:
@@ -306,14 +468,13 @@ def analyze_rppg_signal(request: RppgSignalAnalyzeRequest, db: Session = Depends
 
         fps = request.fps or 30
 
-        # 查驗或自動建立 UserConsent
         user = db.query(UserConsent).filter(UserConsent.user_line_id == user_id).first()
         if not user:
             user = UserConsent(
                 user_line_id=user_id,
                 agreed_terms=True,
                 terms_version="v1.0",
-                agreed_at=get_taipei_now()
+                agreed_at=get_taipei_now(),
             )
             db.add(user)
             db.commit()
@@ -325,15 +486,17 @@ def analyze_rppg_signal(request: RppgSignalAnalyzeRequest, db: Session = Depends
         else:
             calculated_bpm = random.randint(68, 82)
 
-        hrv_sdnn = round(random.uniform(38.0, 68.0), 1)
-        stress_score = random.randint(15, 45)
-        health_light = "GREEN" if stress_score <= 40 else "YELLOW"
-        summary = "心率與生理狀態良好。" if health_light == "GREEN" else "建議多休息。"
+        hrv_sdnn = round(random.uniform(20.0, 65.0), 1)
+        stress_score = random.randint(20, 85)
+
+        # 呼叫建議評估引擎
+        health_light, summary, action_advice = generate_health_assessment(
+            calculated_bpm, hrv_sdnn, stress_score
+        )
 
         now_taipei = get_taipei_now()
         now_str = now_taipei.strftime("%Y-%m-%d %H:%M:%S")
 
-        # 生理數據寫入 (僅紀錄 user_uuid，無直接 LINE ID)
         db_record = RppgRecord(
             user_uuid=user.user_uuid,
             heart_rate=calculated_bpm,
@@ -341,7 +504,8 @@ def analyze_rppg_signal(request: RppgSignalAnalyzeRequest, db: Session = Depends
             stress_score=stress_score,
             health_light=health_light,
             summary=summary,
-            created_at=now_taipei
+            action_advice=action_advice,
+            created_at=now_taipei,
         )
         db.add(db_record)
         db.commit()
@@ -355,9 +519,8 @@ def analyze_rppg_signal(request: RppgSignalAnalyzeRequest, db: Session = Depends
                 stress=stress_score,
                 light=health_light,
                 summary=summary,
-                db=db,
+                action_advice=action_advice,
                 now_str=now_str,
-                user_uuid=user.user_uuid
             )
         except Exception as push_err:
             print(f"[Push Notice Failed Non-fatal]: {push_err}")
@@ -372,6 +535,7 @@ def analyze_rppg_signal(request: RppgSignalAnalyzeRequest, db: Session = Depends
                 "stress_score": db_record.stress_score,
                 "health_light": db_record.health_light,
                 "summary": db_record.summary,
+                "action_advice": db_record.action_advice,
                 "created_at": now_str,
             },
         }
@@ -382,7 +546,6 @@ def analyze_rppg_signal(request: RppgSignalAnalyzeRequest, db: Session = Depends
         raise HTTPException(status_code=500, detail=f"伺服器內部錯誤: {str(general_err)}")
 
 
-# 藥局 / 醫院端 Web Dashboard
 @app.get("/dashboard", response_class=HTMLResponse)
 def serve_clinical_dashboard():
     dashboard_html = """
@@ -440,7 +603,7 @@ def serve_clinical_dashboard():
                 </div>
             </div>
 
-            <h5 class="fw-bold mb-3 text-secondary">📋 個案即時生理數據清單</h5>
+            <h5 class="fw-bold mb-3 text-secondary">📋 個案即時生理數據與處置建議清單</h5>
             <div class="row" id="patient-list">
                 <div class="text-center py-5 text-muted">載入病患資料中...</div>
             </div>
@@ -451,7 +614,6 @@ def serve_clinical_dashboard():
                 try {
                     const res = await fetch('/api/v1/clinical/patients');
                     const data = await res.json();
-                    
                     if(data.status === 'success') {
                         renderDashboard(data.data, data.summary);
                     }
@@ -507,8 +669,11 @@ def serve_clinical_dashboard():
                                         </div>
                                     </div>
                                 </div>
-                                <div class="p-2 bg-light rounded text-secondary small">
-                                    <strong>衛教建言：</strong>${p.summary}
+                                <div class="p-2 bg-light rounded text-secondary small mb-2">
+                                    <strong>狀態評估：</strong>${p.summary}
+                                </div>
+                                <div class="p-2 bg-warning-subtle rounded text-dark small">
+                                    <strong>行動建議：</strong><br>${p.action_advice.replace(/\n/g, '<br>')}
                                 </div>
                             </div>
                         </div>
@@ -526,13 +691,12 @@ def serve_clinical_dashboard():
     return HTMLResponse(content=dashboard_html)
 
 
-# 藥局/醫院端 API (內部內聯 Join 取得最新數據)
 @app.get("/api/v1/clinical/patients")
 def get_clinical_patients(db: Session = Depends(get_db)):
     subquery = (
         db.query(
             RppgRecord.user_uuid,
-            func.max(RppgRecord.created_at).label("max_created")
+            func.max(RppgRecord.created_at).label("max_created"),
         )
         .group_by(RppgRecord.user_uuid)
         .subquery()
@@ -543,8 +707,8 @@ def get_clinical_patients(db: Session = Depends(get_db)):
         .join(UserConsent, RppgRecord.user_uuid == UserConsent.user_uuid)
         .join(
             subquery,
-            (RppgRecord.user_uuid == subquery.c.user_uuid) & 
-            (RppgRecord.created_at == subquery.c.max_created)
+            (RppgRecord.user_uuid == subquery.c.user_uuid)
+            & (RppgRecord.created_at == subquery.c.max_created),
         )
         .order_by(RppgRecord.created_at.desc())
         .all()
@@ -554,19 +718,27 @@ def get_clinical_patients(db: Session = Depends(get_db)):
     green_c, yellow_c, red_c = 0, 0, 0
 
     for r, line_id in records:
-        if r.health_light == "GREEN": green_c += 1
-        elif r.health_light == "YELLOW": yellow_c += 1
-        else: red_c += 1
+        if r.health_light == "GREEN":
+            green_c += 1
+        elif r.health_light == "YELLOW":
+            yellow_c += 1
+        else:
+            red_c += 1
 
-        patient_data.append({
-            "user_line_id": line_id,
-            "heart_rate": r.heart_rate,
-            "hrv_sdnn": r.hrv_sdnn,
-            "stress_score": r.stress_score,
-            "health_light": r.health_light,
-            "summary": r.summary,
-            "created_at": r.created_at.strftime("%Y-%m-%d %H:%M:%S") if r.created_at else ""
-        })
+        patient_data.append(
+            {
+                "user_line_id": line_id,
+                "heart_rate": r.heart_rate,
+                "hrv_sdnn": r.hrv_sdnn,
+                "stress_score": r.stress_score,
+                "health_light": r.health_light,
+                "summary": r.summary,
+                "action_advice": r.action_advice or "無特殊處置建議",
+                "created_at": (
+                    r.created_at.strftime("%Y-%m-%d %H:%M:%S") if r.created_at else ""
+                ),
+            }
+        )
 
     return {
         "status": "success",
@@ -574,7 +746,7 @@ def get_clinical_patients(db: Session = Depends(get_db)):
             "total_patients": len(patient_data),
             "green_count": green_c,
             "yellow_count": yellow_c,
-            "red_count": red_c
+            "red_count": red_c,
         },
-        "data": patient_data
+        "data": patient_data,
     }
