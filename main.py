@@ -1,8 +1,8 @@
 import os
 import random
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
-import zoneinfo
+import urllib.parse
 
 import numpy as np
 import requests
@@ -16,16 +16,16 @@ from sqlalchemy.orm import Session
 
 from database import Base, engine, get_db
 
-# 取得台灣時區
-TAIPEI_TZ = zoneinfo.ZoneInfo("Asia/Taipei")
-
+# 強制計算台灣時間 (+8小時，不帶時區屬性以相容 SQLite)
 def get_taipei_now():
-    return datetime.now(TAIPEI_TZ)
+    utc_now = datetime.now(timezone.utc)
+    taipei_now = utc_now + timedelta(hours=8)
+    return taipei_now.replace(tzinfo=None)
 
 # --- 環境變數讀取 ---
-LINE_ACCESS_TOKEN = os.getenv("LINE_ACCESS_TOKEN", "")
+LINE_ACCESS_TOKEN = os.getenv("LINE_ACCESS_TOKEN", "").strip()
 
-app = FastAPI(title="PharmPulse C2C API", version="1.1.0")
+app = FastAPI(title="PharmPulse C2C API", version="1.2.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -104,21 +104,29 @@ def process_pos_rppg(rgb_signals: np.ndarray, fps: int = 30) -> int:
     return max(45, min(180, bpm))
 
 
-# 產生圖表 URL
+# 修正為 LINE 相容的 QuickChart 簡化 URL 格式 (全網址 URL Encode)
 def generate_trend_chart_url(history_bpms: List[int]) -> str:
     labels = [f"t{i+1}" for i in range(len(history_bpms))]
+    labels_str = ",".join([f'"{l}"' for l in labels])
     data_str = ",".join(map(str, history_bpms))
-    chart_config = f"{{type:'line',data:{{labels:[{','.join([repr(l) for l in labels])}],datasets:[{{label:'BPM',data:[{data_str}],borderColor:'#1DB954',backgroundColor:'rgba(29,185,84,0.1)',fill:true,tension:0.3}}]}},options:{{plugins:{{legend:{{display:false}}}},scales:{{y:{{min:40,max:150}}}}}}}}"
-    return f"https://quickchart.io/chart?c={chart_config}&w=500&h=200&bkg=white"
+    
+    chart_json = f'{{"type":"line","data":{{"labels":[{labels_str}],"datasets":[{"label":"BPM","data":[{data_str}],"borderColor":"%231DB954","fill":false}]}}}}'
+    encoded = urllib.parse.quote(chart_json, safe='')
+    return f"https://quickchart.io/chart?c={encoded}&w=500&h=250&bkg=white"
 
 
-# 發送 LINE 推播（修復版）
-def push_line_flex_message(user_id: str, hr: int, hrv: float, stress: int, light: str, summary: str, db: Session):
-    if not LINE_ACCESS_TOKEN or user_id.startswith("U_TEST"):
-        print(f"[LINE Push Skip] 無 Token 或測試帳號: {user_id}")
+def push_line_message(user_id: str, hr: int, hrv: float, stress: int, light: str, summary: str, db: Session, now_str: str):
+    print(f"[LINE Push Debug] target_user: {user_id}, token_len: {len(LINE_ACCESS_TOKEN)}")
+    
+    if not LINE_ACCESS_TOKEN:
+        print("[LINE Push Error] 未設定 LINE_ACCESS_TOKEN 環境變數！")
         return
 
-    # 查 7 次歷史
+    if user_id.startswith("U1234567890"):
+        print("[LINE Push Skip] 使用者未透過 LINE 登入，使用的是前端預設 Test ID")
+        return
+
+    # 查詢近 7 次歷史心率
     recent_records = (
         db.query(RppgRecord)
         .filter(RppgRecord.user_line_id == user_id)
@@ -127,16 +135,22 @@ def push_line_flex_message(user_id: str, hr: int, hrv: float, stress: int, light
         .all()
     )
     bpms = [r.heart_rate for r in reversed(recent_records)]
-    
-    # 組合文字訊息與圖片
-    now_str = get_taipei_now().strftime("%Y-%m-%d %H:%M")
-    text_content = f"【PharmPulse 健康檢測報告】\n時間：{now_str}\n\n即時心率：{hr} BPM\nHRV (SDNN)：{hrv} ms\n壓力指數：{stress} / 100\n狀態：{light}\n\n評估建議：{summary}"
+
+    text_content = (
+        f"【PharmPulse 量測報告】\n"
+        f"時間：{now_str}\n\n"
+        f"即時心率：{hr} BPM\n"
+        f"HRV (SDNN)：{hrv} ms\n"
+        f"壓力指數：{stress} / 100\n"
+        f"狀態：{light}\n\n"
+        f"建議：{summary}"
+    )
 
     messages = [{"type": "text", "text": text_content}]
 
-    # 有 2 次以上紀錄才附上趨勢圖
     if len(bpms) > 1:
         chart_url = generate_trend_chart_url(bpms)
+        print(f"[Generated Chart URL]: {chart_url}")
         messages.append({
             "type": "image",
             "originalContentUrl": chart_url,
@@ -156,16 +170,16 @@ def push_line_flex_message(user_id: str, hr: int, hrv: float, stress: int, light
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {LINE_ACCESS_TOKEN}"
             },
-            timeout=5
+            timeout=8
         )
-        print(f"[LINE Push Response] Code: {res.status_code}, Body: {res.text}")
+        print(f"[LINE Push Result] Status: {res.status_code}, Response: {res.text}")
     except Exception as e:
-        print(f"[LINE Push Error] {e}")
+        print(f"[LINE Push Exception] {e}")
 
 
 @app.get("/")
 def read_root():
-    return {"status": "online"}
+    return {"status": "online", "time": get_taipei_now().strftime("%Y-%m-%d %H:%M:%S")}
 
 @app.get("/liff", response_class=HTMLResponse)
 def serve_liff_page():
@@ -191,6 +205,9 @@ def analyze_rppg_signal(request: RppgSignalAnalyzeRequest, db: Session = Depends
     health_light = "GREEN" if stress_score <= 40 else "YELLOW"
     summary = "心率與生理狀態良好。" if health_light == "GREEN" else "建議多休息。"
 
+    now_taipei = get_taipei_now()
+    now_str = now_taipei.strftime("%Y-%m-%d %H:%M:%S")
+
     db_record = RppgRecord(
         user_line_id=request.user_line_id,
         heart_rate=calculated_bpm,
@@ -198,21 +215,22 @@ def analyze_rppg_signal(request: RppgSignalAnalyzeRequest, db: Session = Depends
         stress_score=stress_score,
         health_light=health_light,
         summary=summary,
-        created_at=get_taipei_now()
+        created_at=now_taipei
     )
     db.add(db_record)
     db.commit()
     db.refresh(db_record)
 
     # 發送 LINE 推播
-    push_line_flex_message(
+    push_line_message(
         user_id=request.user_line_id,
         hr=calculated_bpm,
         hrv=hrv_sdnn,
         stress=stress_score,
         light=health_light,
         summary=summary,
-        db=db
+        db=db,
+        now_str=now_str
     )
 
     return {
@@ -225,7 +243,7 @@ def analyze_rppg_signal(request: RppgSignalAnalyzeRequest, db: Session = Depends
             "stress_score": db_record.stress_score,
             "health_light": db_record.health_light,
             "summary": db_record.summary,
-            "created_at": db_record.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "created_at": now_str,
         },
     }
 
@@ -238,7 +256,6 @@ def get_user_history(user_line_id: str, db: Session = Depends(get_db)):
         .order_by(RppgRecord.created_at.desc())
         .all()
     )
-    # 格式化台灣時間輸出
     data = []
     for r in records:
         data.append({
