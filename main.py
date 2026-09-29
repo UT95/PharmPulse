@@ -6,6 +6,7 @@ from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Text, text
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
@@ -70,11 +71,10 @@ def get_db():
         db.close()
 
 # ----------------------------------------------------
-# 4. 啟動時自動修正 PostgreSQL 欄位 (相容 Safe Migration)
+# 4. 啟動時自動修正 PostgreSQL 欄位
 # ----------------------------------------------------
 @app.on_event("startup")
 def auto_migrate_db():
-    """安全新增 user_uuid 欄位並處理 Transaction 回滾"""
     if "postgresql" in DATABASE_URL:
         try:
             with engine.connect() as conn:
@@ -83,13 +83,23 @@ def auto_migrate_db():
                     conn.commit()
                     print(" Successfully ensured 'user_uuid' column exists.")
                 except Exception as ex:
-                    conn.rollback() # 發生例外時立即重置 Transaction
+                    conn.rollback()
                     print(f" Migration info: {ex}")
         except Exception as e:
             print(f" DB Connection error during migration: {e}")
 
 # ----------------------------------------------------
-# 5. Request / Response Pydantic Schemas
+# 5. 前端頁面託管路由 (解決 404 Not Found 問題)
+# ----------------------------------------------------
+@app.get("/")
+@app.get("/liff")
+def serve_liff():
+    if os.path.exists("index.html"):
+        return FileResponse("index.html")
+    return {"status": "online", "message": "PharmPulse API Service is running (index.html not found)"}
+
+# ----------------------------------------------------
+# 6. Request / Response Pydantic Schemas
 # ----------------------------------------------------
 class AnalyzeRequest(BaseModel):
     user_line_id: str
@@ -103,12 +113,8 @@ class ConsentRequest(BaseModel):
     terms_version: str = "v1.0"
 
 # ----------------------------------------------------
-# 6. API 路由定義
+# 7. API 路由定義
 # ----------------------------------------------------
-@app.get("/")
-def read_root():
-    return {"status": "online", "message": "PharmPulse API Service is running"}
-
 @app.get("/api/v1/user/consent-status/{user_line_id}")
 def check_consent(user_line_id: str, db: Session = Depends(get_db)):
     record = db.query(UserConsent).filter(UserConsent.user_line_id == user_line_id).first()
