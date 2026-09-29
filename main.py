@@ -15,7 +15,6 @@ from sqlalchemy.orm import declarative_base, sessionmaker, Session
 # ----------------------------------------------------
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./test.db")
 
-# Render 的 PostgreSQL 網址如果是 postgres:// 開頭，需轉為 postgresql://
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
@@ -63,7 +62,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# DB Dependency
 def get_db():
     db = SessionLocal()
     try:
@@ -72,40 +70,23 @@ def get_db():
         db.close()
 
 # ----------------------------------------------------
-# 4. 啟動時自動遷移/補齊 PostgreSQL 欄位 (Migration)
+# 4. 啟動時自動修正 PostgreSQL 欄位 (相容 Safe Migration)
 # ----------------------------------------------------
 @app.on_event("startup")
 def auto_migrate_db():
-    """自動修復 PostgreSQL rppg_records 欄位缺少的問題"""
+    """安全新增 user_uuid 欄位並處理 Transaction 回滾"""
     if "postgresql" in DATABASE_URL:
         try:
             with engine.connect() as conn:
-                # 檢查 user_uuid 欄位是否存在，若不存在則嘗試合併/新增
-                check_sql = text("""
-                    SELECT column_name 
-                    FROM information_schema.columns 
-                    WHERE table_name='rppg_records' AND column_name='user_uuid';
-                """)
-                res = conn.execute(check_sql).fetchone()
-                
-                if not res:
-                    # 嘗試將舊的 user_id 或 user_line_id 改名為 user_uuid
-                    try:
-                        conn.execute(text("ALTER TABLE rppg_records RENAME COLUMN user_id TO user_uuid;"))
-                        conn.commit()
-                        print(" Successfully renamed column 'user_id' to 'user_uuid'")
-                    except Exception:
-                        try:
-                            conn.execute(text("ALTER TABLE rppg_records RENAME COLUMN user_line_id TO user_uuid;"))
-                            conn.commit()
-                            print(" Successfully renamed column 'user_line_id' to 'user_uuid'")
-                        except Exception:
-                            # 若原本無相關欄位，則直接新增 user_uuid
-                            conn.execute(text("ALTER TABLE rppg_records ADD COLUMN user_uuid VARCHAR(255);"))
-                            conn.commit()
-                            print(" Successfully added column 'user_uuid'")
+                try:
+                    conn.execute(text("ALTER TABLE rppg_records ADD COLUMN IF NOT EXISTS user_uuid VARCHAR(255);"))
+                    conn.commit()
+                    print(" Successfully ensured 'user_uuid' column exists.")
+                except Exception as ex:
+                    conn.rollback() # 發生例外時立即重置 Transaction
+                    print(f" Migration info: {ex}")
         except Exception as e:
-            print(f" Migration note: {e}")
+            print(f" DB Connection error during migration: {e}")
 
 # ----------------------------------------------------
 # 5. Request / Response Pydantic Schemas
@@ -113,7 +94,7 @@ def auto_migrate_db():
 class AnalyzeRequest(BaseModel):
     user_line_id: str
     id_token: Optional[str] = None
-    rgb_signals: List[List[float]]  # [Red[], Green[], Blue[]]
+    rgb_signals: List[List[float]]
     fps: int = 30
 
 class ConsentRequest(BaseModel):
@@ -133,8 +114,6 @@ def check_consent(user_line_id: str, db: Session = Depends(get_db)):
     record = db.query(UserConsent).filter(UserConsent.user_line_id == user_line_id).first()
     if record and record.agreed == "true":
         return {"status": "success", "agreed": True}
-        
-    # 如果是測試或新使用者，回傳未同意
     return {"status": "success", "agreed": False}
 
 @app.post("/api/v1/user/consent")
@@ -159,18 +138,15 @@ def analyze_rppg(req: AnalyzeRequest, db: Session = Depends(get_db)):
     try:
         green_signal = req.rgb_signals[1] if len(req.rgb_signals) > 1 else req.rgb_signals[0]
         
-        # 基本 rPPG 生理訊號模擬與計算
         if len(green_signal) < 60:
             hr = 72
             sdnn = 35.0
         else:
-            # 計算訊號綠色通道波動
             signal_arr = np.array(green_signal)
             detrended = signal_arr - np.mean(signal_arr)
             fft_vals = np.abs(np.fft.rfft(detrended))
             freqs = np.fft.rfftfreq(len(detrended), 1.0 / req.fps)
             
-            # 限制心率合理範圍 0.75Hz(45BPM) ~ 2.5Hz(150BPM)
             valid_idx = np.where((freqs >= 0.75) & (freqs <= 2.5))[0]
             if len(valid_idx) > 0:
                 peak_freq = freqs[valid_idx[np.argmax(fft_vals[valid_idx])]]
@@ -182,7 +158,6 @@ def analyze_rppg(req: AnalyzeRequest, db: Session = Depends(get_db)):
             if sdnn < 15: sdnn = 28.0
             if sdnn > 100: sdnn = 45.0
 
-        # 計算壓力值與燈號判定
         stress = int(max(10, min(99, 100 - (sdnn * 1.2))))
         
         if stress > 75 or hr > 100 or hr < 50:
@@ -211,7 +186,6 @@ def analyze_rppg(req: AnalyzeRequest, db: Session = Depends(get_db)):
                 "2. 建議每日同一時間持續進行生理量測記錄。"
             )
 
-        # 寫入資料庫記錄 (使用 user_uuid 欄位)
         record = RPPGRecord(
             user_uuid=req.user_line_id,
             heart_rate=hr,
@@ -243,4 +217,4 @@ def analyze_rppg(req: AnalyzeRequest, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         print(f"Analyze Error: {str(e)}")
-        raise HTTPException(status_status_code=500, detail=f"Analysis failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
