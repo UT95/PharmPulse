@@ -7,54 +7,93 @@
     <!-- 引入 LINE LIFF SDK -->
     <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
     <style>
-        body { font-family: Arial, sans-serif; padding: 20px; text-align: center; }
-        .btn { padding: 12px 24px; background-color: #06C755; color: white; border: none; border-radius: 6px; font-size: 16px; cursor: pointer; }
-        .status { margin-top: 15px; color: #555; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f8f9fa; color: #333; padding: 20px; text-align: center; }
+        .container { max-width: 480px; margin: 0 auto; background: #ffffff; border-radius: 16px; padding: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
+        h2 { color: #1DB446; margin-bottom: 8px; font-size: 22px; }
+        .user-info { font-size: 14px; color: #666; margin-bottom: 20px; background: #eef9f2; padding: 8px 12px; border-radius: 8px; display: inline-block; }
+        
+        /* 鏡頭區域與人臉輪廓框 */
+        .camera-container { position: relative; width: 100%; max-width: 320px; height: 320px; margin: 0 auto 20px; border-radius: 50%; overflow: hidden; background-color: #000; border: 4px solid #1DB446; box-shadow: 0 8px 16px rgba(29, 180, 70, 0.2); }
+        video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+        .face-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 3px dashed rgba(255, 255, 255, 0.8); border-radius: 50%; pointer-events: none; box-sizing: border-box; animation: pulse 2s infinite; }
+        
+        @keyframes pulse {
+            0% { border-color: rgba(255, 255, 255, 0.5); box-shadow: inset 0 0 10px rgba(255, 255, 255, 0.2); }
+            50% { border-color: rgba(29, 180, 70, 0.9); box-shadow: inset 0 0 20px rgba(29, 180, 70, 0.4); }
+            100% { border-color: rgba(255, 255, 255, 0.5); box-shadow: inset 0 0 10px rgba(255, 255, 255, 0.2); }
+        }
+
+        .btn { width: 100%; padding: 14px; background-color: #1DB446; color: white; border: none; border-radius: 10px; font-size: 18px; font-weight: bold; cursor: pointer; transition: background-color 0.2s; }
+        .btn:active { background-color: #159338; }
+        .btn:disabled { background-color: #ccc; cursor: not-allowed; }
+        .status { margin-top: 15px; font-size: 15px; color: #555; font-weight: 500; }
     </style>
 </head>
 <body>
 
-    <h2>PharmPulse 生理檢測</h2>
-    <p id="user-info">載入使用者資訊中...</p>
-    
-    <button class="btn" onclick="startMeasurement()">開始量測 (測試傳送)</button>
-    <p id="status-text" class="status"></p>
+    <div class="container">
+        <h2>PharmPulse 生理檢測</h2>
+        <div id="user-info" class="user-info">連線中...</div>
+
+        <!-- 鏡頭預覽與對齊框區域 -->
+        <div class="camera-container">
+            <video id="webcam" autoplay playsinline muted></video>
+            <div class="face-overlay"></div>
+        </div>
+
+        <button id="start-btn" class="btn" onclick="startMeasurement()">開始生理量測</button>
+        <p id="status-text" class="status">請將臉部對準圓框中央後點擊開始</p>
+    </div>
 
     <script>
         let currentUserId = "";
+        const webcamElement = document.getElementById('webcam');
 
         // 1. 初始化 LIFF 取得真實 LINE User ID
         async function initLiff() {
             try {
-                // ⚠️ 請將 YOUR_LIFF_ID 替換為你在 LINE Developers 後台設定的真實 LIFF ID
+                // ⚠️ 請記得替換為你的 LIFF ID (只保留單引號)
                 await liff.init({ liffId: '2011686844-4moxcFdy' }); 
 
-                // 若未登入 LINE 身份，自動引導登入
                 if (!liff.isLoggedIn()) {
                     liff.login();
                     return;
                 }
 
-                // 取得使用者 Profile 資料
                 const profile = await liff.getProfile();
                 currentUserId = profile.userId; // 取得真實 U 開頭 33 碼 ID
-                document.getElementById("user-info").innerText = "已連線 LINE 帳號: " + profile.displayName;
+                document.getElementById("user-info").innerText = "👤 已連線: " + profile.displayName;
                 console.log("成功取得真實 LINE User ID:", currentUserId);
             } catch (err) {
                 console.error("LIFF 初始化失敗:", err);
-                document.getElementById("user-info").innerText = "⚠️ 請使用 LINE App 開啟此頁面以開啟推播功能。";
+                document.getElementById("user-info").innerText = "⚠️ 請透過 LINE App 開啟以啟動訊息通知";
+            }
+        }
+
+        // 2. 開啟攝影機
+        async function startCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 640 } }, 
+                    audio: false 
+                });
+                webcamElement.srcObject = stream;
+            } catch (err) {
+                console.error("相機權限開啟失敗:", err);
+                document.getElementById("status-text").innerText = "無法存取相機，請允許瀏覽器使用視訊鏡頭。";
             }
         }
 
         window.onload = function() {
             initLiff();
+            startCamera();
         };
 
-        // 2. 發送量測資料給後端 API
+        // 3. 發送量測資料給後端 API
         async function startMeasurement() {
-            // 檢查是否取得真實 LINE User ID (必須為 U 開頭且長度 33 碼)
             if (!currentUserId || currentUserId === "U_TEST_USER" || !currentUserId.startsWith("U")) {
-                alert("未檢測到 LINE 帳號身份！系統將導向登入頁面，請登入後重新量測。");
+                alert("未檢測到 LINE 帳號身份！將引導您登入 LINE。");
                 if (liff.isLoggedIn()) {
                     const profile = await liff.getProfile();
                     currentUserId = profile.userId;
@@ -64,16 +103,18 @@
                 }
             }
 
-            document.getElementById("status-text").innerText = "分析中，請稍候...";
+            const btn = document.getElementById("start-btn");
+            btn.disabled = true;
+            document.getElementById("status-text").innerText = "⏳ 正在分析生理數據與脈波訊號...";
 
-            // 模擬 RGB 訊號數據
+            // 模擬分析用 RGB 訊號
             const mockRgbSignals = [
-                Array.from({length: 100}, () => Math.random() * 10),
-                Array.from({length: 100}, () => Math.sin(Date.now()) * 5 + 50)
+                Array.from({length: 150}, () => Math.random() * 10),
+                Array.from({length: 150}, () => Math.sin(Date.now() / 100) * 5 + 50)
             ];
 
             const payload = {
-                user_line_id: currentUserId, // 傳送真實的 U 開頭 User ID
+                user_line_id: currentUserId, // 帶入真實的 LINE User ID
                 rgb_signals: mockRgbSignals,
                 fps: 30
             };
@@ -87,13 +128,15 @@
 
                 const result = await response.json();
                 if (result.status === "success") {
-                    document.getElementById("status-text").innerText = "分析完成！請查看 LINE 聊天室訊息推播。";
+                    document.getElementById("status-text").innerText = "✅ 分析完成！請返回 LINE 聊天室查看報告通知。";
                 } else {
-                    document.getElementById("status-text").innerText = "分析失敗: " + JSON.stringify(result);
+                    document.getElementById("status-text").innerText = "❌ 分析失敗: " + JSON.stringify(result);
                 }
             } catch (err) {
                 console.error("API 請求錯誤:", err);
-                document.getElementById("status-text").innerText = "網路發送失敗，請重試。";
+                document.getElementById("status-text").innerText = "⚠️ 網路傳送失敗，請重試。";
+            } finally {
+                btn.disabled = false;
             }
         }
     </script>
