@@ -3,258 +3,99 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PharmPulse - AI 生理量測系統</title>
-    <!-- Tailwind CSS CDN -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <!-- LINE LIFF SDK -->
-    <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+    <title>PharmPulse 生理量測</title>
+    <!-- 引入 LINE LIFF SDK -->
+    <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; text-align: center; }
+        .btn { padding: 12px 24px; background-color: #06C755; color: white; border: none; border-radius: 6px; font-size: 16px; cursor: pointer; }
+        .status { margin-top: 15px; color: #555; }
+    </style>
 </head>
-<body class="bg-slate-900 text-slate-100 min-h-screen font-sans flex flex-col items-center p-4">
+<body>
 
-    <!-- Header 頂部標題與裝飾 -->
-    <header class="w-full max-w-md my-4 text-center">
-        <h1 class="text-2xl font-bold text-emerald-400 tracking-wide">PharmPulse 生理量測</h1>
-        <p class="text-xs text-slate-400 mt-1">AI 驅動 rPPG 心律與自律神經檢測系統</p>
-    </header>
-
-    <!-- 主介面容器 -->
-    <main class="w-full max-w-md bg-slate-800/80 backdrop-blur border border-slate-700 rounded-2xl p-5 shadow-xl space-y-5">
-        
-        <!-- 使用者資訊與同意書狀態卡片 -->
-        <div id="userInfo" class="flex items-center justify-between text-xs bg-slate-700/50 p-3 rounded-xl border border-slate-600">
-            <span class="text-slate-300">使用者：<strong id="userLineIdDisplay" class="text-emerald-400">連線中...</strong></span>
-            <span id="consentBadge" class="px-2 py-0.5 rounded text-[10px] bg-slate-600 text-slate-300">檢查同意書...</span>
-        </div>
-
-        <!-- 視訊畫面與動態掃描邊框 -->
-        <div class="relative w-full aspect-square bg-black rounded-xl overflow-hidden border border-slate-700 flex items-center justify-center">
-            <video id="webcam" class="w-full h-full object-cover transform -scale-x-100" autoplay playsinline muted></video>
-            
-            <!-- 預設提示圖案 -->
-            <div id="placeholder" class="absolute inset-0 flex flex-col items-center justify-center text-slate-500 space-y-2">
-                <svg class="w-12 h-12 stroke-current" fill="none" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
-                </svg>
-                <span class="text-xs">請點擊下方按鈕啟動相機</span>
-            </div>
-
-            <!-- 動態掃描動畫條 -->
-            <div id="scanOverlay" class="hidden absolute inset-0 border-2 border-emerald-500/50 rounded-xl pointer-events-none">
-                <div class="w-full h-1 bg-gradient-to-r from-transparent via-emerald-400 to-transparent animate-pulse mt-4"></div>
-            </div>
-        </div>
-
-        <!-- 控制按鈕區 -->
-        <div class="flex gap-3">
-            <button id="btnStart" onclick="startMeasurement()" class="flex-1 py-3 bg-emerald-600 hover:bg-emerald-500 font-semibold rounded-xl transition text-sm shadow-lg shadow-emerald-900/30">
-                開始量測 (10秒)
-            </button>
-            <button onclick="fetchHistory()" class="px-4 py-3 bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm font-medium rounded-xl transition">
-                歷史紀錄
-            </button>
-        </div>
-
-        <!-- 量測結果顯示卡片 -->
-        <div id="resultCard" class="hidden border-t border-slate-700 pt-5 space-y-4">
-            <div class="flex items-center justify-between">
-                <h3 class="text-base font-bold text-slate-100">量測結果分析</h3>
-                <span id="lightBadge" class="px-3 py-1 rounded-full text-xs font-bold text-white bg-emerald-500">🟢 狀態良好</span>
-            </div>
-
-            <!-- 三大生理數據統計面板 -->
-            <div class="grid grid-cols-3 gap-2 text-center">
-                <div class="bg-slate-900/60 p-3 rounded-xl border border-slate-700">
-                    <div class="text-xs text-slate-400">即時心率</div>
-                    <div class="text-xl font-extrabold text-emerald-400 mt-1"><span id="resHR">--</span> <span class="text-[10px] font-normal text-slate-400">BPM</span></div>
-                </div>
-                <div class="bg-slate-900/60 p-3 rounded-xl border border-slate-700">
-                    <div class="text-xs text-slate-400">HRV 指數</div>
-                    <div class="text-xl font-extrabold text-blue-400 mt-1"><span id="resHRV">--</span> <span class="text-[10px] font-normal text-slate-400">ms</span></div>
-                </div>
-                <div class="bg-slate-900/60 p-3 rounded-xl border border-slate-700">
-                    <div class="text-xs text-slate-400">壓力指數</div>
-                    <div class="text-xl font-extrabold text-purple-400 mt-1"><span id="resStress">--</span></div>
-                </div>
-            </div>
-
-            <!-- 分析摘要 -->
-            <div class="text-xs text-slate-300 bg-slate-900/40 p-3 rounded-xl border border-slate-700/60 space-y-1">
-                <div class="font-bold text-emerald-400">📋 生理狀態摘要：</div>
-                <div id="resSummary" class="text-slate-300">--</div>
-            </div>
-
-            <!-- AI 處置建議卡片 -->
-            <div class="text-xs text-slate-200 bg-emerald-950/30 p-3.5 rounded-xl border border-emerald-800/50 space-y-2">
-                <div id="resAdvice" class="leading-relaxed whitespace-pre-line">--</div>
-            </div>
-
-            <!-- 推播與關閉按鈕 -->
-            <button onclick="finishAndClose()" class="w-full py-3 bg-emerald-500 hover:bg-emerald-400 font-bold text-slate-900 text-sm rounded-xl transition flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20">
-                <span>同步至 LINE 聊天室並關閉</span>
-            </button>
-        </div>
-
-        <!-- 歷史紀錄清單 -->
-        <div id="historySection" class="hidden border-t border-slate-700 pt-4 space-y-3">
-            <h4 class="text-xs font-bold text-slate-300">📊 近期量測紀錄</h4>
-            <div id="historyList" class="space-y-2 max-h-44 overflow-y-auto pr-1 text-xs"></div>
-        </div>
-
-    </main>
+    <h2>PharmPulse 生理檢測</h2>
+    <p id="user-info">載入使用者資訊中...</p>
+    
+    <button class="btn" onclick="startMeasurement()">開始量測 (測試傳送)</button>
+    <p id="status-text" class="status"></p>
 
     <script>
-        let currentUserId = "U_TEST_USER", idToken = null, videoStream = null;
+        let currentUserId = "";
 
-        // LIFF 初始化
-        async function initLIFF() {
+        // 1. 初始化 LIFF 取得真實 LINE User ID
+        async function initLiff() {
             try {
-                await liff.init({ liffId: "YOUR_LIFF_ID" });
+                // ⚠️ 請將 YOUR_LIFF_ID 替換為你在 LINE Developers 後台設定的真實 LIFF ID
+                await liff.init({ liffId: "YOUR_LIFF_ID" }); 
+
+                // 若未登入 LINE 身份，自動引導登入
+                if (!liff.isLoggedIn()) {
+                    liff.login();
+                    return;
+                }
+
+                // 取得使用者 Profile 資料
+                const profile = await liff.getProfile();
+                currentUserId = profile.userId; // 取得真實 U 開頭 33 碼 ID
+                document.getElementById("user-info").innerText = "已連線 LINE 帳號: " + profile.displayName;
+                console.log("成功取得真實 LINE User ID:", currentUserId);
+            } catch (err) {
+                console.error("LIFF 初始化失敗:", err);
+                document.getElementById("user-info").innerText = "⚠️ 請使用 LINE App 開啟此頁面以開啟推播功能。";
+            }
+        }
+
+        window.onload = function() {
+            initLiff();
+        };
+
+        // 2. 發送量測資料給後端 API
+        async function startMeasurement() {
+            // 檢查是否取得真實 LINE User ID (必須為 U 開頭且長度 33 碼)
+            if (!currentUserId || currentUserId === "U_TEST_USER" || !currentUserId.startsWith("U")) {
+                alert("未檢測到 LINE 帳號身份！系統將導向登入頁面，請登入後重新量測。");
                 if (liff.isLoggedIn()) {
                     const profile = await liff.getProfile();
                     currentUserId = profile.userId;
-                    idToken = liff.getIDToken();
-                    document.getElementById('userLineIdDisplay').innerText = profile.displayName || currentUserId.substring(0, 8) + '...';
                 } else {
                     liff.login();
+                    return;
                 }
-            } catch (err) {
-                document.getElementById('userLineIdDisplay').innerText = "測試模式 (U_TEST_USER)";
             }
-            checkConsent();
-        }
 
-        // 同意書狀態檢查
-        async function checkConsent() {
-            const badge = document.getElementById('consentBadge');
-            try {
-                const res = await (await fetch(`/api/v1/user/consent-status/${currentUserId}`)).json();
-                if (!res.agreed) {
-                    await fetch('/api/v1/user/consent', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ user_line_id: currentUserId, id_token: idToken, terms_version: "v1.0" })
-                    });
-                }
-                badge.innerText = "已簽署同意書";
-                badge.className = "px-2 py-0.5 rounded text-[10px] bg-emerald-900/80 text-emerald-300 border border-emerald-700";
-            } catch (e) {
-                badge.innerText = "狀態異常";
-            }
-        }
+            document.getElementById("status-text").innerText = "分析中，請稍候...";
 
-        // 開始鏡頭量測
-        async function startMeasurement() {
-            const btn = document.getElementById('btnStart');
-            btn.disabled = true;
-            btn.innerText = "啟動相機中...";
+            // 模擬 RGB 訊號數據
+            const mockRgbSignals = [
+                Array.from({length: 100}, () => Math.random() * 10),
+                Array.from({length: 100}, () => Math.sin(Date.now()) * 5 + 50)
+            ];
 
-            try {
-                videoStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
-                document.getElementById('webcam').srcObject = videoStream;
-                document.getElementById('placeholder').classList.add('hidden');
-                document.getElementById('scanOverlay').classList.remove('hidden');
-
-                let count = 10;
-                const timer = setInterval(() => {
-                    btn.innerText = `量測中 (${--count}s)...`;
-                    if (count <= 0) {
-                        clearInterval(timer);
-                        finishMeasurement();
-                    }
-                }, 1000);
-            } catch (err) {
-                alert("無法開啟相機，請確認視訊權限！");
-                btn.disabled = false;
-                btn.innerText = "開始量測 (10秒)";
-            }
-        }
-
-        // 送出資料給 API 分析
-        async function finishMeasurement() {
-            const btn = document.getElementById('btnStart');
-            btn.innerText = "AI 分析數據中...";
-
-            if (videoStream) videoStream.getTracks().forEach(t => t.stop());
-            document.getElementById('scanOverlay').classList.add('hidden');
-
-            const mockSignals = [[], Array.from({length: 300}, () => Math.sin(Math.random() * 10) * 20 + 128), []];
-            try {
-                const res = await fetch('/api/v1/analyze-rppg', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ user_line_id: currentUserId, id_token: idToken, rgb_signals: mockSignals, fps: 30 })
-                });
-                const json = await res.json();
-                if (json.status === 'success') displayResult(json.data);
-                else alert("分析失敗：" + (json.detail || "伺服器異常"));
-            } catch (err) {
-                alert("網路請求失敗，請重試！");
-            } finally {
-                btn.disabled = false;
-                btn.innerText = "重新量測";
-            }
-        }
-
-        // 渲染分析結果卡片
-        function displayResult(data) {
-            document.getElementById('resHR').innerText = data.heart_rate;
-            document.getElementById('resHRV').innerText = data.hrv_sdnn;
-            document.getElementById('resStress').innerText = data.stress_score;
-            document.getElementById('resSummary').innerText = data.summary;
-            document.getElementById('resAdvice').innerHTML = data.action_advice.replace(/\n/g, '<br>');
-
-            const badge = document.getElementById('lightBadge');
-            const lightMap = {
-                RED: { text: "🚨 高度警示", cls: "bg-rose-500 animate-pulse" },
-                YELLOW: { text: "⚠️ 輕微預警", cls: "bg-amber-500" },
-                GREEN: { text: "🟢 狀態良好", cls: "bg-emerald-500" }
+            const payload = {
+                user_line_id: currentUserId, // 傳送真實的 U 開頭 User ID
+                rgb_signals: mockRgbSignals,
+                fps: 30
             };
-            const config = lightMap[data.health_light] || lightMap.GREEN;
-            badge.innerText = config.text;
-            badge.className = `px-3 py-1 rounded-full text-xs font-bold text-white ${config.cls}`;
 
-            document.getElementById('resultCard').classList.remove('hidden');
-        }
-
-        // 推播報告並關閉 LIFF 視窗
-        function finishAndClose() {
-            alert("✅ 報告已由 PharmPulse 官方帳號推播至您的 LINE 聊天室！");
-            if (typeof liff !== "undefined" && liff.isInClient()) {
-                liff.closeWindow();
-            }
-        }
-
-        // 載入歷史紀錄
-        async function fetchHistory() {
             try {
-                const res = await (await fetch(`/api/v1/user/history/${currentUserId}`)).json();
-                const list = document.getElementById('historyList');
-                list.innerHTML = "";
+                const response = await fetch("/api/v1/analyze-rppg", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload)
+                });
 
-                if (res.history && res.history.length > 0) {
-                    list.innerHTML = res.history.map(item => {
-                        const date = item.created_at ? new Date(item.created_at).toLocaleString('zh-TW', { hour12: false }) : '未知時間';
-                        const icon = item.health_light === 'RED' ? '🚨' : item.health_light === 'YELLOW' ? '⚠️' : '🟢';
-                        return `
-                            <div class="p-2.5 bg-slate-900/80 rounded-lg border border-slate-700 flex justify-between items-center">
-                                <div>
-                                    <div class="text-[10px] text-slate-400">${date}</div>
-                                    <div class="font-bold text-emerald-400">心率: ${item.heart_rate} BPM | HRV: ${item.hrv_sdnn}ms</div>
-                                </div>
-                                <span class="text-sm">${icon}</span>
-                            </div>
-                        `;
-                    }).join('');
+                const result = await response.json();
+                if (result.status === "success") {
+                    document.getElementById("status-text").innerText = "分析完成！請查看 LINE 聊天室訊息推播。";
                 } else {
-                    list.innerHTML = `<div class="text-slate-500 text-center py-2">尚無歷史紀錄</div>`;
+                    document.getElementById("status-text").innerText = "分析失敗: " + JSON.stringify(result);
                 }
-                document.getElementById('historySection').classList.remove('hidden');
             } catch (err) {
-                alert("讀取歷史紀錄失敗！");
+                console.error("API 請求錯誤:", err);
+                document.getElementById("status-text").innerText = "網路發送失敗，請重試。";
             }
         }
-
-        window.onload = initLIFF;
     </script>
 </body>
 </html>
