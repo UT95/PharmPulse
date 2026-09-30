@@ -3,486 +3,510 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>PharmPulse 生理檢測與 AI 健康分析</title>
-    <!-- Bootstrap 5 CSS -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <!-- FontAwesome 圖示 -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <!-- LIFF SDK -->
+    <title>PharmPulse - rPPG 生理量測與健康評估</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- LINE LIFF SDK -->
     <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
     <style>
         body {
-            background-color: #f4f7f6;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background-color: #F8FAFC;
         }
-        .card-custom {
-            border: none;
-            border-radius: 16px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.06);
-        }
-        .camera-container {
+        .video-container {
             position: relative;
             width: 100%;
-            max-width: 360px;
-            height: 360px;
-            margin: 0 auto;
+            max-width: 320px;
+            height: 320px;
             border-radius: 50%;
             overflow: hidden;
-            border: 6px solid #e0e0e0;
-            background-color: #000;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
         }
         #webcam {
             width: 100%;
             height: 100%;
             object-fit: cover;
-            transform: scaleX(-1);
+            transform: scaleX(-1); /* 鏡像顯示 */
         }
-        .face-overlay {
+        .roi-overlay {
             position: absolute;
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            width: 220px;
-            height: 280px;
-            border: 3px dashed rgba(255, 255, 255, 0.7);
+            width: 180px;
+            height: 220px;
+            border: 2px dashed #10B981;
             border-radius: 50%;
             pointer-events: none;
+            box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.3);
         }
-        .light-indicator {
-            width: 24px;
-            height: 24px;
-            border-radius: 50%;
-            display: inline-block;
-            margin-right: 8px;
-        }
-        .light-GREEN { background-color: #28a745; box-shadow: 0 0 10px #28a745; }
-        .light-YELLOW { background-color: #ffc107; box-shadow: 0 0 10px #ffc107; }
-        .light-RED { background-color: #dc3545; box-shadow: 0 0 10px #dc3545; }
-        .nav-pills .nav-link.active {
-            background-color: #198754;
-        }
-        .nav-pills .nav-link {
-            color: #198754;
+        .progress-ring {
+            transform: rotate(-90deg);
         }
     </style>
 </head>
-<body class="pb-5">
+<body class="text-slate-800 flex flex-col min-h-screen">
 
-<div class="container py-3" style="max-width: 600px;">
-
-    <!-- 頁籤導覽：即時量測 / 歷史紀錄 -->
-    <ul class="nav nav-pills nav-fill mb-3 card-custom bg-white p-2" id="mainTab" role="tablist">
-        <li class="nav-item" role="presentation">
-            <button class="nav-link active fw-bold" id="measure-tab" data-bs-toggle="tab" data-bs-target="#measure-panel" type="button" role="tab">
-                <i class="fa-solid fa-heart-pulse me-1"></i> 即時檢測
-            </button>
-        </li>
-        <li class="nav-item" role="presentation">
-            <button class="nav-link fw-bold" id="history-tab" data-bs-toggle="tab" data-bs-target="#history-panel" type="button" role="tab" onclick="fetchHistory()">
-                <i class="fa-solid fa-clock-rotate-left me-1"></i> 歷史紀錄
-            </button>
-        </li>
-    </ul>
-
-    <div class="tab-content" id="mainTabContent">
-
-        <!-- 頁籤 1: 即時量測 -->
-        <div class="tab-pane fade show active" id="measure-panel" role="tabpanel">
-            <div class="card card-custom p-4 text-center bg-white mb-3">
-                <h4 class="fw-bold text-success mb-1">PharmPulse 生理量測</h4>
-                <p class="text-muted small mb-3">請保持面部對準圓框，靜止 10 秒進行測量</p>
-
-                <!-- 相機區域 -->
-                <div class="camera-container mb-3" id="cameraContainer">
-                    <video id="webcam" autoplay playsinline muted></video>
-                    <canvas id="canvas" style="display:none;"></canvas>
-                    <div class="face-overlay" id="faceOverlay"></div>
-                </div>
-
-                <!-- 進度條 -->
-                <div class="progress mb-3" style="height: 10px;">
-                    <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 0%;"></div>
-                </div>
-
-                <div id="statusText" class="text-secondary fw-bold mb-3">準備就緒，請點擊開始檢測</div>
-
-                <!-- 操作按鈕 -->
-                <div class="d-grid gap-2">
-                    <button id="startBtn" class="btn btn-success btn-lg fw-bold" onclick="startMeasurement()">
-                        <i class="fa-solid fa-play me-2"></i>開始量測 (10秒)
-                    </button>
-                </div>
-            </div>
+    <!-- 導覽列 -->
+    <header class="bg-white border-b border-slate-200 sticky top-0 z-30 px-4 py-3 flex justify-between items-center">
+        <div class="flex items-center space-x-2">
+            <span class="text-2xl">💚</span>
+            <h1 class="font-bold text-lg text-slate-800">PharmPulse</h1>
         </div>
-
-        <!-- 頁籤 2: 歷史紀錄 -->
-        <div class="tab-pane fade" id="history-panel" role="tabpanel">
-            <div class="card card-custom p-3 bg-white">
-                <h5 class="fw-bold text-success mb-3"><i class="fa-solid fa-list-ul me-2"></i>過往量測紀錄</h5>
-                <div id="historyList" class="list-group list-group-flush">
-                    <div class="text-center py-4 text-muted">
-                        <div class="spinner-border text-success mb-2" role="status"></div>
-                        <div>正在載入歷史紀錄...</div>
-                    </div>
-                </div>
-            </div>
+        <div id="consentBadge" class="hidden text-xs px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 font-medium">
+            已同意條款
         </div>
+    </header>
 
+    <!-- 頁籤切換 -->
+    <div class="bg-white border-b border-slate-200 flex text-center text-sm font-medium">
+        <button id="tabMeasureBtn" onclick="switchTab('measure')" class="flex-1 py-3 border-b-2 border-emerald-500 text-emerald-600 font-bold">
+            即時量測
+        </button>
+        <button id="tabHistoryBtn" onclick="switchTab('history')" class="flex-1 py-3 border-b-2 border-transparent text-slate-500 hover:text-slate-700">
+            歷史紀錄
+        </button>
     </div>
 
-</div>
+    <!-- 主要內容區 -->
+    <main class="flex-1 p-4 max-w-md mx-auto w-full">
 
-<!-- 同意條款 Modal -->
-<div class="modal fade" id="consentModal" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1">
-    <div class="modal-dialog modal-dialog-centered">
-        <div class="modal-content border-0 shadow">
-            <div class="modal-header bg-success text-white">
-                <h5 class="modal-title fw-bold"><i class="fa-solid fa-shield-halved me-2"></i>使用者隱私與知情同意</h5>
-            </div>
-            <div class="modal-body">
-                <p class="small text-secondary">歡迎使用 PharmPulse 生理照護服務。在開始量測前，請閱讀並同意以下事項：</p>
-                <div class="bg-light p-3 rounded small mb-3" style="max-height: 150px; overflow-y: auto;">
-                    1. 本服務透過相機影像進行非侵入式光學影像心率（rPPG）分析。<br>
-                    2. 收集之數據僅用於生理指標估算與個人健康趨勢紀錄。<br>
-                    3. 本系統估算結果僅供健康管理參考，不可作為醫療診斷之唯一依據。
+        <!-- 同意條款彈窗 -->
+        <div id="consentModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+            <div class="bg-white rounded-2xl max-w-sm w-full p-6 shadow-xl flex flex-col max-h-[85vh]">
+                <h2 class="text-xl font-bold text-slate-800 mb-2">使用條款與隱私權同意</h2>
+                <div class="overflow-y-auto text-sm text-slate-600 space-y-3 pr-1 my-3 flex-1 border-y border-slate-100 py-3">
+                    <p>歡迎使用 PharmPulse 生理量測與健康評估系統。</p>
+                    <p>1. <strong>非醫療診斷聲明</strong>：本服務利用影像光學心率技術 (rPPG) 提供心率、HRV 與壓力估算，結果僅供健康管理參考，不可作為醫療診斷依據。</p>
+                    <p>2. <strong>資料蒐集說明</strong>：為提供歷史分析服務，系統將儲存您的生理數據紀錄與 LINE User ID。影像將於前端即時處理，不會上傳任何個人面部影像至伺服器。</p>
+                    <p>3. <strong>服務調整</strong>：如有醫療需求，請務必諮詢專業醫師或藥師。</p>
                 </div>
-                <div class="form-check">
-                    <input class="form-check-input" type="checkbox" id="consentCheck">
-                    <label class="form-check-label fw-bold small" for="consentCheck">
-                        我已閱讀並同意上述隱私與數據服務條款
-                    </label>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-success w-100 fw-bold" id="consentSubmitBtn" onclick="submitConsent()" disabled>同意並繼續</button>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- 量測結果 Modal -->
-<div class="modal fade" id="resultModal" tabindex="-1">
-    <div class="modal-dialog modal-dialog-centered">
-        <div class="modal-content border-0 shadow">
-            <div class="modal-header bg-white border-0 pb-0">
-                <h5 class="modal-title fw-bold text-success"><i class="fa-solid fa-square-poll-vertical me-2"></i>AI 生理量測報告</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <div class="text-center mb-3">
-                    <span id="resultLightIndicator" class="light-indicator"></span>
-                    <span id="resultLightText" class="fw-bold fs-5">---</span>
-                </div>
-
-                <div class="row text-center mb-3 g-2">
-                    <div class="col-4">
-                        <div class="p-2 bg-light rounded">
-                            <div class="text-muted small">即時心率</div>
-                            <div class="fs-4 fw-bold text-danger"><span id="resHR">--</span> <small class="fs-6">BPM</small></div>
-                        </div>
-                    </div>
-                    <div class="col-4">
-                        <div class="p-2 bg-light rounded">
-                            <div class="text-muted small">HRV (SDNN)</div>
-                            <div class="fs-4 fw-bold text-primary"><span id="resHRV">--</span> <small class="fs-6">ms</small></div>
-                        </div>
-                    </div>
-                    <div class="col-4">
-                        <div class="p-2 bg-light rounded">
-                            <div class="text-muted small">壓力指數</div>
-                            <div class="fs-4 fw-bold text-warning"><span id="resStress">--</span></div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="card bg-light border-0 p-3 mb-2">
-                    <div class="fw-bold text-dark mb-1"><i class="fa-solid fa-notes-medical me-1"></i>健康摘要</div>
-                    <div id="resSummary" class="small text-secondary">--</div>
-                </div>
-
-                <div class="card bg-light border-0 p-3">
-                    <div class="fw-bold text-dark mb-1"><i class="fa-solid fa-user-doctor me-1"></i>AI 處置建議</div>
-                    <div id="resAdvice" class="small text-secondary" style="white-space: pre-line;">--</div>
-                </div>
-            </div>
-            <div class="modal-footer border-0">
-                <button type="button" class="btn btn-success w-100 fw-bold" data-bs-dismiss="modal" onclick="sendResultToLine()">
-                    <i class="fa-solid fa-paper-plane me-1"></i> 我知道了，同步至 LINE
+                <button onclick="acceptConsent()" class="w-full py-3 bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 text-white font-bold rounded-xl shadow-lg transition duration-150 mt-2">
+                    我已閱讀並同意條款
                 </button>
             </div>
         </div>
-    </div>
-</div>
 
-<!-- Bootstrap 5 JS -->
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+        <!-- 頁籤 1：即時量測 -->
+        <section id="measureSection" class="space-y-6">
+            
+            <!-- 視訊與提示卡片 -->
+            <div class="bg-white rounded-2xl p-5 shadow-sm border border-slate-100 flex flex-col items-center">
+                <div class="video-container mb-4">
+                    <video id="webcam" autoplay playsinline muted></video>
+                    <div class="roi-overlay"></div>
+                </div>
+                <canvas id="canvas" class="hidden"></canvas>
 
-<script>
-    // 請將此處替換為您的 LIFF ID
-    const LIFF_ID = "YOUR_LIFF_ID"; 
-    
-    let userLineId = "test_user_default";
-    let isMeasuring = false;
-    let rgbSignals = [[], [], []]; // R, G, B
-    let videoStream = null;
-    let latestResult = null;
+                <p id="statusHint" class="text-sm text-slate-500 text-center font-medium">
+                    請將臉部對準虛線框內，保持靜止並確保光線充足
+                </p>
 
-    // 頁面初始化
-    window.onload = async function() {
-        setupConsentCheck();
-        await initLIFF();
-        await setupCamera();
-    };
+                <!-- 進度條 -->
+                <div id="progressBox" class="w-full mt-4 hidden">
+                    <div class="flex justify-between text-xs text-slate-500 mb-1">
+                        <span>量測進度</span>
+                        <span id="progressText">0%</span>
+                    </div>
+                    <div class="w-full bg-slate-100 rounded-full h-2.5 overflow-hidden">
+                        <div id="progressBar" class="bg-emerald-500 h-2.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+                    </div>
+                </div>
 
-    // 初始化 LIFF
-    async function initLIFF() {
-        try {
-            if (LIFF_ID && LIFF_ID !== "YOUR_LIFF_ID") {
-                await liff.init({ liffId: LIFF_ID });
-                if (liff.isLoggedIn()) {
-                    const profile = await liff.getProfile();
-                    userLineId = profile.userId;
-                } else {
-                    liff.login();
-                }
-            }
-        } catch (err) {
-            console.warn("LIFF 初始化跳過或失敗，使用測試模式:", err);
-        }
-        checkConsentStatus();
-    }
+                <!-- 按鈕區 -->
+                <div class="w-full mt-5 space-y-2">
+                    <button id="startBtn" onclick="startMeasurement()" class="w-full py-3.5 bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 text-white font-bold rounded-xl shadow-md transition duration-150 flex items-center justify-center space-x-2">
+                        <span>開始量測 (15秒)</span>
+                    </button>
+                    <button id="stopBtn" onclick="stopMeasurement()" class="w-full py-3.5 bg-slate-200 text-slate-700 font-bold rounded-xl hidden">
+                        取消量測
+                    </button>
+                </div>
+            </div>
 
-    // 檢查同意條款狀態
-    async function checkConsentStatus() {
-        try {
-            const res = await fetch(`/api/v1/user/consent-status/${userLineId}`);
-            const data = await res.json();
-            if (!data.agreed) {
-                const modal = new bootstrap.Modal(document.getElementById('consentModal'));
-                modal.show();
-            }
-        } catch (err) {
-            console.error("檢查同意條款失敗:", err);
-        }
-    }
+            <!-- 分析結果卡片 (預設隱藏) -->
+            <div id="resultCard" class="bg-white rounded-2xl p-5 shadow-sm border border-slate-100 hidden space-y-4">
+                <div class="flex justify-between items-center border-b border-slate-100 pb-3">
+                    <h3 class="font-bold text-slate-800 text-lg">生理評估結果</h3>
+                    <span id="lightBadge" class="px-3 py-1 rounded-full text-xs font-bold text-white bg-emerald-500">
+                        🟢 正常
+                    </span>
+                </div>
 
-    function setupConsentCheck() {
-        document.getElementById('consentCheck').addEventListener('change', function(e) {
-            document.getElementById('consentSubmitBtn').disabled = !e.target.checked;
+                <!-- 三大指標數據 -->
+                <div class="grid grid-cols-3 gap-2 text-center py-2">
+                    <div class="bg-slate-50 p-3 rounded-xl">
+                        <div class="text-xs text-slate-400 font-medium">即時心率</div>
+                        <div class="text-xl font-bold text-slate-800 mt-1"><span id="resHR">--</span> <span class="text-xs font-normal">BPM</span></div>
+                    </div>
+                    <div class="bg-slate-50 p-3 rounded-xl">
+                        <div class="text-xs text-slate-400 font-medium">HRV 指數</div>
+                        <div class="text-xl font-bold text-slate-800 mt-1"><span id="resHRV">--</span> <span class="text-xs font-normal">ms</span></div>
+                    </div>
+                    <div class="bg-slate-50 p-3 rounded-xl">
+                        <div class="text-xs text-slate-400 font-medium">壓力指數</div>
+                        <div class="text-xl font-bold text-slate-800 mt-1"><span id="resStress">--</span></div>
+                    </div>
+                </div>
+
+                <!-- 摘要與衛教建議 -->
+                <div class="space-y-3 pt-2">
+                    <div class="bg-emerald-50/50 p-3.5 rounded-xl border border-emerald-100/60">
+                        <div class="text-xs font-bold text-emerald-800 mb-1">📋 綜合評估</div>
+                        <p id="resSummary" class="text-sm text-slate-600 leading-relaxed"></p>
+                    </div>
+
+                    <div class="bg-slate-50 p-3.5 rounded-xl border border-slate-100">
+                        <div class="text-xs font-bold text-slate-700 mb-1">💡 衛教及處置建議</div>
+                        <p id="resAdvice" class="text-sm text-slate-600 whitespace-pre-line leading-relaxed"></p>
+                    </div>
+                </div>
+
+                <!-- 發送給 LINE 按鈕 -->
+                <button onclick="sendResultToLine()" class="w-full py-3 bg-emerald-500 hover:bg-emerald-600 text-white font-bold rounded-xl shadow transition duration-150 flex items-center justify-center space-x-2">
+                    <span>知道了，同步至 LINE</span>
+                </button>
+            </div>
+        </section>
+
+        <!-- 頁籤 2：歷史紀錄 -->
+        <section id="historySection" class="hidden space-y-4">
+            <div id="historyList" class="space-y-3">
+                <div class="text-center py-10 text-slate-400 text-sm">載入中...</div>
+            </div>
+        </section>
+
+    </main>
+
+    <script>
+        // ⚠️ 請務必替換為您在 LINE Developers 申請到的完整 LIFF ID (例如: 1234567890-abcdefgh)
+        const LIFF_ID = "2011686844-4moxcFdy"; 
+
+        let userLineId = "U_TEST_USER_DEFAULT"; // 預設測試 ID，LIFF 啟動後會寫入真實 ID
+        let isMeasuring = false;
+        let rgbSignals = [[], [], []]; // R, G, B
+        let videoStream = null;
+        let latestResult = null;
+        let timerInterval = null;
+
+        // 初始化頁面
+        window.addEventListener('DOMContentLoaded', async () => {
+            await initCamera();
+            await initLIFF();
         });
-    }
 
-    async function submitConsent() {
-        try {
-            await fetch('/api/v1/user/consent', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ user_line_id: userLineId, terms_version: "v1.0" })
-            });
-            const modal = bootstrap.Modal.getInstance(document.getElementById('consentModal'));
-            modal.hide();
-        } catch (err) {
-            alert("提交失敗，請重試");
-        }
-    }
-
-    // 開啟相機
-    async function setupCamera() {
-        const video = document.getElementById('webcam');
-        try {
-            videoStream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
-                audio: false
-            });
-            video.srcObject = videoStream;
-        } catch (err) {
-            document.getElementById('statusText').innerText = "無法啟用相機，請允許相機權限。";
-            document.getElementById('statusText').className = "text-danger fw-bold mb-3";
-        }
-    }
-
-    // 開始 10 秒量測
-    function startMeasurement() {
-        if (isMeasuring) return;
-        isMeasuring = true;
-        rgbSignals = [[], [], []];
-
-        const startBtn = document.getElementById('startBtn');
-        const statusText = document.getElementById('statusText');
-        const progressBar = document.getElementById('progressBar');
-
-        startBtn.disabled = true;
-        statusText.innerText = "量測中，請保持靜止並保持臉部於框內...";
-        statusText.className = "text-success fw-bold mb-3";
-
-        const video = document.getElementById('webcam');
-        const canvas = document.getElementById('canvas');
-        const ctx = canvas.getContext('2d');
-
-        canvas.width = 160;
-        canvas.height = 120;
-
-        const duration = 10; // 10秒
-        const fps = 30;
-        const totalFrames = duration * fps;
-        let currentFrame = 0;
-
-        const interval = setInterval(() => {
-            if (currentFrame >= totalFrames) {
-                clearInterval(interval);
-                isMeasuring = false;
-                startBtn.disabled = false;
-                statusText.innerText = "分析中，請稍候...";
-                submitData();
-                return;
-            }
-
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            const frameData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-
-            let rSum = 0, gSum = 0, bSum = 0, count = 0;
-            // 擷取中心區域 ROI
-            for (let y = 30; y < 90; y++) {
-                for (let x = 40; x < 120; x++) {
-                    const idx = (y * canvas.width + x) * 4;
-                    rSum += frameData[idx];
-                    gSum += frameData[idx + 1];
-                    bSum += frameData[idx + 2];
-                    count++;
+        // 初始化 LIFF
+        async function initLIFF() {
+            try {
+                if (LIFF_ID && LIFF_ID !== "YOUR_LIFF_ID") {
+                    await liff.init({ liffId: LIFF_ID });
+                    if (liff.isLoggedIn()) {
+                        const profile = await liff.getProfile();
+                        userLineId = profile.userId; // 成功取得真正的 LINE User ID
+                        console.log("LINE User ID 取得成功:", userLineId);
+                    } else {
+                        liff.login();
+                    }
+                } else {
+                    console.warn("未設定 LIFF_ID，目前使用測試模式 ID:", userLineId);
                 }
+            } catch (err) {
+                console.warn("LIFF 初始化失敗或非於 LINE App 內開啟:", err);
+            }
+            checkConsentStatus();
+        }
+
+        // 檢查同意狀態
+        async function checkConsentStatus() {
+            try {
+                const res = await fetch(`/api/v1/user/consent-status/${userLineId}`);
+                const data = await res.json();
+                if (data.agreed) {
+                    document.getElementById('consentBadge').classList.remove('hidden');
+                } else {
+                    document.getElementById('consentModal').classList.remove('hidden');
+                }
+            } catch (e) {
+                console.error("檢查同意狀態出錯:", e);
+                // 後端出錯時預設不卡住使用者
+            }
+        }
+
+        // 同意條款
+        async function acceptConsent() {
+            try {
+                await fetch('/api/v1/user/consent', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ user_line_id: userLineId, terms_version: "v1.0" })
+                });
+                document.getElementById('consentModal').classList.add('hidden');
+                document.getElementById('consentBadge').classList.remove('hidden');
+            } catch (e) {
+                alert("網路異常，請稍後再試");
+            }
+        }
+
+        // 初始化相機
+        async function initCamera() {
+            try {
+                const constraints = {
+                    video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }
+                };
+                videoStream = await navigator.mediaDevices.getUserMedia(constraints);
+                const video = document.getElementById('webcam');
+                video.srcObject = videoStream;
+            } catch (err) {
+                document.getElementById('statusHint').innerText = "⚠️ 無法存取攝影機，請確認權限";
+                document.getElementById('statusHint').classList.add('text-red-500');
+            }
+        }
+
+        // 開始量測
+        function startMeasurement() {
+            if (isMeasuring) return;
+            isMeasuring = true;
+            rgbSignals = [[], [], []];
+
+            document.getElementById('startBtn').classList.add('hidden');
+            document.getElementById('stopBtn').classList.remove('hidden');
+            document.getElementById('progressBox').classList.remove('hidden');
+            document.getElementById('resultCard').classList.add('hidden');
+            document.getElementById('statusHint').innerText = "量測中，請保持臉部靜止...";
+
+            const totalDuration = 15; // 15 秒
+            let elapsed = 0;
+
+            timerInterval = setInterval(() => {
+                elapsed += 0.1;
+                const percent = Math.min(100, Math.round((elapsed / totalDuration) * 100));
+                document.getElementById('progressBar').style.width = percent + '%';
+                document.getElementById('progressText').innerText = percent + '%';
+
+                captureFrame();
+
+                if (elapsed >= totalDuration) {
+                    stopMeasurement(true);
+                }
+            }, 100);
+        }
+
+        // 擷取影像 RGB
+        function captureFrame() {
+            const video = document.getElementById('webcam');
+            const canvas = document.getElementById('canvas');
+            if (!video.videoWidth) return;
+
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            // 擷取中央區域 (ROI)
+            const roiX = canvas.width * 0.35;
+            const roiY = canvas.height * 0.25;
+            const roiW = canvas.width * 0.3;
+            const roiH = canvas.height * 0.4;
+
+            const frame = ctx.getImageData(roiX, roiY, roiW, roiH);
+            const data = frame.data;
+
+            let rSum = 0, gSum = 0, bSum = 0;
+            const count = data.length / 4;
+
+            for (let i = 0; i < data.length; i += 4) {
+                rSum += data[i];
+                gSum += data[i + 1];
+                bSum += data[i + 2];
             }
 
             rgbSignals[0].push(rSum / count);
             rgbSignals[1].push(gSum / count);
             rgbSignals[2].push(bSum / count);
-
-            currentFrame++;
-            const progress = Math.round((currentFrame / totalFrames) * 100);
-            progressBar.style.width = `${progress}%`;
-        }, 1000 / fps);
-    }
-
-    // 上傳數據至後端
-    async function submitData() {
-        try {
-            const response = await fetch('/api/v1/analyze-rppg', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    user_line_id: userLineId,
-                    rgb_signals: rgbSignals,
-                    fps: 30
-                })
-            });
-
-            const resData = await response.json();
-            if (resData.status === "success") {
-                const data = resData.data;
-                latestResult = {
-                    hr: data.heart_rate,
-                    hrv: data.hrv_sdnn,
-                    stress: data.stress_score,
-                    light: data.health_light,
-                    summary: data.summary,
-                    advice: data.action_advice
-                };
-
-                // 填入 Modal 數值
-                document.getElementById('resHR').innerText = data.heart_rate;
-                document.getElementById('resHRV').innerText = data.hrv_sdnn;
-                document.getElementById('resStress').innerText = data.stress_score;
-                document.getElementById('resSummary').innerText = data.summary;
-                document.getElementById('resAdvice').innerText = data.action_advice;
-
-                const lightInd = document.getElementById('resultLightIndicator');
-                lightInd.className = `light-indicator light-${data.health_light}`;
-                
-                const lightTexts = { GREEN: "綠燈 (正常)", YELLOW: "黃燈 (輕微預警)", RED: "紅燈 (高度警示)" };
-                document.getElementById('resultLightText').innerText = lightTexts[data.health_light] || data.health_light;
-
-                document.getElementById('statusText').innerText = "量測完成！";
-                
-                const resultModal = new bootstrap.Modal(document.getElementById('resultModal'));
-                resultModal.show();
-            } else {
-                alert("分析失敗：" + (resData.detail || "請重新量測"));
-            }
-        } catch (err) {
-            console.error(err);
-            alert("網路請求連線失敗");
-        } finally {
-            document.getElementById('progressBar').style.width = "0%";
         }
-    }
 
-    // 將結果發送至 LINE 聊天室
-    async function sendResultToLine() {
-        if (!latestResult) return;
+        // 停止/完成量測
+        async function stopMeasurement(completed = false) {
+            clearInterval(timerInterval);
+            isMeasuring = false;
 
-        const lightTextMap = { GREEN: "🟢 綠燈 (正常)", YELLOW: "⚠️ 黃燈 (輕微預警)", RED: "🚨 紅燈 (高度警示)" };
+            document.getElementById('startBtn').classList.remove('hidden');
+            document.getElementById('stopBtn').classList.add('hidden');
 
-        const messageText = 
-            `💚 【PharmPulse 生理量測報告】\n` +
-            `• 狀態燈號：${lightTextMap[latestResult.light] || latestResult.light}\n` +
-            `• 即時心率：${latestResult.hr} BPM\n` +
-            `• HRV 指數：${latestResult.hrv} ms\n` +
-            `• 壓力指數：${latestResult.stress}\n\n` +
-            `📋 摘要：\n${latestResult.summary}\n\n` +
-            `${latestResult.advice}`;
-
-        try {
-            if (typeof liff !== "undefined" && liff.isInClient()) {
-                await liff.sendMessages([{
-                    type: 'text',
-                    text: messageText
-                }]);
-                liff.closeWindow();
+            if (completed) {
+                document.getElementById('statusHint').innerText = "分析數據中...";
+                await uploadAndAnalyze();
             } else {
-                alert("已完成紀錄！（若於 LINE App 內開啓，即可直接同步訊息至聊天室）");
+                document.getElementById('statusHint').innerText = "已取消量測";
+                document.getElementById('progressBox').classList.add('hidden');
             }
-        } catch (err) {
-            console.error("LIFF sendMessages 失敗:", err);
-            alert("同步訊息失敗，請確認是否已授權 chat_message_write 權限。");
         }
-    }
 
-    // 載入歷史紀錄
-    async function fetchHistory() {
-        const historyList = document.getElementById('historyList');
-        try {
-            const res = await fetch(`/api/v1/user/history/${userLineId}`);
-            const data = await res.json();
-
-            if (data.status === "success" && data.history.length > 0) {
-                historyList.innerHTML = "";
-                data.history.forEach(item => {
-                    const timeStr = item.created_at ? new Date(item.created_at).toLocaleString('zh-TW') : "未知時間";
-                    const badgeColor = item.health_light === "GREEN" ? "bg-success" : (item.health_light === "YELLOW" ? "bg-warning text-dark" : "bg-danger");
-
-                    const html = `
-                        <div class="list-group-item py-3">
-                            <div class="d-flex justify-content-between align-items-center mb-1">
-                                <span class="badge ${badgeColor}">${item.health_light}</span>
-                                <small class="text-muted">${timeStr}</small>
-                            </div>
-                            <div class="row text-center my-2 g-1">
-                                <div class="col-4"><small class="text-muted">心率</small><div><strong>${item.heart_rate}</strong> <small>BPM</small></div></div>
-                                <div class="col-4"><small class="text-muted">HRV</small><div><strong>${item.hrv_sdnn}</strong> <small>ms</small></div></div>
-                                <div class="col-4"><small class="text-muted">壓力</small><div><strong>${item.stress_score}</strong></div></div>
-                            </div>
-                            <div class="small text-secondary bg-light p-2 rounded">${item.summary || "無摘要"}</div>
-                        </div>
-                    `;
-                    historyList.innerHTML += html;
+        // 上傳數據並分析
+        async function uploadAndAnalyze() {
+            try {
+                const response = await fetch('/api/v1/analyze-rppg', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        user_line_id: userLineId,
+                        rgb_signals: rgbSignals,
+                        fps: 10
+                    })
                 });
-            } else {
-                historyList.innerHTML = `<div class="text-center py-4 text-muted">尚無歷史紀錄</div>`;
+
+                const res = await response.json();
+                if (res.status === 'success') {
+                    displayResult(res.data);
+                    document.getElementById('statusHint').innerText = "量測完成！";
+                } else {
+                    alert("分析失敗: " + (res.message || "未知錯誤"));
+                }
+            } catch (err) {
+                alert("網路連線異常，請稍後再試");
+            } finally {
+                document.getElementById('progressBox').classList.add('hidden');
             }
-        } catch (err) {
-            console.error(err);
-            historyList.innerHTML = `<div class="text-center py-4 text-danger">無法載入歷史紀錄</div>`;
         }
-    }
-</script>
+
+        // 顯示分析結果
+        function displayResult(data) {
+            latestResult = {
+                hr: data.heart_rate,
+                hrv: data.hrv_sdnn,
+                stress: data.stress_score,
+                light: data.health_light,
+                summary: data.summary,
+                advice: data.action_advice
+            };
+
+            document.getElementById('resHR').innerText = data.heart_rate;
+            document.getElementById('resHRV').innerText = data.hrv_sdnn;
+            document.getElementById('resStress').innerText = data.stress_score;
+            document.getElementById('resSummary').innerText = data.summary;
+            document.getElementById('resAdvice').innerText = data.action_advice;
+
+            const badge = document.getElementById('lightBadge');
+            if (data.health_light === 'RED') {
+                badge.className = "px-3 py-1 rounded-full text-xs font-bold text-white bg-rose-500";
+                badge.innerText = "🚨 高度警示";
+            } else if (data.health_light === 'YELLOW') {
+                badge.className = "px-3 py-1 rounded-full text-xs font-bold text-white bg-amber-500";
+                badge.innerText = "⚠️ 輕微預警";
+            } else {
+                badge.className = "px-3 py-1 rounded-full text-xs font-bold text-white bg-emerald-500";
+                badge.innerText = "🟢 正常良好";
+            }
+
+            document.getElementById('resultCard').classList.remove('hidden');
+        }
+
+        // 同步結果至 LINE 聊天室
+        async function sendResultToLine() {
+            if (!latestResult) return;
+
+            const lightTextMap = { 
+                GREEN: "🟢 綠燈 (正常)", 
+                YELLOW: "⚠️ 黃燈 (輕微預警)", 
+                RED: "🚨 紅燈 (高度警示)" 
+            };
+
+            const messageText = 
+                `💚 【PharmPulse 生理量測報告】\n` +
+                `• 狀態燈號：${lightTextMap[latestResult.light] || latestResult.light}\n` +
+                `• 即時心率：${latestResult.hr} BPM\n` +
+                `• HRV 指數：${latestResult.hrv} ms\n` +
+                `• 壓力指數：${latestResult.stress}\n\n` +
+                `📋 摘要：\n${latestResult.summary}\n\n` +
+                `${latestResult.advice}`;
+
+            try {
+                if (typeof liff !== "undefined" && liff.isInClient()) {
+                    await liff.sendMessages([{
+                        type: 'text',
+                        text: messageText
+                    }]);
+                    liff.closeWindow(); // 發送成功後關閉 LIFF 頁面
+                } else {
+                    alert("目前非在 LINE App 內開啟，量測結果已成功儲存至歷史紀錄！");
+                }
+            } catch (err) {
+                console.error("LIFF sendMessages 失敗:", err);
+                alert("無法同步訊息！請確認 LINE Developers 設定中是否有勾選『chat_message_write』權限。");
+            }
+        }
+
+        // 切換頁籤
+        function switchTab(tab) {
+            const mBtn = document.getElementById('tabMeasureBtn');
+            const hBtn = document.getElementById('tabHistoryBtn');
+            const mSec = document.getElementById('measureSection');
+            const hSec = document.getElementById('historySection');
+
+            if (tab === 'measure') {
+                mBtn.className = "flex-1 py-3 border-b-2 border-emerald-500 text-emerald-600 font-bold";
+                hBtn.className = "flex-1 py-3 border-b-2 border-transparent text-slate-500 hover:text-slate-700";
+                mSec.classList.remove('hidden');
+                hSec.classList.add('hidden');
+            } else {
+                hBtn.className = "flex-1 py-3 border-b-2 border-emerald-500 text-emerald-600 font-bold";
+                mBtn.className = "flex-1 py-3 border-b-2 border-transparent text-slate-500 hover:text-slate-700";
+                hSec.classList.remove('hidden');
+                mSec.classList.add('hidden');
+                loadHistory();
+            }
+        }
+
+        // 載入歷史紀錄
+        async function loadHistory() {
+            const listEl = document.getElementById('historyList');
+            listEl.innerHTML = '<div class="text-center py-10 text-slate-400 text-sm">載入中...</div>';
+
+            try {
+                const res = await fetch(`/api/v1/user/history/${userLineId}`);
+                const data = await res.json();
+
+                if (data.status === 'success' && data.history.length > 0) {
+                    listEl.innerHTML = data.history.map(item => {
+                        const dateStr = item.created_at ? new Date(item.created_at).toLocaleString('zh-TW', { hour12: false }) : '未知時間';
+                        let lightBadge = '<span class="px-2 py-0.5 rounded text-xs text-emerald-700 bg-emerald-100 font-medium">綠燈</span>';
+                        if (item.health_light === 'RED') {
+                            lightBadge = '<span class="px-2 py-0.5 rounded text-xs text-rose-700 bg-rose-100 font-medium">紅燈</span>';
+                        } else if (item.health_light === 'YELLOW') {
+                            lightBadge = '<span class="px-2 py-0.5 rounded text-xs text-amber-700 bg-amber-100 font-medium">黃燈</span>';
+                        }
+
+                        return `
+                            <div class="bg-white p-4 rounded-xl border border-slate-100 shadow-sm space-y-2">
+                                <div class="flex justify-between items-center border-b border-slate-100 pb-2">
+                                    <span class="text-xs text-slate-400">${dateStr}</span>
+                                    ${lightBadge}
+                                </div>
+                                <div class="grid grid-cols-3 text-center py-1">
+                                    <div>
+                                        <div class="text-xs text-slate-400">心率</div>
+                                        <div class="font-bold text-slate-800 text-sm">${item.heart_rate} <span class="text-xs font-normal">BPM</span></div>
+                                    </div>
+                                    <div>
+                                        <div class="text-xs text-slate-400">HRV</div>
+                                        <div class="font-bold text-slate-800 text-sm">${item.hrv_sdnn} <span class="text-xs font-normal">ms</span></div>
+                                    </div>
+                                    <div>
+                                        <div class="text-xs text-slate-400">壓力</div>
+                                        <div class="font-bold text-slate-800 text-sm">${item.stress_score}</div>
+                                    </div>
+                                </div>
+                                ${item.summary ? `<div class="text-xs text-slate-600 bg-slate-50 p-2 rounded leading-relaxed">${item.summary}</div>` : ''}
+                            </div>
+                        `;
+                    }).join('');
+                } else {
+                    listEl.innerHTML = '<div class="text-center py-10 text-slate-400 text-sm">尚無量測紀錄</div>';
+                }
+            } catch (err) {
+                listEl.innerHTML = '<div class="text-center py-10 text-rose-400 text-sm">歷史紀錄載入失敗</div>';
+            }
+        }
+    </script>
 </body>
 </html>
