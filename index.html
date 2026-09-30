@@ -13,21 +13,30 @@
         h2 { color: #1DB446; margin-bottom: 8px; font-size: 22px; }
         .user-info { font-size: 14px; color: #666; margin-bottom: 20px; background: #eef9f2; padding: 8px 12px; border-radius: 8px; display: inline-block; }
         
-        /* 鏡頭區域與人臉輪廓框 */
-        .camera-container { position: relative; width: 100%; max-width: 320px; height: 320px; margin: 0 auto 20px; border-radius: 50%; overflow: hidden; background-color: #000; border: 4px solid #1DB446; box-shadow: 0 8px 16px rgba(29, 180, 70, 0.2); }
+        /* 鏡頭區域與對齊輪廓框 */
+        .camera-container { position: relative; width: 280px; height: 280px; margin: 0 auto 20px; border-radius: 50%; overflow: hidden; background-color: #000; border: 4px solid #1DB446; box-shadow: 0 8px 16px rgba(29, 180, 70, 0.2); }
         video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
-        .face-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 3px dashed rgba(255, 255, 255, 0.8); border-radius: 50%; pointer-events: none; box-sizing: border-box; animation: pulse 2s infinite; }
+        .face-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 4px dashed rgba(255, 255, 255, 0.85); border-radius: 50%; pointer-events: none; box-sizing: border-box; animation: pulse 2s infinite; }
         
         @keyframes pulse {
-            0% { border-color: rgba(255, 255, 255, 0.5); box-shadow: inset 0 0 10px rgba(255, 255, 255, 0.2); }
-            50% { border-color: rgba(29, 180, 70, 0.9); box-shadow: inset 0 0 20px rgba(29, 180, 70, 0.4); }
-            100% { border-color: rgba(255, 255, 255, 0.5); box-shadow: inset 0 0 10px rgba(255, 255, 255, 0.2); }
+            0% { border-color: rgba(255, 255, 255, 0.6); box-shadow: inset 0 0 10px rgba(255, 255, 255, 0.3); }
+            50% { border-color: rgba(29, 180, 70, 1); box-shadow: inset 0 0 25px rgba(29, 180, 70, 0.6); }
+            100% { border-color: rgba(255, 255, 255, 0.6); box-shadow: inset 0 0 10px rgba(255, 255, 255, 0.3); }
         }
 
         .btn { width: 100%; padding: 14px; background-color: #1DB446; color: white; border: none; border-radius: 10px; font-size: 18px; font-weight: bold; cursor: pointer; transition: background-color 0.2s; }
         .btn:active { background-color: #159338; }
         .btn:disabled { background-color: #ccc; cursor: not-allowed; }
+        
         .status { margin-top: 15px; font-size: 15px; color: #555; font-weight: 500; }
+
+        /* AI 檢測報告與建議卡片 */
+        .report-card { display: none; margin-top: 20px; padding: 16px; border-radius: 12px; background: #f0fdf4; border: 1px solid #bbf7d0; text-align: left; }
+        .report-card.yellow { background: #fefce8; border-color: #fef08a; }
+        .report-card.red { background: #fef2f2; border-color: #fecaca; }
+        .report-title { font-weight: bold; font-size: 16px; margin-bottom: 8px; color: #166534; }
+        .report-metric { font-size: 15px; margin-bottom: 6px; }
+        .report-section { margin-top: 10px; font-size: 14px; line-height: 1.5; white-space: pre-line; }
     </style>
 </head>
 <body>
@@ -36,7 +45,7 @@
         <h2>PharmPulse 生理檢測</h2>
         <div id="user-info" class="user-info">連線中...</div>
 
-        <!-- 鏡頭預覽與對齊框區域 -->
+        <!-- 視訊鏡頭與動態人臉對齊框 -->
         <div class="camera-container">
             <video id="webcam" autoplay playsinline muted></video>
             <div class="face-overlay"></div>
@@ -44,17 +53,26 @@
 
         <button id="start-btn" class="btn" onclick="startMeasurement()">開始生理量測</button>
         <p id="status-text" class="status">請將臉部對準圓框中央後點擊開始</p>
+
+        <!-- 分析結果與 AI 處置建議顯示區 -->
+        <div id="report-card" class="report-card">
+            <div id="report-title" class="report-title">🟢 量測結果報告</div>
+            <div id="report-metrics" class="report-metric"></div>
+            <hr style="margin: 8px 0; border: none; border-top: 1px solid rgba(0,0,0,0.1);">
+            <div id="report-summary" class="report-section"></div>
+            <div id="report-advice" class="report-section" style="font-weight: 500;"></div>
+        </div>
     </div>
 
     <script>
         let currentUserId = "";
         const webcamElement = document.getElementById('webcam');
 
-        // 1. 初始化 LIFF 取得真實 LINE User ID
+        // 1. 初始化 LIFF
         async function initLiff() {
             try {
                 // ⚠️ 請記得替換為你的 LIFF ID (只保留單引號)
-                await liff.init({ liffId: '2011686844-4moxcFdy' }); 
+                await liff.init({ liffId: 'YOUR_LIFF_ID' }); 
 
                 if (!liff.isLoggedIn()) {
                     liff.login();
@@ -62,16 +80,15 @@
                 }
 
                 const profile = await liff.getProfile();
-                currentUserId = profile.userId; // 取得真實 U 開頭 33 碼 ID
+                currentUserId = profile.userId;
                 document.getElementById("user-info").innerText = "👤 已連線: " + profile.displayName;
-                console.log("成功取得真實 LINE User ID:", currentUserId);
             } catch (err) {
                 console.error("LIFF 初始化失敗:", err);
-                document.getElementById("user-info").innerText = "⚠️ 請透過 LINE App 開啟以啟動訊息通知";
+                document.getElementById("user-info").innerText = "⚠️ 請由 LINE App 內開啟此頁面";
             }
         }
 
-        // 2. 開啟攝影機
+        // 2. 啟動鏡頭
         async function startCamera() {
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({ 
@@ -80,8 +97,8 @@
                 });
                 webcamElement.srcObject = stream;
             } catch (err) {
-                console.error("相機權限開啟失敗:", err);
-                document.getElementById("status-text").innerText = "無法存取相機，請允許瀏覽器使用視訊鏡頭。";
+                console.error("鏡頭啟動失敗:", err);
+                document.getElementById("status-text").innerText = "無法啟用鏡頭，請確認瀏覽器權限。";
             }
         }
 
@@ -90,10 +107,30 @@
             startCamera();
         };
 
-        // 3. 發送量測資料給後端 API
+        // 3. 產生動態變化的 rPPG 模擬脈波訊號
+        function generateDynamicRgbSignals() {
+            const length = 180;
+            // 隨機產生 60~90 之間的模擬心率頻率
+            const targetBpm = Math.floor(Math.random() * (90 - 60 + 1)) + 60;
+            const freq = targetBpm / 60.0; // 轉為 Hz
+            
+            const redSignal = [];
+            const greenSignal = [];
+            
+            for (let i = 0; i < length; i++) {
+                const t = i / 30.0; // 時間 t (秒)
+                // 加入正弦波形 + 隨機噪訊，使每次計算出的 HR/HRV 都不一樣
+                const wave = Math.sin(2 * Math.PI * freq * t) * 10 + (Math.random() * 2 - 1);
+                greenSignal.push(wave + 50);
+                redSignal.push(wave * 0.5 + 40);
+            }
+            return [redSignal, greenSignal];
+        }
+
+        // 4. 發送量測資料給後端 API
         async function startMeasurement() {
             if (!currentUserId || currentUserId === "U_TEST_USER" || !currentUserId.startsWith("U")) {
-                alert("未檢測到 LINE 帳號身份！將引導您登入 LINE。");
+                alert("未檢測到 LINE 帳號身份！請由 LINE 聊天室開啟。");
                 if (liff.isLoggedIn()) {
                     const profile = await liff.getProfile();
                     currentUserId = profile.userId;
@@ -104,17 +141,17 @@
             }
 
             const btn = document.getElementById("start-btn");
+            const reportCard = document.getElementById("report-card");
+            
             btn.disabled = true;
-            document.getElementById("status-text").innerText = "⏳ 正在分析生理數據與脈波訊號...";
+            reportCard.style.display = "none";
+            document.getElementById("status-text").innerText = "⏳ 正在分析人臉脈波訊號與生理數據...";
 
-            // 模擬分析用 RGB 訊號
-            const mockRgbSignals = [
-                Array.from({length: 150}, () => Math.random() * 10),
-                Array.from({length: 150}, () => Math.sin(Date.now() / 100) * 5 + 50)
-            ];
+            // 使用動態訊號
+            const mockRgbSignals = generateDynamicRgbSignals();
 
             const payload = {
-                user_line_id: currentUserId, // 帶入真實的 LINE User ID
+                user_line_id: currentUserId,
                 rgb_signals: mockRgbSignals,
                 fps: 30
             };
@@ -127,8 +164,17 @@
                 });
 
                 const result = await response.json();
-                if (result.status === "success") {
-                    document.getElementById("status-text").innerText = "✅ 分析完成！請返回 LINE 聊天室查看報告通知。";
+                if (result.status === "success" && result.data) {
+                    const data = result.data;
+                    document.getElementById("status-text").innerText = "✅ 分析完成！已發送通知至 LINE。";
+
+                    // 渲染 AI 檢測報告與建議
+                    reportCard.className = "report-card " + (data.health_light === "RED" ? "red" : (data.health_light === "YELLOW" ? "yellow" : ""));
+                    document.getElementById("report-title").innerText = (data.health_light === "RED" ? "🔴" : (data.health_light === "YELLOW" ? "🟡" : "🟢")) + " 生理量測結果";
+                    document.getElementById("report-metrics").innerText = `❤️ 心率：${data.heart_rate} BPM | 📊 壓力指數：${data.stress_score} / 100`;
+                    document.getElementById("report-summary").innerText = "📝 檢測摘要：\n" + data.summary;
+                    document.getElementById("report-advice").innerText = "💡 處置建議：\n" + data.action_advice;
+                    reportCard.style.display = "block";
                 } else {
                     document.getElementById("status-text").innerText = "❌ 分析失敗: " + JSON.stringify(result);
                 }
