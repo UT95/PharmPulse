@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException, Request, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Text, text
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Text, text, or_
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
 # ----------------------------------------------------
@@ -44,7 +44,8 @@ class RPPGRecord(Base):
     __tablename__ = "rppg_records"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_uuid = Column(String(255), index=True, nullable=False)
+    user_uuid = Column(String(255), index=True, nullable=True)
+    user_line_id = Column(String(255), index=True, nullable=True)
     heart_rate = Column(Integer, nullable=False)
     hrv_sdnn = Column(Float, nullable=False)
     stress_score = Column(Integer, nullable=False)
@@ -64,6 +65,7 @@ def auto_migrate_db():
             with engine.connect() as conn:
                 columns_to_add = [
                     ("user_uuid", "VARCHAR(255)"),
+                    ("user_line_id", "VARCHAR(255)"),
                     ("summary", "TEXT"),
                     ("action_advice", "TEXT")
                 ]
@@ -118,7 +120,6 @@ def calculate_rppg_metrics(green_signal: List[float], fps: int = 30):
         fft_hr = 75
 
     # 3. Peak Detection 波峰尋找與真實 RR 間期 (SDNN) 計算
-    # 動態設定最小波峰距離 (依據 FFT 估算心率動態調整)
     min_dist = max(int(fps * 60 / 160), 1)  # 最高 160 BPM 的最小間隔
     peaks, _ = find_peaks(filtered, distance=min_dist, prominence=np.std(filtered) * 0.3)
 
@@ -134,9 +135,9 @@ def calculate_rppg_metrics(green_signal: List[float], fps: int = 30):
         peak_hr = int(round(60000.0 / mean_rr)) if mean_rr > 0 else fft_hr
         hr = int(np.clip(peak_hr, 45, 160))
     else:
-        # 若訊號波峰較不明顯，回退至估算值
+        # 若訊號波峰較不明顯，回退至預設合理值
         hr = fft_hr
-        sdnn = 35.0
+        sdnn = 38.5
 
     sdnn = round(float(np.clip(sdnn, 12.0, 120.0)), 1)
     return hr, sdnn
@@ -194,7 +195,7 @@ def build_flex_message(heart_rate: int, stress_score: int, health_light: str, su
                                 "type": "box",
                                 "layout": "vertical",
                                 "contents": [
-                                    {"type": "text", "text": "❤️️ 心率", "size": "xs", "color": "#888888"},
+                                    {"type": "text", "text": "❤ 心率", "size": "xs", "color": "#888888"},
                                     {"type": "text", "text": f"{heart_rate} BPM", "size": "lg", "weight": "bold", "color": "#111111"}
                                 ]
                             },
@@ -281,7 +282,7 @@ def send_line_push_message(user_id: str, heart_rate: int, stress_score: int, hea
 # ----------------------------------------------------
 # 6. FastAPI 應用程式與 CORS 設定
 # ----------------------------------------------------
-app = FastAPI(title="PharmPulse Backend API", version="1.1.0", lifespan=lifespan)
+app = FastAPI(title="PharmPulse Backend API", version="1.1.1", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -366,43 +367,54 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
         green_signal = req.rgb_signals[1] if len(req.rgb_signals) > 1 else req.rgb_signals[0]
         
         if len(green_signal) < 60:
-            hr, sdnn = 72, 35.0
+            hr, sdnn = 72, 38.5
         else:
             # 呼叫 Peak Detection 演算法計算 HR 與 SDNN
             hr, sdnn = calculate_rppg_metrics(green_signal, fps=req.fps)
 
-        # 壓力與燈號判斷機制
-        stress = int(max(10, min(99, 100 - (sdnn * 1.25))))
+        # --------------------------------------------------
+        # 🚀 壓力指數優化算式：將 SDNN (15~80ms) 映射至 壓力分數 (85~15)
+        # --------------------------------------------------
+        normalized_sdnn = np.clip(sdnn, 15.0, 80.0)
+        calc_stress = 85.0 - ((normalized_sdnn - 15.0) / (80.0 - 15.0)) * 70.0
         
+        # 根據心率微調 (心率偏高時壓力微微上升)
+        if hr > 85:
+            calc_stress += (hr - 85) * 0.3
+            
+        stress = int(round(np.clip(calc_stress, 15, 95)))
+
+        # 燈號與衛教建議判斷
         if stress > 75 or hr > 100 or hr < 50:
             light = "RED"
-            summary = "生理數值顯著偏離基準，心血管負擔較高。"
+            summary = "生理數值顯著偏離基準，心血管與自律神經負擔較高。"
             advice = (
-                "🚨 【處置建議】自律神經壓力過高或 HRV 偏低：\n"
-                "1. 請保持環境通風並進行 5 分鐘深呼吸。\n"
+                "🚨 【處置建議】壓力或心率偏高：\n"
+                "1. 請保持環境通風，閉目進行 5 分鐘深呼吸。\n"
                 "2. 建議於今日量測血壓，若連續 2 天數值異常，請至門診複診。\n"
                 "3. 可前往附近合作藥局，尋求藥師量測血壓與用藥諮詢。"
             )
         elif stress > 50:
             light = "YELLOW"
-            summary = "生理指標輕微波動，建議稍微休息。"
+            summary = "生理指標輕微波動，呈現輕度疲勞或壓力上升狀態。"
             advice = (
-                "⚠️ 【處置建議】輕度疲勞或壓力上升：\n"
-                "1. 建議補充 300c.c. 溫開水並閉目養神 10 分鐘。\n"
-                "2. 觀察晚間睡眠品質，避免睡前使用電子產品。"
+                "⚠️ 【處置建議】輕度疲勞：\n"
+                "1. 建議補充 300c.c. 溫開水並稍微休息 10 分鐘。\n"
+                "2. 觀察晚間睡眠品質，避免睡前過度使用電子產品。"
             )
         else:
             light = "GREEN"
-            summary = "生理指標良好，心律與壓力表現穩定。"
+            summary = "生理指標良好，心律與自律神經狀態相當穩定。"
             advice = (
                 "🟢 【處置建議】狀態非常棒：\n"
                 "1. 請繼續保持規律作息與均衡飲食。\n"
                 "2. 建議每日同一時間持續進行生理量測記錄。"
             )
 
-        # 寫入資料庫
+        # 寫入資料庫 (同時寫入 user_uuid 與 user_line_id 以確保新舊版相容)
         record = RPPGRecord(
             user_uuid=req.user_line_id,
+            user_line_id=req.user_line_id,
             heart_rate=hr,
             hrv_sdnn=sdnn,
             stress_score=stress,
@@ -415,8 +427,7 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
         db.commit()
         db.refresh(record)
 
-        # 🚀 關鍵優化：使用 BackgroundTasks 將 LINE Push 推播放到背景執行
-        # 讓 API 回應速度從 800ms 降到 50ms 以內，前端體驗極致順暢
+        # 背景非同步執行 LINE Push 推播 (50ms 內快速回應前端)
         background_tasks.add_task(
             send_line_push_message,
             user_id=req.user_line_id,
@@ -447,13 +458,18 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 # ----------------------------------------------------
-# 10. 歷史紀錄 API
+# 10. 歷史紀錄 API (支援 user_uuid 與 user_line_id 相容查詢)
 # ----------------------------------------------------
 @app.get("/api/v1/user/history/{user_line_id}")
 def get_user_history(user_line_id: str, limit: int = 10, db: Session = Depends(get_db)):
     try:
         records = db.query(RPPGRecord)\
-                    .filter(RPPGRecord.user_uuid == user_line_id)\
+                    .filter(
+                        or_(
+                            RPPGRecord.user_uuid == user_line_id,
+                            RPPGRecord.user_line_id == user_line_id
+                        )
+                    )\
                     .order_by(RPPGRecord.created_at.desc())\
                     .limit(limit)\
                     .all()
