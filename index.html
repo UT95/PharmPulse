@@ -179,334 +179,282 @@
     </main>
 
     <script>
-        // ⚠️ 請務必替換為您在 LINE Developers 申請到的完整 LIFF ID (例如: 1234567890-abcdefgh)
-        const LIFF_ID = "2011686844-4moxcFdy"; 
+    const LIFF_ID = "2011686844-4moxcFdy"; 
 
-        let userLineId = "U_TEST_USER_DEFAULT"; // 預設測試 ID，LIFF 啟動後會寫入真實 ID
-        let isMeasuring = false;
-        let rgbSignals = [[], [], []]; // R, G, B
-        let videoStream = null;
-        let latestResult = null;
-        let timerInterval = null;
+    let userLineId = "U_TEST_USER_DEFAULT"; 
+    let isMeasuring = false;
+    let rgbSignals = [[], [], []];
+    let videoStream = null;
+    let latestResult = null;
+    let timerInterval = null;
 
-        // 初始化頁面
-        window.addEventListener('DOMContentLoaded', async () => {
-            await initCamera();
-            await initLIFF();
-        });
+    window.addEventListener('DOMContentLoaded', async () => {
+        await initCamera();
+        await initLIFF();
+    });
 
-        // 初始化 LIFF
-        async function initLIFF() {
-            try {
-                if (LIFF_ID && LIFF_ID !== "YOUR_LIFF_ID") {
-                    await liff.init({ liffId: LIFF_ID });
-                    if (liff.isLoggedIn()) {
-                        const profile = await liff.getProfile();
-                        userLineId = profile.userId; // 成功取得真正的 LINE User ID
-                        console.log("LINE User ID 取得成功:", userLineId);
-                    } else {
-                        liff.login();
-                    }
-                } else {
-                    console.warn("未設定 LIFF_ID，目前使用測試模式 ID:", userLineId);
+    // 初始化 LIFF 並強制取得 User Profile
+    async function initLIFF() {
+        try {
+            if (LIFF_ID && LIFF_ID !== "YOUR_LIFF_ID") {
+                await liff.init({ liffId: LIFF_ID });
+                
+                // 如果尚未登入，強制引導使用者登入 LINE
+                if (!liff.isLoggedIn()) {
+                    console.log("使用者未登入，執行 liff.login()...");
+                    liff.login();
+                    return;
                 }
-            } catch (err) {
-                console.warn("LIFF 初始化失敗或非於 LINE App 內開啟:", err);
+
+                // 取得真正的 User Profile
+                const profile = await liff.getProfile();
+                userLineId = profile.userId;
+                console.log("✅ LIFF 初始化成功，真正 LINE User ID:", userLineId);
+                
+                // 順利拿到 ID 後再檢查同意狀態與歷史紀錄
+                checkConsentStatus();
+            } else {
+                alert("❌ LIFF ID 設定有誤，請檢查 index.html");
             }
+        } catch (err) {
+            console.error("LIFF 初始化失敗:", err);
+            alert("❌ LIFF 初始化失敗: " + err.message + "\n請確認 LINE Developers 後台的 Endpoint URL 是否與 Render 網址完全一致。");
             checkConsentStatus();
         }
+    }
 
-        // 檢查同意狀態
-        async function checkConsentStatus() {
-            try {
-                const res = await fetch(`/api/v1/user/consent-status/${userLineId}`);
-                const data = await res.json();
-                if (data.agreed) {
-                    document.getElementById('consentBadge').classList.remove('hidden');
-                } else {
-                    document.getElementById('consentModal').classList.remove('hidden');
-                }
-            } catch (e) {
-                console.error("檢查同意狀態出錯:", e);
-                // 後端出錯時預設不卡住使用者
-            }
-        }
-
-        // 同意條款
-        async function acceptConsent() {
-            try {
-                await fetch('/api/v1/user/consent', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ user_line_id: userLineId, terms_version: "v1.0" })
-                });
-                document.getElementById('consentModal').classList.add('hidden');
+    async function checkConsentStatus() {
+        try {
+            const res = await fetch(`/api/v1/user/consent-status/${userLineId}`);
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            const data = await res.json();
+            if (data.agreed) {
                 document.getElementById('consentBadge').classList.remove('hidden');
-            } catch (e) {
-                alert("網路異常，請稍後再試");
-            }
-        }
-
-        // 初始化相機
-        async function initCamera() {
-            try {
-                const constraints = {
-                    video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }
-                };
-                videoStream = await navigator.mediaDevices.getUserMedia(constraints);
-                const video = document.getElementById('webcam');
-                video.srcObject = videoStream;
-            } catch (err) {
-                document.getElementById('statusHint').innerText = "⚠️ 無法存取攝影機，請確認權限";
-                document.getElementById('statusHint').classList.add('text-red-500');
-            }
-        }
-
-        // 開始量測
-        function startMeasurement() {
-            if (isMeasuring) return;
-            isMeasuring = true;
-            rgbSignals = [[], [], []];
-
-            document.getElementById('startBtn').classList.add('hidden');
-            document.getElementById('stopBtn').classList.remove('hidden');
-            document.getElementById('progressBox').classList.remove('hidden');
-            document.getElementById('resultCard').classList.add('hidden');
-            document.getElementById('statusHint').innerText = "量測中，請保持臉部靜止...";
-
-            const totalDuration = 15; // 15 秒
-            let elapsed = 0;
-
-            timerInterval = setInterval(() => {
-                elapsed += 0.1;
-                const percent = Math.min(100, Math.round((elapsed / totalDuration) * 100));
-                document.getElementById('progressBar').style.width = percent + '%';
-                document.getElementById('progressText').innerText = percent + '%';
-
-                captureFrame();
-
-                if (elapsed >= totalDuration) {
-                    stopMeasurement(true);
-                }
-            }, 100);
-        }
-
-        // 擷取影像 RGB
-        function captureFrame() {
-            const video = document.getElementById('webcam');
-            const canvas = document.getElementById('canvas');
-            if (!video.videoWidth) return;
-
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            const ctx = canvas.getContext('2d');
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-            // 擷取中央區域 (ROI)
-            const roiX = canvas.width * 0.35;
-            const roiY = canvas.height * 0.25;
-            const roiW = canvas.width * 0.3;
-            const roiH = canvas.height * 0.4;
-
-            const frame = ctx.getImageData(roiX, roiY, roiW, roiH);
-            const data = frame.data;
-
-            let rSum = 0, gSum = 0, bSum = 0;
-            const count = data.length / 4;
-
-            for (let i = 0; i < data.length; i += 4) {
-                rSum += data[i];
-                gSum += data[i + 1];
-                bSum += data[i + 2];
-            }
-
-            rgbSignals[0].push(rSum / count);
-            rgbSignals[1].push(gSum / count);
-            rgbSignals[2].push(bSum / count);
-        }
-
-        // 停止/完成量測
-        async function stopMeasurement(completed = false) {
-            clearInterval(timerInterval);
-            isMeasuring = false;
-
-            document.getElementById('startBtn').classList.remove('hidden');
-            document.getElementById('stopBtn').classList.add('hidden');
-
-            if (completed) {
-                document.getElementById('statusHint').innerText = "分析數據中...";
-                await uploadAndAnalyze();
             } else {
-                document.getElementById('statusHint').innerText = "已取消量測";
-                document.getElementById('progressBox').classList.add('hidden');
+                document.getElementById('consentModal').classList.remove('hidden');
             }
+        } catch (e) {
+            console.error("檢查同意狀態出錯:", e);
         }
+    }
 
-        // 上傳數據並分析
-        async function uploadAndAnalyze() {
-            try {
-                const response = await fetch('/api/v1/analyze-rppg', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        user_line_id: userLineId,
-                        rgb_signals: rgbSignals,
-                        fps: 10
-                    })
-                });
+    async function acceptConsent() {
+        try {
+            await fetch('/api/v1/user/consent', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_line_id: userLineId, terms_version: "v1.0" })
+            });
+            document.getElementById('consentModal').classList.add('hidden');
+            document.getElementById('consentBadge').classList.remove('hidden');
+        } catch (e) {
+            alert("網路異常，請稍後再試");
+        }
+    }
 
-                const res = await response.json();
-                if (res.status === 'success') {
-                    displayResult(res.data);
-                    document.getElementById('statusHint').innerText = "量測完成！";
-                } else {
-                    alert("分析失敗: " + (res.message || "未知錯誤"));
-                }
-            } catch (err) {
-                alert("網路連線異常，請稍後再試");
-            } finally {
-                document.getElementById('progressBox').classList.add('hidden');
+    async function initCamera() {
+        try {
+            const constraints = { video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } } };
+            videoStream = await navigator.mediaDevices.getUserMedia(constraints);
+            document.getElementById('webcam').srcObject = videoStream;
+        } catch (err) {
+            document.getElementById('statusHint').innerText = "⚠️ 無法存取攝影機，請確認權限";
+            document.getElementById('statusHint').classList.add('text-red-500');
+        }
+    }
+
+    function startMeasurement() {
+        if (isMeasuring) return;
+        isMeasuring = true;
+        rgbSignals = [[], [], []];
+
+        document.getElementById('startBtn').classList.add('hidden');
+        document.getElementById('stopBtn').classList.remove('hidden');
+        document.getElementById('progressBox').classList.remove('hidden');
+        document.getElementById('resultCard').classList.add('hidden');
+        document.getElementById('statusHint').innerText = "量測中，請保持臉部靜止...";
+
+        const totalDuration = 15; 
+        let elapsed = 0;
+
+        timerInterval = setInterval(() => {
+            elapsed += 0.1;
+            const percent = Math.min(100, Math.round((elapsed / totalDuration) * 100));
+            document.getElementById('progressBar').style.width = percent + '%';
+            document.getElementById('progressText').innerText = percent + '%';
+
+            captureFrame();
+
+            if (elapsed >= totalDuration) {
+                stopMeasurement(true);
             }
+        }, 100);
+    }
+
+    function captureFrame() {
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('canvas');
+        if (!video.videoWidth) return;
+
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        const frame = ctx.getImageData(canvas.width * 0.35, canvas.height * 0.25, canvas.width * 0.3, canvas.height * 0.4);
+        const data = frame.data;
+        let rSum = 0, gSum = 0, bSum = 0;
+        const count = data.length / 4;
+
+        for (let i = 0; i < data.length; i += 4) {
+            rSum += data[i];
+            gSum += data[i + 1];
+            bSum += data[i + 2];
         }
+        rgbSignals[0].push(rSum / count);
+        rgbSignals[1].push(gSum / count);
+        rgbSignals[2].push(bSum / count);
+    }
 
-        // 顯示分析結果
-        function displayResult(data) {
-            latestResult = {
-                hr: data.heart_rate,
-                hrv: data.hrv_sdnn,
-                stress: data.stress_score,
-                light: data.health_light,
-                summary: data.summary,
-                advice: data.action_advice
-            };
+    async function stopMeasurement(completed = false) {
+        clearInterval(timerInterval);
+        isMeasuring = false;
+        document.getElementById('startBtn').classList.remove('hidden');
+        document.getElementById('stopBtn').classList.add('hidden');
 
-            document.getElementById('resHR').innerText = data.heart_rate;
-            document.getElementById('resHRV').innerText = data.hrv_sdnn;
-            document.getElementById('resStress').innerText = data.stress_score;
-            document.getElementById('resSummary').innerText = data.summary;
-            document.getElementById('resAdvice').innerText = data.action_advice;
+        if (completed) {
+            document.getElementById('statusHint').innerText = "分析數據中...";
+            await uploadAndAnalyze();
+        } else {
+            document.getElementById('statusHint').innerText = "已取消量測";
+            document.getElementById('progressBox').classList.add('hidden');
+        }
+    }
 
-            const badge = document.getElementById('lightBadge');
-            if (data.health_light === 'RED') {
-                badge.className = "px-3 py-1 rounded-full text-xs font-bold text-white bg-rose-500";
-                badge.innerText = "🚨 高度警示";
-            } else if (data.health_light === 'YELLOW') {
-                badge.className = "px-3 py-1 rounded-full text-xs font-bold text-white bg-amber-500";
-                badge.innerText = "⚠️ 輕微預警";
+    async function uploadAndAnalyze() {
+        try {
+            const response = await fetch('/api/v1/analyze-rppg', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_line_id: userLineId, rgb_signals: rgbSignals, fps: 10 })
+            });
+
+            if (!response.ok) {
+                alert(`❌ 儲存紀錄失敗！HTTP ${response.status}`);
+                return;
+            }
+
+            const res = await response.json();
+            if (res.status === 'success') {
+                displayResult(res.data);
+                document.getElementById('statusHint').innerText = "量測完成！";
             } else {
-                badge.className = "px-3 py-1 rounded-full text-xs font-bold text-white bg-emerald-500";
-                badge.innerText = "🟢 正常良好";
+                alert("❌ 分析失敗: " + (res.message || "未知錯誤"));
             }
+        } catch (err) {
+            alert("❌ 網路連線異常，請確認伺服器運作！");
+        } finally {
+            document.getElementById('progressBox').classList.add('hidden');
+        }
+    }
 
-            document.getElementById('resultCard').classList.remove('hidden');
+    function displayResult(data) {
+        latestResult = {
+            hr: data.heart_rate, hrv: data.hrv_sdnn, stress: data.stress_score,
+            light: data.health_light, summary: data.summary, advice: data.action_advice
+        };
+
+        document.getElementById('resHR').innerText = data.heart_rate;
+        document.getElementById('resHRV').innerText = data.hrv_sdnn;
+        document.getElementById('resStress').innerText = data.stress_score;
+        document.getElementById('resSummary').innerText = data.summary;
+        document.getElementById('resAdvice').innerText = data.action_advice;
+
+        const badge = document.getElementById('lightBadge');
+        if (data.health_light === 'RED') {
+            badge.className = "px-3 py-1 rounded-full text-xs font-bold text-white bg-rose-500";
+            badge.innerText = "🚨 高度警示";
+        } else if (data.health_light === 'YELLOW') {
+            badge.className = "px-3 py-1 rounded-full text-xs font-bold text-white bg-amber-500";
+            badge.innerText = "⚠️ 輕微預警";
+        } else {
+            badge.className = "px-3 py-1 rounded-full text-xs font-bold text-white bg-emerald-500";
+            badge.innerText = "🟢 正常良好";
+        }
+        document.getElementById('resultCard').classList.remove('hidden');
+    }
+
+    async function sendResultToLine() {
+        if (!latestResult) {
+            alert("❌ 沒有找到量測結果！");
+            return;
         }
 
-        // 同步結果至 LINE 聊天室
-        async function sendResultToLine() {
-            if (!latestResult) return;
+        const messageText = `💚 【PharmPulse 生理量測報告】\n• 狀態燈號：${latestResult.light}\n• 即時心率：${latestResult.hr} BPM\n• HRV 指數：${latestResult.hrv} ms\n• 壓力指數：${latestResult.stress}\n\n📋 摘要：\n${latestResult.summary}\n\n${latestResult.advice}`;
 
-            const lightTextMap = { 
-                GREEN: "🟢 綠燈 (正常)", 
-                YELLOW: "⚠️ 黃燈 (輕微預警)", 
-                RED: "🚨 紅燈 (高度警示)" 
-            };
-
-            const messageText = 
-                `💚 【PharmPulse 生理量測報告】\n` +
-                `• 狀態燈號：${lightTextMap[latestResult.light] || latestResult.light}\n` +
-                `• 即時心率：${latestResult.hr} BPM\n` +
-                `• HRV 指數：${latestResult.hrv} ms\n` +
-                `• 壓力指數：${latestResult.stress}\n\n` +
-                `📋 摘要：\n${latestResult.summary}\n\n` +
-                `${latestResult.advice}`;
-
-            try {
-                if (typeof liff !== "undefined" && liff.isInClient()) {
-                    await liff.sendMessages([{
-                        type: 'text',
-                        text: messageText
-                    }]);
-                    liff.closeWindow(); // 發送成功後關閉 LIFF 頁面
-                } else {
-                    alert("目前非在 LINE App 內開啟，量測結果已成功儲存至歷史紀錄！");
-                }
-            } catch (err) {
-                console.error("LIFF sendMessages 失敗:", err);
-                alert("無法同步訊息！請確認 LINE Developers 設定中是否有勾選『chat_message_write』權限。");
-            }
-        }
-
-        // 切換頁籤
-        function switchTab(tab) {
-            const mBtn = document.getElementById('tabMeasureBtn');
-            const hBtn = document.getElementById('tabHistoryBtn');
-            const mSec = document.getElementById('measureSection');
-            const hSec = document.getElementById('historySection');
-
-            if (tab === 'measure') {
-                mBtn.className = "flex-1 py-3 border-b-2 border-emerald-500 text-emerald-600 font-bold";
-                hBtn.className = "flex-1 py-3 border-b-2 border-transparent text-slate-500 hover:text-slate-700";
-                mSec.classList.remove('hidden');
-                hSec.classList.add('hidden');
+        try {
+            if (typeof liff !== "undefined" && liff.isInClient()) {
+                await liff.sendMessages([{ type: 'text', text: messageText }]);
+                alert("✅ 同步成功！即將關閉視窗。");
+                liff.closeWindow(); 
             } else {
-                hBtn.className = "flex-1 py-3 border-b-2 border-emerald-500 text-emerald-600 font-bold";
-                mBtn.className = "flex-1 py-3 border-b-2 border-transparent text-slate-500 hover:text-slate-700";
-                hSec.classList.remove('hidden');
-                mSec.classList.add('hidden');
-                loadHistory();
+                alert("⚠️ 請用手機在 LINE 聊天室開啟連結，才能自動傳送訊息喔！");
             }
+        } catch (err) {
+            alert("❌ LINE 同步失敗！請確認 LINE Developers 的 Scopes 是否開啟『chat_message_write』。\n錯誤細節：" + err.message);
         }
+    }
 
-        // 載入歷史紀錄
-        async function loadHistory() {
-            const listEl = document.getElementById('historyList');
-            listEl.innerHTML = '<div class="text-center py-10 text-slate-400 text-sm">載入中...</div>';
+    function switchTab(tab) {
+        const mBtn = document.getElementById('tabMeasureBtn');
+        const hBtn = document.getElementById('tabHistoryBtn');
+        const mSec = document.getElementById('measureSection');
+        const hSec = document.getElementById('historySection');
 
-            try {
-                const res = await fetch(`/api/v1/user/history/${userLineId}`);
-                const data = await res.json();
+        if (tab === 'measure') {
+            mBtn.className = "flex-1 py-3 border-b-2 border-emerald-500 text-emerald-600 font-bold";
+            hBtn.className = "flex-1 py-3 border-b-2 border-transparent text-slate-500 hover:text-slate-700";
+            mSec.classList.remove('hidden');
+            hSec.classList.add('hidden');
+        } else {
+            hBtn.className = "flex-1 py-3 border-b-2 border-emerald-500 text-emerald-600 font-bold";
+            mBtn.className = "flex-1 py-3 border-b-2 border-transparent text-slate-500 hover:text-slate-700";
+            hSec.classList.remove('hidden');
+            mSec.classList.add('hidden');
+            loadHistory();
+        }
+    }
 
-                if (data.status === 'success' && data.history.length > 0) {
-                    listEl.innerHTML = data.history.map(item => {
-                        const dateStr = item.created_at ? new Date(item.created_at).toLocaleString('zh-TW', { hour12: false }) : '未知時間';
-                        let lightBadge = '<span class="px-2 py-0.5 rounded text-xs text-emerald-700 bg-emerald-100 font-medium">綠燈</span>';
-                        if (item.health_light === 'RED') {
-                            lightBadge = '<span class="px-2 py-0.5 rounded text-xs text-rose-700 bg-rose-100 font-medium">紅燈</span>';
-                        } else if (item.health_light === 'YELLOW') {
-                            lightBadge = '<span class="px-2 py-0.5 rounded text-xs text-amber-700 bg-amber-100 font-medium">黃燈</span>';
-                        }
+    async function loadHistory() {
+        const listEl = document.getElementById('historyList');
+        listEl.innerHTML = '<div class="text-center py-10 text-slate-400 text-sm">載入中...</div>';
 
-                        return `
-                            <div class="bg-white p-4 rounded-xl border border-slate-100 shadow-sm space-y-2">
-                                <div class="flex justify-between items-center border-b border-slate-100 pb-2">
-                                    <span class="text-xs text-slate-400">${dateStr}</span>
-                                    ${lightBadge}
-                                </div>
-                                <div class="grid grid-cols-3 text-center py-1">
-                                    <div>
-                                        <div class="text-xs text-slate-400">心率</div>
-                                        <div class="font-bold text-slate-800 text-sm">${item.heart_rate} <span class="text-xs font-normal">BPM</span></div>
-                                    </div>
-                                    <div>
-                                        <div class="text-xs text-slate-400">HRV</div>
-                                        <div class="font-bold text-slate-800 text-sm">${item.hrv_sdnn} <span class="text-xs font-normal">ms</span></div>
-                                    </div>
-                                    <div>
-                                        <div class="text-xs text-slate-400">壓力</div>
-                                        <div class="font-bold text-slate-800 text-sm">${item.stress_score}</div>
-                                    </div>
-                                </div>
-                                ${item.summary ? `<div class="text-xs text-slate-600 bg-slate-50 p-2 rounded leading-relaxed">${item.summary}</div>` : ''}
-                            </div>
-                        `;
-                    }).join('');
-                } else {
-                    listEl.innerHTML = '<div class="text-center py-10 text-slate-400 text-sm">尚無量測紀錄</div>';
-                }
-            } catch (err) {
-                listEl.innerHTML = '<div class="text-center py-10 text-rose-400 text-sm">歷史紀錄載入失敗</div>';
+        try {
+            const res = await fetch(`/api/v1/user/history/${userLineId}`);
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            const data = await res.json();
+
+            if (data.status === 'success' && data.history.length > 0) {
+                listEl.innerHTML = data.history.map(item => `
+                    <div class="bg-white p-4 rounded-xl border border-slate-100 shadow-sm space-y-2">
+                        <div class="flex justify-between items-center border-b border-slate-100 pb-2">
+                            <span class="text-xs text-slate-400">${new Date(item.created_at).toLocaleString('zh-TW', { hour12: false })}</span>
+                            <span class="px-2 py-0.5 rounded text-xs font-medium bg-slate-100">${item.health_light}</span>
+                        </div>
+                        <div class="grid grid-cols-3 text-center py-1">
+                            <div><div class="text-xs text-slate-400">心率</div><div class="font-bold text-slate-800 text-sm">${item.heart_rate}</div></div>
+                            <div><div class="text-xs text-slate-400">HRV</div><div class="font-bold text-slate-800 text-sm">${item.hrv_sdnn}</div></div>
+                            <div><div class="text-xs text-slate-400">壓力</div><div class="font-bold text-slate-800 text-sm">${item.stress_score}</div></div>
+                        </div>
+                    </div>`).join('');
+            } else {
+                listEl.innerHTML = `<div class="text-center py-10 text-slate-400 text-sm">尚無量測紀錄 (ID: ${userLineId})</div>`;
             }
+        } catch (err) {
+            alert("❌ 載入歷史紀錄失敗：" + err.message);
+            listEl.innerHTML = '<div class="text-center py-10 text-rose-400 text-sm">歷史紀錄載入失敗</div>';
         }
-    </script>
+    }
+</script>
 </body>
 </html>
