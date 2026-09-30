@@ -1,6 +1,7 @@
 import os
 import math
 import numpy as np
+import requests
 from datetime import datetime, timezone
 from typing import List, Optional
 from contextlib import asynccontextmanager
