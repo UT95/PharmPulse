@@ -15,11 +15,15 @@
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f8f9fa; color: #333; padding: 20px; text-align: center; }
         .container { max-width: 480px; margin: 0 auto; background: #ffffff; border-radius: 16px; padding: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
         h2 { color: #1DB446; margin-bottom: 8px; font-size: 22px; }
-        .user-info { font-size: 14px; color: #666; margin-bottom: 20px; background: #eef9f2; padding: 8px 12px; border-radius: 8px; display: inline-block; }
+        .user-info { font-size: 14px; color: #666; margin-bottom: 12px; background: #eef9f2; padding: 8px 12px; border-radius: 8px; display: inline-block; }
         
+        .nav-actions { margin-bottom: 16px; }
+        .btn-secondary { background-color: #ffffff; color: #1DB446; border: 1.5px solid #1DB446; padding: 8px 16px; border-radius: 20px; font-size: 14px; font-weight: bold; cursor: pointer; }
+        .btn-secondary:active { background-color: #eef9f2; }
+
         /* 視訊與人臉綠光 ROI 區域 */
         .camera-container { position: relative; width: 280px; height: 280px; margin: 0 auto 20px; border-radius: 50%; overflow: hidden; background-color: #000; border: 4px solid #1DB446; box-shadow: 0 8px 16px rgba(29, 180, 70, 0.2); }
-        video { display: none; } /* 隱藏原生 video，改繪製到 canvas */
+        video { display: none; }
         canvas { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
         .face-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 4px dashed rgba(255, 255, 255, 0.85); border-radius: 50%; pointer-events: none; box-sizing: border-box; animation: pulse 2s infinite; }
         
@@ -44,6 +48,15 @@
         .report-title { font-weight: bold; font-size: 16px; margin-bottom: 8px; color: #166534; }
         .report-metric { font-size: 15px; margin-bottom: 6px; }
         .report-section { margin-top: 10px; font-size: 14px; line-height: 1.5; white-space: pre-line; }
+
+        /* 歷史紀錄彈窗 Modal CSS */
+        .modal { display: none; position: fixed; z-index: 100; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); }
+        .modal-content { background-color: #fff; margin: 10% auto; padding: 20px; border-radius: 16px; width: 90%; max-width: 440px; max-height: 80vh; overflow-y: auto; text-align: left; }
+        .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+        .close-btn { font-size: 24px; font-weight: bold; cursor: pointer; color: #888; }
+        .history-item { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px; margin-bottom: 10px; }
+        .history-date { font-size: 12px; color: #888; margin-bottom: 4px; }
+        .history-body { font-size: 14px; font-weight: bold; color: #333; }
     </style>
 </head>
 <body>
@@ -51,6 +64,10 @@
     <div class="container">
         <h2>PharmPulse 生理檢測</h2>
         <div id="user-info" class="user-info">連線中...</div>
+        
+        <div class="nav-actions">
+            <button class="btn-secondary" onclick="fetchAndShowHistory()">📊 查看歷史紀錄</button>
+        </div>
 
         <div class="camera-container">
             <video id="webcam" playsinline muted></video>
@@ -74,6 +91,19 @@
         </div>
     </div>
 
+    <!-- 歷史紀錄 Modal -->
+    <div id="history-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>📊 歷史量測紀錄</h3>
+                <span class="close-btn" onclick="closeHistoryModal()">&times;</span>
+            </div>
+            <div id="history-list">
+                <p style="text-align:center; color:#888;">讀取中...</p>
+            </div>
+        </div>
+    </div>
+
     <script>
         let currentUserId = "";
         const videoElement = document.getElementById('webcam');
@@ -84,12 +114,11 @@
         let isMeasuring = false;
         let collectedGreenSignals = [];
         let collectedRedSignals = [];
-        const TOTAL_FRAMES = 300; // 收集 300 幀 (約 10 秒)
+        const TOTAL_FRAMES = 300;
 
-        // 1. 初始化 LIFF
+        // 1. 初始化 LIFF 並判斷 URL 參數
         async function initLiff() {
             try {
-                // ⚠️ 請記得替換為你的 LIFF ID (只保留單引號)
                 await liff.init({ liffId: '2011686844-4moxcFdy' }); 
 
                 if (!liff.isLoggedIn()) {
@@ -100,6 +129,13 @@
                 const profile = await liff.getProfile();
                 currentUserId = profile.userId;
                 document.getElementById("user-info").innerText = "👤 已連線: " + profile.displayName;
+
+                // 🔍 檢查網址是否有 ?page=history 參數
+                const urlParams = new URLSearchParams(window.location.search);
+                if (urlParams.get('page') === 'history') {
+                    fetchAndShowHistory();
+                }
+
             } catch (err) {
                 console.error("LIFF 初始化失敗:", err);
                 document.getElementById("user-info").innerText = "⚠️ 請由 LINE App 內開啟此頁面";
@@ -131,7 +167,7 @@
             camera.start();
         }
 
-        // 3. 處理每影格人臉偵測與真實綠光擷取
+        // 3. 處理每影格人臉偵測與綠光擷取
         function onFaceMeshResults(results) {
             canvasCtx.save();
             canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
@@ -139,20 +175,16 @@
 
             if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
                 const landmarks = results.multiFaceLandmarks[0];
-                
-                // 取出額頭區域 Landmark (索引 10, 67, 297, 109)
                 const foreheadPt = landmarks[10];
                 const x = Math.floor(foreheadPt.x * canvasElement.width);
                 const y = Math.floor(foreheadPt.y * canvasElement.height);
 
-                // 畫出額頭處監測 ROI 小點
                 canvasCtx.fillStyle = "#1DB446";
                 canvasCtx.beginPath();
                 canvasCtx.arc(x, y, 6, 0, 2 * Math.PI);
                 canvasCtx.fill();
 
                 if (isMeasuring) {
-                    // 擷取額頭區域 20x20 像素之真實 RGB 強度
                     const roiSize = 20;
                     const imgData = canvasCtx.getImageData(
                         Math.max(0, x - roiSize / 2), 
@@ -171,7 +203,6 @@
                     collectedGreenSignals.push(sumG / totalPixels);
                     collectedRedSignals.push(sumR / totalPixels);
 
-                    // 更新進度條
                     const progress = (collectedGreenSignals.length / TOTAL_FRAMES) * 100;
                     document.getElementById("progress-bar").style.width = progress + "%";
 
@@ -193,7 +224,7 @@
 
         // 4. 開始量測按鈕觸發
         function startMeasurement() {
-            if (!currentUserId || currentUserId === "U_TEST_USER" || !currentUserId.startsWith("U")) {
+            if (!currentUserId || !currentUserId.startsWith("U")) {
                 alert("未檢測到 LINE 帳號身份！請由 LINE 聊天室開啟。");
                 if (liff.isLoggedIn()) {
                     liff.getProfile().then(p => currentUserId = p.userId);
@@ -216,7 +247,7 @@
 
         // 5. 傳送真實擷取訊號至後端
         async function processRppgAnalysis() {
-            document.getElementById("status-text").innerText = "🔄 訊號擷取完成，正在進行快速傅立葉轉換與演算法分析...";
+            document.getElementById("status-text").innerText = "🔄 訊號擷取完成，正在進行演算法分析...";
             document.getElementById("progress-container").style.display = "none";
 
             const payload = {
@@ -253,6 +284,52 @@
             } finally {
                 document.getElementById("start-btn").disabled = false;
             }
+        }
+
+        // 6. 載入並顯示歷史紀錄
+        async function fetchAndShowHistory() {
+            const modal = document.getElementById("history-modal");
+            const historyList = document.getElementById("history-list");
+            modal.style.display = "block";
+            historyList.innerHTML = "<p style='text-align:center; color:#888;'>載入歷史紀錄中...</p>";
+
+            if (!currentUserId) {
+                historyList.innerHTML = "<p style='text-align:center; color:#e11d48;'>尚未取得使用者身份，請重新從 LINE 開啟。</p>";
+                return;
+            }
+
+            try {
+                const res = await fetch(`/api/v1/user/history/${currentUserId}`);
+                const data = await res.json();
+
+                if (data.status === "success" && data.history && data.history.length > 0) {
+                    historyList.innerHTML = "";
+                    data.history.forEach(item => {
+                        const lightIcon = item.health_light === "RED" ? "🔴" : (item.health_light === "YELLOW" ? "🟡" : "🟢");
+                        const dateStr = item.created_at ? new Date(item.created_at).toLocaleString("zh-TW") : "未知時間";
+                        
+                        const div = document.createElement("div");
+                        div.className = "history-item";
+                        div.innerHTML = `
+                            <div class="history-date">📅 ${dateStr}</div>
+                            <div class="history-body">
+                                ${lightIcon} 心率: ${item.heart_rate} BPM | 壓力: ${item.stress_score} / 100
+                            </div>
+                            <div style="font-size:12px; color:#555; margin-top:4px;">${item.summary || ''}</div>
+                        `;
+                        historyList.appendChild(div);
+                    });
+                } else {
+                    historyList.innerHTML = "<p style='text-align:center; color:#888;'>尚無歷史量測紀錄。</p>";
+                }
+            } catch (err) {
+                console.error("取得歷史紀錄失敗:", err);
+                historyList.innerHTML = "<p style='text-align:center; color:#e11d48;'>讀取歷史紀錄失敗，請檢查網路連線。</p>";
+            }
+        }
+
+        function closeHistoryModal() {
+            document.getElementById("history-modal").style.display = "none";
         }
     </script>
 </body>
