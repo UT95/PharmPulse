@@ -1,8 +1,9 @@
 import os
 import math
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,14 +13,17 @@ from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, 
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
 # ----------------------------------------------------
-# 1. 資料庫連線設定 (PostgreSQL)
+# 1. 資料庫連線設定 (PostgreSQL / SQLite)
 # ----------------------------------------------------
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./test.db")
 
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+# SQLite 需要 connect_args 的特殊設定，PostgreSQL 則加上 pool_pre_ping 確保連線活著
+connect_args = {"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
+engine = create_engine(DATABASE_URL, pool_pre_ping=True, connect_args=connect_args)
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -33,7 +37,7 @@ class UserConsent(Base):
     user_line_id = Column(String(255), unique=True, index=True, nullable=False)
     agreed = Column(String(10), default="true")
     terms_version = Column(String(50), default="v1.0")
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class RPPGRecord(Base):
     __tablename__ = "rppg_records"
@@ -46,14 +50,52 @@ class RPPGRecord(Base):
     health_light = Column(String(20), nullable=False)
     summary = Column(Text, nullable=True)
     action_advice = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 Base.metadata.create_all(bind=engine)
 
 # ----------------------------------------------------
-# 3. FastAPI 應用程式與 CORS 設定
+# 3. 自動檢查與修復 PostgreSQL 欄位 (Lifespan 管理)
 # ----------------------------------------------------
-app = FastAPI(title="PharmPulse Backend API", version="1.0.0")
+def auto_migrate_db():
+    if "postgresql" in DATABASE_URL:
+        try:
+            with engine.connect() as conn:
+                # 1. 檢查並補齊 user_consents 的 id 欄位
+                try:
+                    conn.execute(text("ALTER TABLE user_consents ADD COLUMN IF NOT EXISTS id SERIAL PRIMARY KEY;"))
+                    conn.commit()
+                except Exception as e:
+                    conn.rollback()
+                    print(f"[Migration Warning] user_consents table check: {e}")
+
+                # 2. 檢查並補齊 rppg_records 的欄位
+                columns_to_add = [
+                    ("user_uuid", "VARCHAR(255)"),
+                    ("summary", "TEXT"),
+                    ("action_advice", "TEXT")
+                ]
+                for col_name, col_type in columns_to_add:
+                    try:
+                        conn.execute(text(f"ALTER TABLE rppg_records ADD COLUMN IF NOT EXISTS {col_name} {col_type};"))
+                        conn.commit()
+                    except Exception as e:
+                        conn.rollback()
+                        print(f"[Migration Warning] Add column {col_name}: {e}")
+        except Exception as e:
+            print(f"[Migration Error] Database connection failed: {e}")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 服務啟動時執行 Migration
+    auto_migrate_db()
+    yield
+    # 服務關閉時可清理資源 (若有需要)
+
+# ----------------------------------------------------
+# 4. FastAPI 應用程式與 CORS 設定
+# ----------------------------------------------------
+app = FastAPI(title="PharmPulse Backend API", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -69,36 +111,6 @@ def get_db():
         yield db
     finally:
         db.close()
-
-# ----------------------------------------------------
-# 4. 啟動時自動檢查並修復 PostgreSQL 缺失欄位與 Table
-# ----------------------------------------------------
-@app.on_event("startup")
-def auto_migrate_db():
-    if "postgresql" in DATABASE_URL:
-        try:
-            with engine.connect() as conn:
-                # 1. 檢查並自動補齊 user_consents 的 id 欄位
-                try:
-                    conn.execute(text("ALTER TABLE user_consents ADD COLUMN IF NOT EXISTS id SERIAL PRIMARY KEY;"))
-                    conn.commit()
-                except Exception:
-                    conn.rollback()
-
-                # 2. 檢查並自動補齊 rppg_records 的欄位
-                columns_to_add = [
-                    ("user_uuid", "VARCHAR(255)"),
-                    ("summary", "TEXT"),
-                    ("action_advice", "TEXT")
-                ]
-                for col_name, col_type in columns_to_add:
-                    try:
-                        conn.execute(text(f"ALTER TABLE rppg_records ADD COLUMN IF NOT EXISTS {col_name} {col_type};"))
-                        conn.commit()
-                    except Exception:
-                        conn.rollback()
-        except Exception as e:
-            print(f"DB Migration Error: {e}")
 
 # ----------------------------------------------------
 # 5. 前端頁面託管路由
@@ -135,7 +147,6 @@ def check_consent(user_line_id: str, db: Session = Depends(get_db)):
             return {"status": "success", "agreed": True}
         return {"status": "success", "agreed": False}
     except Exception as e:
-        # 若資料庫異常，預設給予過關以防卡死
         return {"status": "error", "agreed": True, "message": str(e)}
 
 @app.post("/api/v1/user/consent")
@@ -162,14 +173,27 @@ def save_consent(req: ConsentRequest, db: Session = Depends(get_db)):
 @app.post("/api/v1/analyze-rppg")
 def analyze_rppg(req: AnalyzeRequest, db: Session = Depends(get_db)):
     try:
+        if not req.rgb_signals:
+            raise HTTPException(status_code=400, detail="rgb_signals cannot be empty")
+
+        # 優先取綠光 (G Channel)，若僅一維則取第 0 個
         green_signal = req.rgb_signals[1] if len(req.rgb_signals) > 1 else req.rgb_signals[0]
         
         if len(green_signal) < 60:
             hr = 72
             sdnn = 35.0
         else:
-            signal_arr = np.array(green_signal)
+            signal_arr = np.array(green_signal, dtype=float)
             detrended = signal_arr - np.mean(signal_arr)
+            
+            # 訊號標準差計算（預防零變異數情況）
+            std_val = float(np.std(detrended))
+            if np.isnan(std_val) or std_val == 0:
+                sdnn = 35.0
+            else:
+                sdnn = round(std_val * 100, 1)
+
+            # FFT 頻譜分析求心率 (限制在 0.75 Hz ~ 2.5 Hz，對應 45 BPM ~ 150 BPM)
             fft_vals = np.abs(np.fft.rfft(detrended))
             freqs = np.fft.rfftfreq(len(detrended), 1.0 / req.fps)
             
@@ -180,12 +204,13 @@ def analyze_rppg(req: AnalyzeRequest, db: Session = Depends(get_db)):
             else:
                 hr = 75
             
-            sdnn = round(float(np.std(detrended) * 100), 1)
-            if sdnn < 15: sdnn = 28.0
-            if sdnn > 100: sdnn = 45.0
+            # SDNN 合理值邊界修剪
+            sdnn = max(15.0, min(100.0, sdnn))
 
+        # 壓力分數評估
         stress = int(max(10, min(99, 100 - (sdnn * 1.2))))
         
+        # 健康燈號評估邏輯
         if stress > 75 or hr > 100 or hr < 50:
             light = "RED"
             summary = "生理數值顯著偏離基準，心血管負擔較高。"
@@ -220,7 +245,7 @@ def analyze_rppg(req: AnalyzeRequest, db: Session = Depends(get_db)):
             health_light=light,
             summary=summary,
             action_advice=advice,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         db.add(record)
         db.commit()
@@ -272,3 +297,7 @@ def get_user_history(user_line_id: str, limit: int = 10, db: Session = Depends(g
         return {"status": "success", "history": result}
     except Exception as e:
         return {"status": "error", "history": [], "message": str(e)}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
