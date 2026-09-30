@@ -1,7 +1,7 @@
 import os
 import math
-import numpy as np
 import requests
+import numpy as np
 from datetime import datetime, timezone
 from typing import List, Optional
 from contextlib import asynccontextmanager
@@ -21,7 +21,6 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./test.db")
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-# SQLite 需要 connect_args 的特殊設定，PostgreSQL 則加上 pool_pre_ping 確保連線活著
 connect_args = {"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
 engine = create_engine(DATABASE_URL, pool_pre_ping=True, connect_args=connect_args)
 
@@ -56,21 +55,13 @@ class RPPGRecord(Base):
 Base.metadata.create_all(bind=engine)
 
 # ----------------------------------------------------
-# 3. 自動檢查與修復 PostgreSQL 欄位 (Lifespan 管理)
+# 3. 自動檢查與修復 PostgreSQL 欄位
 # ----------------------------------------------------
 def auto_migrate_db():
     if "postgresql" in DATABASE_URL:
         try:
             with engine.connect() as conn:
-                # 1. 檢查並補齊 user_consents 的 id 欄位
-                try:
-                    conn.execute(text("ALTER TABLE user_consents ADD COLUMN IF NOT EXISTS id SERIAL PRIMARY KEY;"))
-                    conn.commit()
-                except Exception as e:
-                    conn.rollback()
-                    print(f"[Migration Warning] user_consents table check: {e}")
-
-                # 2. 檢查並補齊 rppg_records 的欄位
+                # 檢查並補齊 rppg_records 的欄位
                 columns_to_add = [
                     ("user_uuid", "VARCHAR(255)"),
                     ("summary", "TEXT"),
@@ -88,13 +79,59 @@ def auto_migrate_db():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 服務啟動時執行 Migration
     auto_migrate_db()
     yield
-    # 服務關閉時可清理資源 (若有需要)
 
 # ----------------------------------------------------
-# 4. FastAPI 應用程式與 CORS 設定
+# 4. LINE Messaging API 推播輔助函式
+# ----------------------------------------------------
+def send_line_push_message(user_id: str, heart_rate: int, stress_score: int, health_light: str, summary: str, advice: str):
+    token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+    if not token or token.startswith("你的") or token == "YOUR_LINE_CHANNEL_ACCESS_TOKEN":
+        print("[LINE Push Warning] 未設定正確的 LINE_CHANNEL_ACCESS_TOKEN，跳過推播。")
+        return
+
+    # 只對格式符合 LINE User ID (U開頭且33字元) 的 ID 發送推播
+    if not (user_id and user_id.startswith("U") and len(user_id) == 33):
+        print(f"[LINE Push Warning] user_id ({user_id}) 不是有效的 LINE User ID，無法發送 LINE 通知。")
+        return
+
+    light_emoji = "🟢" if health_light == "GREEN" else ("🟡" if health_light == "YELLOW" else "🔴")
+
+    message_text = (
+        f"{light_emoji} 【PharmPulse 量測結果通知】\n\n"
+        f"❤️ 心率：{heart_rate} BPM\n"
+        f"📊 壓力指數：{stress_score} / 100\n\n"
+        f"📝 檢測摘要：\n{summary}\n\n"
+        f"💡 處置建議：\n{advice}"
+    )
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}"
+    }
+
+    payload = {
+        "to": user_id,
+        "messages": [
+            {
+                "type": "text",
+                "text": message_text
+            }
+        ]
+    }
+
+    try:
+        res = requests.post("https://api.line.me/v2/bot/message/push", json=payload, headers=headers, timeout=5)
+        if res.status_code == 200:
+            print(f"[LINE Push Success] 成功發送通知給 {user_id}")
+        else:
+            print(f"[LINE Push Failed] 狀態碼 {res.status_code}: {res.text}")
+    except Exception as e:
+        print(f"[LINE Push Error] 發送異常: {str(e)}")
+
+# ----------------------------------------------------
+# 5. FastAPI 應用程式與 CORS 設定
 # ----------------------------------------------------
 app = FastAPI(title="PharmPulse Backend API", version="1.0.0", lifespan=lifespan)
 
@@ -114,7 +151,7 @@ def get_db():
         db.close()
 
 # ----------------------------------------------------
-# 5. 前端頁面託管路由
+# 6. 前端頁面託管路由
 # ----------------------------------------------------
 @app.get("/")
 @app.get("/liff")
@@ -124,7 +161,7 @@ def serve_liff():
     return {"status": "online", "message": "PharmPulse API Service is running"}
 
 # ----------------------------------------------------
-# 6. Request / Response Pydantic Schemas
+# 7. Request / Response Pydantic Schemas
 # ----------------------------------------------------
 class AnalyzeRequest(BaseModel):
     user_line_id: str
@@ -138,7 +175,7 @@ class ConsentRequest(BaseModel):
     terms_version: str = "v1.0"
 
 # ----------------------------------------------------
-# 7. API 路由定義
+# 8. API 路由定義
 # ----------------------------------------------------
 @app.get("/api/v1/user/consent-status/{user_line_id}")
 def check_consent(user_line_id: str, db: Session = Depends(get_db)):
@@ -177,7 +214,7 @@ def analyze_rppg(req: AnalyzeRequest, db: Session = Depends(get_db)):
         if not req.rgb_signals:
             raise HTTPException(status_code=400, detail="rgb_signals cannot be empty")
 
-        # 優先取綠光 (G Channel)，若僅一維則取第 0 個
+        # 取 Green Channel (綠光)
         green_signal = req.rgb_signals[1] if len(req.rgb_signals) > 1 else req.rgb_signals[0]
         
         if len(green_signal) < 60:
@@ -187,14 +224,13 @@ def analyze_rppg(req: AnalyzeRequest, db: Session = Depends(get_db)):
             signal_arr = np.array(green_signal, dtype=float)
             detrended = signal_arr - np.mean(signal_arr)
             
-            # 訊號標準差計算（預防零變異數情況）
             std_val = float(np.std(detrended))
             if np.isnan(std_val) or std_val == 0:
                 sdnn = 35.0
             else:
                 sdnn = round(std_val * 100, 1)
 
-            # FFT 頻譜分析求心率 (限制在 0.75 Hz ~ 2.5 Hz，對應 45 BPM ~ 150 BPM)
+            # FFT 頻譜分析 (0.75 Hz ~ 2.5 Hz，對應 45 BPM ~ 150 BPM)
             fft_vals = np.abs(np.fft.rfft(detrended))
             freqs = np.fft.rfftfreq(len(detrended), 1.0 / req.fps)
             
@@ -205,13 +241,11 @@ def analyze_rppg(req: AnalyzeRequest, db: Session = Depends(get_db)):
             else:
                 hr = 75
             
-            # SDNN 合理值邊界修剪
             sdnn = max(15.0, min(100.0, sdnn))
 
-        # 壓力分數評估
+        # 壓力與燈號判斷
         stress = int(max(10, min(99, 100 - (sdnn * 1.2))))
         
-        # 健康燈號評估邏輯
         if stress > 75 or hr > 100 or hr < 50:
             light = "RED"
             summary = "生理數值顯著偏離基準，心血管負擔較高。"
@@ -238,6 +272,7 @@ def analyze_rppg(req: AnalyzeRequest, db: Session = Depends(get_db)):
                 "2. 建議每日同一時間持續進行生理量測記錄。"
             )
 
+        # 寫入資料庫
         record = RPPGRecord(
             user_uuid=req.user_line_id,
             heart_rate=hr,
@@ -251,6 +286,16 @@ def analyze_rppg(req: AnalyzeRequest, db: Session = Depends(get_db)):
         db.add(record)
         db.commit()
         db.refresh(record)
+
+        # 🔔 自動觸發 LINE Push Message 發送通知
+        send_line_push_message(
+            user_id=req.user_line_id,
+            heart_rate=hr,
+            stress_score=stress,
+            health_light=light,
+            summary=summary,
+            advice=advice
+        )
 
         return {
             "status": "success",
@@ -272,7 +317,7 @@ def analyze_rppg(req: AnalyzeRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 # ----------------------------------------------------
-# 8. 歷史紀錄 API
+# 9. 歷史紀錄 API
 # ----------------------------------------------------
 @app.get("/api/v1/user/history/{user_line_id}")
 def get_user_history(user_line_id: str, limit: int = 10, db: Session = Depends(get_db)):
