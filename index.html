@@ -3,436 +3,486 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>PharmPulse 生理量測與 AI 處置建議</title>
-    <!-- LINE LIFF SDK -->
-    <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+    <title>PharmPulse 生理檢測與 AI 健康分析</title>
     <!-- Bootstrap 5 CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- FontAwesome 圖示 -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- LIFF SDK -->
+    <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
     <style>
         body {
-            background-color: #f8f9fa;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            margin: 0;
-            padding: 0;
-            user-select: none;
+            background-color: #f4f7f6;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
         }
-        .container {
-            max-width: 500px;
-            padding: 20px;
+        .card-custom {
+            border: none;
+            border-radius: 16px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.06);
         }
-        .video-wrapper {
+        .camera-container {
             position: relative;
             width: 100%;
-            padding-top: 100%; /* 1:1 正方形比例 */
-            background-color: #000;
-            border-radius: 16px;
+            max-width: 360px;
+            height: 360px;
+            margin: 0 auto;
+            border-radius: 50%;
             overflow: hidden;
-            box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+            border: 6px solid #e0e0e0;
+            background-color: #000;
         }
-        /* 前置鏡頭水平鏡像翻轉 */
         #webcam {
-            position: absolute;
-            top: 0;
-            left: 0;
             width: 100%;
             height: 100%;
             object-fit: cover;
             transform: scaleX(-1);
-            -webkit-transform: scaleX(-1);
-        }
-        #roi-canvas {
-            display: none;
         }
         .face-overlay {
             position: absolute;
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            width: 65%;
-            height: 65%;
+            width: 220px;
+            height: 280px;
             border: 3px dashed rgba(255, 255, 255, 0.7);
             border-radius: 50%;
             pointer-events: none;
-            box-sizing: border-box;
-            z-index: 2;
         }
-        .progress {
-            height: 10px;
-            border-radius: 5px;
+        .light-indicator {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
         }
-        .card-result {
-            border-radius: 12px;
-            border: none;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+        .light-GREEN { background-color: #28a745; box-shadow: 0 0 10px #28a745; }
+        .light-YELLOW { background-color: #ffc107; box-shadow: 0 0 10px #ffc107; }
+        .light-RED { background-color: #dc3545; box-shadow: 0 0 10px #dc3545; }
+        .nav-pills .nav-link.active {
+            background-color: #198754;
         }
-        .ai-advice-card {
-            background-color: #f0fdf4;
-            border-left: 5px solid #198754;
-            border-radius: 8px;
-            padding: 12px 15px;
-            transition: all 0.3s ease;
-        }
-        .modal-content {
-            border-radius: 16px;
-            border: none;
+        .nav-pills .nav-link {
+            color: #198754;
         }
     </style>
 </head>
-<body>
+<body class="pb-5">
 
-    <div class="container text-center">
-        <!-- 頁首標題 -->
-        <div class="my-3">
-            <h4 class="fw-bold text-success">💚 PharmPulse 生理照護</h4>
-            <p class="text-muted small">對準面部保持靜止 10-15 秒，即可分析生理指標並提供 AI 處置建議</p>
-        </div>
+<div class="container py-3" style="max-width: 600px;">
 
-        <!-- 攝影機視訊區塊 -->
-        <div class="video-wrapper mb-3">
-            <video id="webcam" autoplay playsinline muted></video>
-            <div class="face-overlay"></div>
-        </div>
-        <canvas id="roi-canvas"></canvas>
-
-        <!-- 進度條區塊 -->
-        <div class="progress mb-3">
-            <div id="progress-bar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 0%;"></div>
-        </div>
-
-        <!-- 狀態提示語 -->
-        <div id="status-text" class="alert alert-secondary py-2 small fw-bold mb-3">
-            初始化 LIFF 系統中...
-        </div>
-
-        <!-- 操作按鈕 -->
-        <div class="d-grid gap-2 mb-4">
-            <button id="start-btn" class="btn btn-success btn-lg fw-bold shadow-sm" disabled onclick="startMeasurement()">
-                開始生理量測
+    <!-- 頁籤導覽：即時量測 / 歷史紀錄 -->
+    <ul class="nav nav-pills nav-fill mb-3 card-custom bg-white p-2" id="mainTab" role="tablist">
+        <li class="nav-item" role="presentation">
+            <button class="nav-link active fw-bold" id="measure-tab" data-bs-toggle="tab" data-bs-target="#measure-panel" type="button" role="tab">
+                <i class="fa-solid fa-heart-pulse me-1"></i> 即時檢測
             </button>
-        </div>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link fw-bold" id="history-tab" data-bs-toggle="tab" data-bs-target="#history-panel" type="button" role="tab" onclick="fetchHistory()">
+                <i class="fa-solid fa-clock-rotate-left me-1"></i> 歷史紀錄
+            </button>
+        </li>
+    </ul>
 
-        <!-- 即時數據顯示區 -->
-        <div class="card card-result p-3 text-start bg-white mb-3">
-            <h6 class="fw-bold text-secondary mb-3">📊 最近一次量測結果</h6>
-            <div class="row text-center mb-3">
-                <div class="col-4 border-end">
-                    <span class="text-muted small d-block">即時心率</span>
-                    <strong id="display-hr" class="fs-4 text-danger">--</strong> <span class="small">BPM</span>
+    <div class="tab-content" id="mainTabContent">
+
+        <!-- 頁籤 1: 即時量測 -->
+        <div class="tab-pane fade show active" id="measure-panel" role="tabpanel">
+            <div class="card card-custom p-4 text-center bg-white mb-3">
+                <h4 class="fw-bold text-success mb-1">PharmPulse 生理量測</h4>
+                <p class="text-muted small mb-3">請保持面部對準圓框，靜止 10 秒進行測量</p>
+
+                <!-- 相機區域 -->
+                <div class="camera-container mb-3" id="cameraContainer">
+                    <video id="webcam" autoplay playsinline muted></video>
+                    <canvas id="canvas" style="display:none;"></canvas>
+                    <div class="face-overlay" id="faceOverlay"></div>
                 </div>
-                <div class="col-4 border-end">
-                    <span class="text-muted small d-block">HRV 指數</span>
-                    <strong id="display-hrv" class="fs-4 text-primary">--</strong> <span class="small">ms</span>
+
+                <!-- 進度條 -->
+                <div class="progress mb-3" style="height: 10px;">
+                    <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 0%;"></div>
                 </div>
-                <div class="col-4">
-                    <span class="text-muted small d-block">壓力指數</span>
-                    <strong id="display-stress" class="fs-4 text-dark">--</strong>
+
+                <div id="statusText" class="text-secondary fw-bold mb-3">準備就緒，請點擊開始檢測</div>
+
+                <!-- 操作按鈕 -->
+                <div class="d-grid gap-2">
+                    <button id="startBtn" class="btn btn-success btn-lg fw-bold" onclick="startMeasurement()">
+                        <i class="fa-solid fa-play me-2"></i>開始量測 (10秒)
+                    </button>
                 </div>
             </div>
+        </div>
 
-            <!-- 🤖 AI 行動處置建議即時顯示區塊 -->
-            <div id="ai-advice-container" class="ai-advice-card mt-2 d-none">
-                <div class="d-flex align-items-center mb-1">
-                    <span class="badge bg-success me-2">🤖 AI 處置建議</span>
-                    <small id="ai-summary-text" class="text-muted fw-bold"></small>
+        <!-- 頁籤 2: 歷史紀錄 -->
+        <div class="tab-pane fade" id="history-panel" role="tabpanel">
+            <div class="card card-custom p-3 bg-white">
+                <h5 class="fw-bold text-success mb-3"><i class="fa-solid fa-list-ul me-2"></i>過往量測紀錄</h5>
+                <div id="historyList" class="list-group list-group-flush">
+                    <div class="text-center py-4 text-muted">
+                        <div class="spinner-border text-success mb-2" role="status"></div>
+                        <div>正在載入歷史紀錄...</div>
+                    </div>
                 </div>
-                <p id="ai-advice-text" class="small text-dark mb-0" style="white-space: pre-line;"></p>
+            </div>
+        </div>
+
+    </div>
+
+</div>
+
+<!-- 同意條款 Modal -->
+<div class="modal fade" id="consentModal" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow">
+            <div class="modal-header bg-success text-white">
+                <h5 class="modal-title fw-bold"><i class="fa-solid fa-shield-halved me-2"></i>使用者隱私與知情同意</h5>
+            </div>
+            <div class="modal-body">
+                <p class="small text-secondary">歡迎使用 PharmPulse 生理照護服務。在開始量測前，請閱讀並同意以下事項：</p>
+                <div class="bg-light p-3 rounded small mb-3" style="max-height: 150px; overflow-y: auto;">
+                    1. 本服務透過相機影像進行非侵入式光學影像心率（rPPG）分析。<br>
+                    2. 收集之數據僅用於生理指標估算與個人健康趨勢紀錄。<br>
+                    3. 本系統估算結果僅供健康管理參考，不可作為醫療診斷之唯一依據。
+                </div>
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="consentCheck">
+                    <label class="form-check-label fw-bold small" for="consentCheck">
+                        我已閱讀並同意上述隱私與數據服務條款
+                    </label>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-success w-100 fw-bold" id="consentSubmitBtn" onclick="submitConsent()" disabled>同意並繼續</button>
             </div>
         </div>
     </div>
+</div>
 
-    <!-- 🤖 AI 分析與處置建議 彈出視窗 Modal -->
-    <div class="modal fade" id="adviceModal" tabindex="-1" aria-hidden="true">
-        <div class="modal-dialog modal-dialog-centered">
-            <div class="modal-content p-3">
-                <div class="modal-header border-0 pb-0">
-                    <h5 class="modal-title fw-bold text-success">🤖 PharmPulse AI 健康分析報告</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+<!-- 量測結果 Modal -->
+<div class="modal fade" id="resultModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow">
+            <div class="modal-header bg-white border-0 pb-0">
+                <h5 class="modal-title fw-bold text-success"><i class="fa-solid fa-square-poll-vertical me-2"></i>AI 生理量測報告</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="text-center mb-3">
+                    <span id="resultLightIndicator" class="light-indicator"></span>
+                    <span id="resultLightText" class="fw-bold fs-5">---</span>
                 </div>
-                <div class="modal-body text-start">
-                    <div class="alert alert-light border mb-3">
-                        <div class="row text-center">
-                            <div class="col-4"><small class="text-muted">心率</small><br><b id="modal-hr" class="text-danger">--</b> <small>BPM</small></div>
-                            <div class="col-4"><small class="text-muted">HRV</small><br><b id="modal-hrv" class="text-primary">--</b> <small>ms</small></div>
-                            <div class="col-4"><small class="text-muted">壓力</small><br><b id="modal-stress" class="text-dark">--</b></div>
+
+                <div class="row text-center mb-3 g-2">
+                    <div class="col-4">
+                        <div class="p-2 bg-light rounded">
+                            <div class="text-muted small">即時心率</div>
+                            <div class="fs-4 fw-bold text-danger"><span id="resHR">--</span> <small class="fs-6">BPM</small></div>
                         </div>
                     </div>
-                    
-                    <h6 class="fw-bold text-secondary mb-1">📋 摘要說明：</h6>
-                    <p id="modal-summary" class="small text-muted mb-3"></p>
-
-                    <h6 class="fw-bold text-success mb-1">💡 AI 行動處置建議：</h6>
-                    <div class="p-3 bg-light rounded border text-secondary small" id="modal-advice" style="white-space: pre-line; line-height: 1.6;">
+                    <div class="col-4">
+                        <div class="p-2 bg-light rounded">
+                            <div class="text-muted small">HRV (SDNN)</div>
+                            <div class="fs-4 fw-bold text-primary"><span id="resHRV">--</span> <small class="fs-6">ms</small></div>
+                        </div>
+                    </div>
+                    <div class="col-4">
+                        <div class="p-2 bg-light rounded">
+                            <div class="text-muted small">壓力指數</div>
+                            <div class="fs-4 fw-bold text-warning"><span id="resStress">--</span></div>
+                        </div>
                     </div>
                 </div>
-                <div class="modal-footer border-0 pt-0">
-                    <button type="button" class="btn btn-success w-100 fw-bold" data-bs-dismiss="modal">我知道了，同步至 LINE</button>
+
+                <div class="card bg-light border-0 p-3 mb-2">
+                    <div class="fw-bold text-dark mb-1"><i class="fa-solid fa-notes-medical me-1"></i>健康摘要</div>
+                    <div id="resSummary" class="small text-secondary">--</div>
                 </div>
+
+                <div class="card bg-light border-0 p-3">
+                    <div class="fw-bold text-dark mb-1"><i class="fa-solid fa-user-doctor me-1"></i>AI 處置建議</div>
+                    <div id="resAdvice" class="small text-secondary" style="white-space: pre-line;">--</div>
+                </div>
+            </div>
+            <div class="modal-footer border-0">
+                <button type="button" class="btn btn-success w-100 fw-bold" data-bs-dismiss="modal" onclick="sendResultToLine()">
+                    <i class="fa-solid fa-paper-plane me-1"></i> 我知道了，同步至 LINE
+                </button>
             </div>
         </div>
     </div>
+</div>
 
-    <!-- 個資條款同意 Modal -->
-    <div class="modal fade" id="termsModal" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1">
-        <div class="modal-dialog modal-dialog-centered">
-            <div class="modal-content p-3">
-                <div class="modal-header border-0 pb-0">
-                    <h5 class="modal-header-title fw-bold text-success">📜 個人資料告知與服務條款</h5>
-                </div>
-                <div class="modal-body text-secondary small" style="max-height: 250px; overflow-y: auto;">
-                    <p>感謝您使用 PharmPulse 慢性病照護平台。為了提供準確的生理數據量測與 AI 行動處置建議服務，我們需要存取您的 LINE 基本識別碼與攝影機影像。</p>
-                    <h6>資料蒐集與保護聲明：</h6>
-                    <ul>
-                        <li><strong>影像處理：</strong>您的臉部影像僅於手機前端本地端即時運算 rPPG 信號，不會儲存或上傳原始視訊檔。</li>
-                        <li><strong>數據安全：</strong>量測產生之生理統計數據（心率、HRV、壓力值）均妥善去識別化加密存儲。</li>
-                        <li><strong>處置建議：</strong>系統提供之 AI 建議僅供健康維護參考，若身體極度不適請儘速就醫。</li>
-                    </ul>
-                </div>
-                <div class="modal-footer border-0 pt-0">
-                    <button type="button" class="btn btn-success w-100 fw-bold" onclick="acceptTerms()">我已閱讀並同意條款</button>
-                </div>
-            </div>
-        </div>
-    </div>
+<!-- Bootstrap 5 JS -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 
-    <!-- Bootstrap 5 JS Bundle -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+    // 請將此處替換為您的 LIFF ID
+    const LIFF_ID = "YOUR_LIFF_ID"; 
+    
+    let userLineId = "test_user_default";
+    let isMeasuring = false;
+    let rgbSignals = [[], [], []]; // R, G, B
+    let videoStream = null;
+    let latestResult = null;
 
-    <script>
-        const LIFF_ID = "YOUR_LIFF_ID"; // 請替換為您的 LIFF ID
-        let userLineId = "U_TEST_USER";
-        let idToken = null;
-        
-        let video = document.getElementById('webcam');
-        let canvas = document.getElementById('roi-canvas');
-        let ctx = canvas.getContext('2d');
-        let startBtn = document.getElementById('start-btn');
-        let statusText = document.getElementById('status-text');
-        let progressBar = document.getElementById('progress-bar');
+    // 頁面初始化
+    window.onload = async function() {
+        setupConsentCheck();
+        await initLIFF();
+        await setupCamera();
+    };
 
-        let isMeasuring = false;
-        let rgbSignals = [[], [], []];
-        let captureTimer = null;
-        let frameCount = 0;
-        const TOTAL_FRAMES = 300;
-
-        async function initLIFF() {
-            try {
-                if (LIFF_ID && LIFF_ID !== "YOUR_LIFF_ID") {
-                    await liff.init({ liffId: LIFF_ID });
-                    if (!liff.isLoggedIn()) {
-                        liff.login();
-                        return;
-                    }
+    // 初始化 LIFF
+    async function initLIFF() {
+        try {
+            if (LIFF_ID && LIFF_ID !== "YOUR_LIFF_ID") {
+                await liff.init({ liffId: LIFF_ID });
+                if (liff.isLoggedIn()) {
                     const profile = await liff.getProfile();
                     userLineId = profile.userId;
-                    idToken = liff.getIDToken();
-                }
-                
-                statusText.innerText = "驗證條款簽署狀態...";
-                await checkConsentStatus();
-            } catch (err) {
-                console.error("LIFF Init Error:", err);
-                statusText.innerText = "LIFF 初始化（測試模式）";
-                startBtn.disabled = false;
-                setupCamera();
-            }
-        }
-
-        async function checkConsentStatus() {
-            try {
-                const res = await fetch(`/api/v1/user/consent-status/${userLineId}`);
-                const data = await res.json();
-                if (data.status === "success" && data.agreed) {
-                    statusText.innerText = "系統就緒，點擊「開始生理量測」";
-                    statusText.className = "alert alert-success py-2 small fw-bold mb-3";
-                    startBtn.disabled = false;
-                    setupCamera();
                 } else {
-                    const termsModal = new bootstrap.Modal(document.getElementById('termsModal'));
-                    termsModal.show();
+                    liff.login();
                 }
-            } catch (err) {
-                console.error("Consent Check Error:", err);
-                startBtn.disabled = false;
-                setupCamera();
             }
+        } catch (err) {
+            console.warn("LIFF 初始化跳過或失敗，使用測試模式:", err);
         }
+        checkConsentStatus();
+    }
 
-        async function acceptTerms() {
-            try {
-                await fetch('/api/v1/user/consent', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        user_line_id: userLineId,
-                        id_token: idToken,
-                        terms_version: "v1.0"
-                    })
-                });
-                
-                const termsModalEl = document.getElementById('termsModal');
-                const modalInstance = bootstrap.Modal.getInstance(termsModalEl);
-                if (modalInstance) modalInstance.hide();
-
-                statusText.innerText = "條款同意已簽署！系統就緒";
-                statusText.className = "alert alert-success py-2 small fw-bold mb-3";
-                startBtn.disabled = false;
-                setupCamera();
-            } catch (err) {
-                alert("網路連線錯誤，請重試");
+    // 檢查同意條款狀態
+    async function checkConsentStatus() {
+        try {
+            const res = await fetch(`/api/v1/user/consent-status/${userLineId}`);
+            const data = await res.json();
+            if (!data.agreed) {
+                const modal = new bootstrap.Modal(document.getElementById('consentModal'));
+                modal.show();
             }
+        } catch (err) {
+            console.error("檢查同意條款失敗:", err);
         }
+    }
 
-        async function setupCamera() {
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 640 } },
-                    audio: false
-                });
-                video.srcObject = stream;
-            } catch (err) {
-                console.error("Camera Access Error:", err);
-                statusText.innerText = "無法存取鏡頭，請允許權限後重新載入";
-                statusText.className = "alert alert-danger py-2 small fw-bold mb-3";
-            }
+    function setupConsentCheck() {
+        document.getElementById('consentCheck').addEventListener('change', function(e) {
+            document.getElementById('consentSubmitBtn').disabled = !e.target.checked;
+        });
+    }
+
+    async function submitConsent() {
+        try {
+            await fetch('/api/v1/user/consent', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_line_id: userLineId, terms_version: "v1.0" })
+            });
+            const modal = bootstrap.Modal.getInstance(document.getElementById('consentModal'));
+            modal.hide();
+        } catch (err) {
+            alert("提交失敗，請重試");
         }
+    }
 
-        function startMeasurement() {
-            if (isMeasuring) return;
-            isMeasuring = true;
-            startBtn.disabled = true;
-            rgbSignals = [[], [], []];
-            frameCount = 0;
-            progressBar.style.width = "0%";
-            statusText.innerText = "量測中，請保持面部靜止並面向光源...";
-            statusText.className = "alert alert-warning py-2 small fw-bold mb-3";
-
-            document.getElementById('ai-advice-container').classList.add('d-none');
-
-            canvas.width = 100;
-            canvas.height = 100;
-
-            captureTimer = setInterval(captureFrame, 1000 / 30);
+    // 開啟相機
+    async function setupCamera() {
+        const video = document.getElementById('webcam');
+        try {
+            videoStream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
+                audio: false
+            });
+            video.srcObject = videoStream;
+        } catch (err) {
+            document.getElementById('statusText').innerText = "無法啟用相機，請允許相機權限。";
+            document.getElementById('statusText').className = "text-danger fw-bold mb-3";
         }
+    }
 
-        function captureFrame() {
-            if (frameCount >= TOTAL_FRAMES) {
-                clearInterval(captureTimer);
+    // 開始 10 秒量測
+    function startMeasurement() {
+        if (isMeasuring) return;
+        isMeasuring = true;
+        rgbSignals = [[], [], []];
+
+        const startBtn = document.getElementById('startBtn');
+        const statusText = document.getElementById('statusText');
+        const progressBar = document.getElementById('progressBar');
+
+        startBtn.disabled = true;
+        statusText.innerText = "量測中，請保持靜止並保持臉部於框內...";
+        statusText.className = "text-success fw-bold mb-3";
+
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+
+        canvas.width = 160;
+        canvas.height = 120;
+
+        const duration = 10; // 10秒
+        const fps = 30;
+        const totalFrames = duration * fps;
+        let currentFrame = 0;
+
+        const interval = setInterval(() => {
+            if (currentFrame >= totalFrames) {
+                clearInterval(interval);
                 isMeasuring = false;
+                startBtn.disabled = false;
+                statusText.innerText = "分析中，請稍候...";
                 submitData();
                 return;
             }
 
-            const vw = video.videoWidth || 640;
-            const vh = video.videoHeight || 640;
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const frameData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
 
-            ctx.drawImage(video, vw / 2 - 50, vh / 2 - 50, 100, 100, 0, 0, 100, 100);
-            const frameData = ctx.getImageData(0, 0, 100, 100).data;
-
-            let rSum = 0, gSum = 0, bSum = 0;
-            const pixelCount = frameData.length / 4;
-
-            for (let i = 0; i < frameData.length; i += 4) {
-                rSum += frameData[i];
-                gSum += frameData[i + 1];
-                bSum += frameData[i + 2];
+            let rSum = 0, gSum = 0, bSum = 0, count = 0;
+            // 擷取中心區域 ROI
+            for (let y = 30; y < 90; y++) {
+                for (let x = 40; x < 120; x++) {
+                    const idx = (y * canvas.width + x) * 4;
+                    rSum += frameData[idx];
+                    gSum += frameData[idx + 1];
+                    bSum += frameData[idx + 2];
+                    count++;
+                }
             }
 
-            rgbSignals[0].push(rSum / pixelCount);
-            rgbSignals[1].push(gSum / pixelCount);
-            rgbSignals[2].push(bSum / pixelCount);
+            rgbSignals[0].push(rSum / count);
+            rgbSignals[1].push(gSum / count);
+            rgbSignals[2].push(bSum / count);
 
-            frameCount++;
-            const progress = Math.round((frameCount / TOTAL_FRAMES) * 100);
+            currentFrame++;
+            const progress = Math.round((currentFrame / totalFrames) * 100);
             progressBar.style.width = `${progress}%`;
-        }
+        }, 1000 / fps);
+    }
 
-        async function submitData() {
-            statusText.innerText = "AI 正在分析生理數據並生成建議，請稍候...";
-            statusText.className = "alert alert-info py-2 small fw-bold mb-3";
+    // 上傳數據至後端
+    async function submitData() {
+        try {
+            const response = await fetch('/api/v1/analyze-rppg', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    user_line_id: userLineId,
+                    rgb_signals: rgbSignals,
+                    fps: 30
+                })
+            });
 
-            try {
-                const response = await fetch('/api/v1/analyze-rppg', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        user_line_id: userLineId,
-                        id_token: idToken,
-                        rgb_signals: rgbSignals,
-                        fps: 30
-                    })
-                });
+            const resData = await response.json();
+            if (resData.status === "success") {
+                const data = resData.data;
+                latestResult = {
+                    hr: data.heart_rate,
+                    hrv: data.hrv_sdnn,
+                    stress: data.stress_score,
+                    light: data.health_light,
+                    summary: data.summary,
+                    advice: data.action_advice
+                };
 
-                if (!response.ok) {
-                    throw new Error(`HTTP 錯誤碼: ${response.status}`);
-                }
+                // 填入 Modal 數值
+                document.getElementById('resHR').innerText = data.heart_rate;
+                document.getElementById('resHRV').innerText = data.hrv_sdnn;
+                document.getElementById('resStress').innerText = data.stress_score;
+                document.getElementById('resSummary').innerText = data.summary;
+                document.getElementById('resAdvice').innerText = data.action_advice;
 
-                const resData = await response.json();
+                const lightInd = document.getElementById('resultLightIndicator');
+                lightInd.className = `light-indicator light-${data.health_light}`;
                 
-                let data = null;
-                if (resData.status === "success" && resData.data) {
-                    data = resData.data;
-                } else if (resData.heart_rate !== undefined) {
-                    data = resData;
-                } else {
-                    throw new Error(resData.message || "後端回傳無效資料結構");
-                }
+                const lightTexts = { GREEN: "綠燈 (正常)", YELLOW: "黃燈 (輕微預警)", RED: "紅燈 (高度警示)" };
+                document.getElementById('resultLightText').innerText = lightTexts[data.health_light] || data.health_light;
 
-                const hr = data.heart_rate || data.hr || "--";
-                const hrv = data.hrv_sdnn || data.hrv || "--";
-                const stress = data.stress_score || data.stress || "--";
-                const summary = data.summary || "生理狀況良好";
-                const advice = data.action_advice || data.advice || "請保持良好的生活習慣，定時量測與記錄健康狀態。";
-                const light = data.health_light || "GREEN";
-
-                // 1. 更新頁面卡片
-                document.getElementById('display-hr').innerText = hr;
-                document.getElementById('display-hrv').innerText = hrv;
-                document.getElementById('display-stress').innerText = stress;
-
-                // 2. 更新 AI 建議區塊
-                const adviceContainer = document.getElementById('ai-advice-container');
-                document.getElementById('ai-summary-text').innerText = summary;
-                document.getElementById('ai-advice-text').innerText = advice;
-
-                if (light === 'RED') {
-                    adviceContainer.style.backgroundColor = '#fff5f5';
-                    adviceContainer.style.borderLeftColor = '#dc3545';
-                } else if (light === 'YELLOW') {
-                    adviceContainer.style.backgroundColor = '#fff9e6';
-                    adviceContainer.style.borderLeftColor = '#ffc107';
-                } else {
-                    adviceContainer.style.backgroundColor = '#f0fdf4';
-                    adviceContainer.style.borderLeftColor = '#198754';
-                }
-                adviceContainer.classList.remove('d-none');
-
-                // 3. 更新與開啟 Modal
-                document.getElementById('modal-hr').innerText = hr;
-                document.getElementById('modal-hrv').innerText = hrv;
-                document.getElementById('modal-stress').innerText = stress;
-                document.getElementById('modal-summary').innerText = summary;
-                document.getElementById('modal-advice').innerText = advice;
-
-                const adviceModal = new bootstrap.Modal(document.getElementById('adviceModal'));
-                adviceModal.show();
-
-                statusText.innerText = `量測完成！健康狀態：${light}`;
-                statusText.className = light === 'GREEN' 
-                    ? "alert alert-success py-2 small fw-bold mb-3" 
-                    : (light === 'YELLOW' ? "alert alert-warning py-2 small fw-bold mb-3" : "alert alert-danger py-2 small fw-bold mb-3");
-
-            } catch (err) {
-                console.error("Submit Data Details Error:", err);
-                statusText.innerText = "分析失敗，請重新嘗試";
-                statusText.className = "alert alert-danger py-2 small fw-bold mb-3";
-                alert(`生理數據分析發生錯誤：\n${err.message || "網路或後端服務異常"}`);
-            } finally {
-                startBtn.disabled = false;
+                document.getElementById('statusText').innerText = "量測完成！";
+                
+                const resultModal = new bootstrap.Modal(document.getElementById('resultModal'));
+                resultModal.show();
+            } else {
+                alert("分析失敗：" + (resData.detail || "請重新量測"));
             }
+        } catch (err) {
+            console.error(err);
+            alert("網路請求連線失敗");
+        } finally {
+            document.getElementById('progressBar').style.width = "0%";
         }
+    }
 
-        window.onload = initLIFF;
-    </script>
+    // 將結果發送至 LINE 聊天室
+    async function sendResultToLine() {
+        if (!latestResult) return;
+
+        const lightTextMap = { GREEN: "🟢 綠燈 (正常)", YELLOW: "⚠️ 黃燈 (輕微預警)", RED: "🚨 紅燈 (高度警示)" };
+
+        const messageText = 
+            `💚 【PharmPulse 生理量測報告】\n` +
+            `• 狀態燈號：${lightTextMap[latestResult.light] || latestResult.light}\n` +
+            `• 即時心率：${latestResult.hr} BPM\n` +
+            `• HRV 指數：${latestResult.hrv} ms\n` +
+            `• 壓力指數：${latestResult.stress}\n\n` +
+            `📋 摘要：\n${latestResult.summary}\n\n` +
+            `${latestResult.advice}`;
+
+        try {
+            if (typeof liff !== "undefined" && liff.isInClient()) {
+                await liff.sendMessages([{
+                    type: 'text',
+                    text: messageText
+                }]);
+                liff.closeWindow();
+            } else {
+                alert("已完成紀錄！（若於 LINE App 內開啓，即可直接同步訊息至聊天室）");
+            }
+        } catch (err) {
+            console.error("LIFF sendMessages 失敗:", err);
+            alert("同步訊息失敗，請確認是否已授權 chat_message_write 權限。");
+        }
+    }
+
+    // 載入歷史紀錄
+    async function fetchHistory() {
+        const historyList = document.getElementById('historyList');
+        try {
+            const res = await fetch(`/api/v1/user/history/${userLineId}`);
+            const data = await res.json();
+
+            if (data.status === "success" && data.history.length > 0) {
+                historyList.innerHTML = "";
+                data.history.forEach(item => {
+                    const timeStr = item.created_at ? new Date(item.created_at).toLocaleString('zh-TW') : "未知時間";
+                    const badgeColor = item.health_light === "GREEN" ? "bg-success" : (item.health_light === "YELLOW" ? "bg-warning text-dark" : "bg-danger");
+
+                    const html = `
+                        <div class="list-group-item py-3">
+                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                <span class="badge ${badgeColor}">${item.health_light}</span>
+                                <small class="text-muted">${timeStr}</small>
+                            </div>
+                            <div class="row text-center my-2 g-1">
+                                <div class="col-4"><small class="text-muted">心率</small><div><strong>${item.heart_rate}</strong> <small>BPM</small></div></div>
+                                <div class="col-4"><small class="text-muted">HRV</small><div><strong>${item.hrv_sdnn}</strong> <small>ms</small></div></div>
+                                <div class="col-4"><small class="text-muted">壓力</small><div><strong>${item.stress_score}</strong></div></div>
+                            </div>
+                            <div class="small text-secondary bg-light p-2 rounded">${item.summary || "無摘要"}</div>
+                        </div>
+                    `;
+                    historyList.innerHTML += html;
+                });
+            } else {
+                historyList.innerHTML = `<div class="text-center py-4 text-muted">尚無歷史紀錄</div>`;
+            }
+        } catch (err) {
+            console.error(err);
+            historyList.innerHTML = `<div class="text-center py-4 text-danger">無法載入歷史紀錄</div>`;
+        }
+    }
+</script>
 </body>
 </html>

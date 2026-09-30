@@ -75,7 +75,6 @@ def get_db():
 # ----------------------------------------------------
 @app.on_event("startup")
 def auto_migrate_db():
-    """安全新增 user_uuid, summary, action_advice 欄位"""
     if "postgresql" in DATABASE_URL:
         try:
             with engine.connect() as conn:
@@ -88,10 +87,8 @@ def auto_migrate_db():
                     try:
                         conn.execute(text(f"ALTER TABLE rppg_records ADD COLUMN IF NOT EXISTS {col_name} {col_type};"))
                         conn.commit()
-                        print(f" Successfully ensured '{col_name}' column exists.")
                     except Exception as ex:
                         conn.rollback()
-                        print(f" Migration info for {col_name}: {ex}")
         except Exception as e:
             print(f" DB Connection error during migration: {e}")
 
@@ -103,7 +100,7 @@ def auto_migrate_db():
 def serve_liff():
     if os.path.exists("index.html"):
         return FileResponse("index.html")
-    return {"status": "online", "message": "PharmPulse API Service is running (index.html not found)"}
+    return {"status": "online", "message": "PharmPulse API Service is running"}
 
 # ----------------------------------------------------
 # 6. Request / Response Pydantic Schemas
@@ -231,3 +228,28 @@ def analyze_rppg(req: AnalyzeRequest, db: Session = Depends(get_db)):
         db.rollback()
         print(f"Analyze Error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+# ----------------------------------------------------
+# 8. 新增：取得歷史紀錄 API (修復歷史紀錄遺失問題)
+# ----------------------------------------------------
+@app.get("/api/v1/user/history/{user_line_id}")
+def get_user_history(user_line_id: str, limit: int = 10, db: Session = Depends(get_db)):
+    records = db.query(RPPGRecord)\
+                .filter(RPPGRecord.user_uuid == user_line_id)\
+                .order_by(RPPGRecord.created_at.desc())\
+                .limit(limit)\
+                .all()
+    
+    result = []
+    for r in records:
+        result.append({
+            "id": r.id,
+            "heart_rate": r.heart_rate,
+            "hrv_sdnn": r.hrv_sdnn,
+            "stress_score": r.stress_score,
+            "health_light": r.health_light,
+            "summary": r.summary,
+            "action_advice": r.action_advice,
+            "created_at": r.created_at.isoformat() if r.created_at else None
+        })
+    return {"status": "success", "history": result}
