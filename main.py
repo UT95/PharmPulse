@@ -5,6 +5,7 @@ import numpy as np
 from datetime import datetime, timezone
 from typing import List, Optional
 from contextlib import asynccontextmanager
+from scipy.signal import butter, filtfilt
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -61,7 +62,6 @@ def auto_migrate_db():
     if "postgresql" in DATABASE_URL:
         try:
             with engine.connect() as conn:
-                # 檢查並補齊 rppg_records 的欄位（移除對 user_consents 重複加 PRIMARY KEY 的指令）
                 columns_to_add = [
                     ("user_uuid", "VARCHAR(255)"),
                     ("summary", "TEXT"),
@@ -83,7 +83,18 @@ async def lifespan(app: FastAPI):
     yield
 
 # ----------------------------------------------------
-# 4. LINE Messaging API 推播輔助函式
+# 4. 帶通濾波器演算法 (Bandpass Filter)
+# ----------------------------------------------------
+def butter_bandpass_filter(data, lowcut=0.75, highcut=2.5, fs=30.0, order=2):
+    """帶通濾波器：保留 0.75Hz ~ 2.5Hz (對應 45 BPM ~ 150 BPM) 真實脈波訊號"""
+    nyq = 0.5 * fs
+    low = lowcut / nyq
+    high = highcut / nyq
+    b, a = butter(order, [low, high], btype='band')
+    return filtfilt(b, a, data)
+
+# ----------------------------------------------------
+# 5. LINE Messaging API 推播輔助函式
 # ----------------------------------------------------
 def send_line_push_message(user_id: str, heart_rate: int, stress_score: int, health_light: str, summary: str, advice: str):
     token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
@@ -91,7 +102,6 @@ def send_line_push_message(user_id: str, heart_rate: int, stress_score: int, hea
         print("[LINE Push Warning] 未設定正確的 LINE_CHANNEL_ACCESS_TOKEN，跳過推播。")
         return
 
-    # 只對格式符合 LINE User ID (U開頭且33字元) 的 ID 發送推播
     if not (user_id and user_id.startswith("U") and len(user_id) == 33):
         print(f"[LINE Push Warning] user_id ({user_id}) 不是有效的 LINE User ID，無法發送 LINE 通知。")
         return
@@ -131,7 +141,7 @@ def send_line_push_message(user_id: str, heart_rate: int, stress_score: int, hea
         print(f"[LINE Push Error] 發送異常: {str(e)}")
 
 # ----------------------------------------------------
-# 5. FastAPI 應用程式與 CORS 設定
+# 6. FastAPI 應用程式與 CORS 設定
 # ----------------------------------------------------
 app = FastAPI(title="PharmPulse Backend API", version="1.0.0", lifespan=lifespan)
 
@@ -151,7 +161,7 @@ def get_db():
         db.close()
 
 # ----------------------------------------------------
-# 6. 前端頁面託管路由
+# 7. 前端頁面託管路由
 # ----------------------------------------------------
 @app.get("/")
 @app.get("/liff")
@@ -161,7 +171,7 @@ def serve_liff():
     return {"status": "online", "message": "PharmPulse API Service is running"}
 
 # ----------------------------------------------------
-# 7. Request / Response Pydantic Schemas
+# 8. Request / Response Pydantic Schemas
 # ----------------------------------------------------
 class AnalyzeRequest(BaseModel):
     user_line_id: str
@@ -175,7 +185,7 @@ class ConsentRequest(BaseModel):
     terms_version: str = "v1.0"
 
 # ----------------------------------------------------
-# 8. API 路由定義
+# 9. API 路由定義
 # ----------------------------------------------------
 @app.get("/api/v1/user/consent-status/{user_line_id}")
 def check_consent(user_line_id: str, db: Session = Depends(get_db)):
@@ -214,7 +224,7 @@ def analyze_rppg(req: AnalyzeRequest, db: Session = Depends(get_db)):
         if not req.rgb_signals:
             raise HTTPException(status_code=400, detail="rgb_signals cannot be empty")
 
-        # 取 Green Channel (綠光)
+        # 取 Green Channel (綠光) 訊號
         green_signal = req.rgb_signals[1] if len(req.rgb_signals) > 1 else req.rgb_signals[0]
         
         if len(green_signal) < 60:
@@ -222,17 +232,27 @@ def analyze_rppg(req: AnalyzeRequest, db: Session = Depends(get_db)):
             sdnn = 35.0
         else:
             signal_arr = np.array(green_signal, dtype=float)
+            
+            # 1. 去除 DC 趨勢值 (Detrending)
             detrended = signal_arr - np.mean(signal_arr)
             
-            std_val = float(np.std(detrended))
+            # 2. 進行 Butterworth 帶通濾波器處理 (過濾 0.75~2.5Hz 以外的光學雜訊與環境閃爍)
+            try:
+                filtered_signal = butter_bandpass_filter(detrended, lowcut=0.75, highcut=2.5, fs=req.fps)
+            except Exception as fe:
+                print(f"[Filter Warning] 帶通濾波跳過: {fe}")
+                filtered_signal = detrended
+
+            # 3. 計算標準差與估算 SDNN (HRV)
+            std_val = float(np.std(filtered_signal))
             if np.isnan(std_val) or std_val == 0:
                 sdnn = 35.0
             else:
                 sdnn = round(std_val * 100, 1)
 
-            # FFT 頻譜分析 (0.75 Hz ~ 2.5 Hz，對應 45 BPM ~ 150 BPM)
-            fft_vals = np.abs(np.fft.rfft(detrended))
-            freqs = np.fft.rfftfreq(len(detrended), 1.0 / req.fps)
+            # 4. FFT 頻譜分析 (0.75 Hz ~ 2.5 Hz，對應 45 BPM ~ 150 BPM)
+            fft_vals = np.abs(np.fft.rfft(filtered_signal))
+            freqs = np.fft.rfftfreq(len(filtered_signal), 1.0 / req.fps)
             
             valid_idx = np.where((freqs >= 0.75) & (freqs <= 2.5))[0]
             if len(valid_idx) > 0:
@@ -317,7 +337,7 @@ def analyze_rppg(req: AnalyzeRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 # ----------------------------------------------------
-# 9. 歷史紀錄 API
+# 10. 歷史紀錄 API
 # ----------------------------------------------------
 @app.get("/api/v1/user/history/{user_line_id}")
 def get_user_history(user_line_id: str, limit: int = 10, db: Session = Depends(get_db)):
