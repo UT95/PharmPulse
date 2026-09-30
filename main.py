@@ -286,9 +286,9 @@ def build_flex_message(heart_rate: int, stress_score: int, health_light: str, su
                 {
                     "type": "action",
                     "action": {
-                        "type": "message",
+                        "type": "uri",
                         "label": "📊 查看歷史紀錄",
-                        "text": "查看歷史紀錄"
+                        "uri": f"{LIFF_URL}?page=history"
                     }
                 },
                 {
