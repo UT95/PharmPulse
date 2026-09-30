@@ -61,7 +61,7 @@ def auto_migrate_db():
     if "postgresql" in DATABASE_URL:
         try:
             with engine.connect() as conn:
-                # 檢查並補齊 rppg_records 的欄位
+                # 檢查並補齊 rppg_records 的欄位（移除對 user_consents 重複加 PRIMARY KEY 的指令）
                 columns_to_add = [
                     ("user_uuid", "VARCHAR(255)"),
                     ("summary", "TEXT"),
