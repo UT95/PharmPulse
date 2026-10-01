@@ -18,7 +18,7 @@ from sqlalchemy.orm import declarative_base, sessionmaker, Session
 # 1. 環境變數與資料庫連線設定
 # ----------------------------------------------------
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./test.db")
-LINE_CHANNEL_ID = os.getenv("LINE_CHANNEL_ID", "")  # 用於 id_token 驗證 аудитория (aud)
+LINE_CHANNEL_ID = os.getenv("LINE_CHANNEL_ID", "")  # 用於 id_token 驗證 audience (aud)
 LIFF_URL = os.getenv("LIFF_URL", "https://liff.line.me/YOUR_LIFF_ID")  # 請替換為你的 LIFF URL
 
 # 設定允許的 CORS 網域 (可透過環境變數以逗號分隔，如 "https://yourdomain.com,https://liff.line.me")
