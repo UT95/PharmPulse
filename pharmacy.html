@@ -325,6 +325,7 @@
 
     // 8. 繪製彈窗心率折線圖 (Chart.js)
     // 8. 繪製彈窗心率折線圖 (Chart.js 視覺優化版)
+// 8. 繪製彈窗心率折線圖 (極簡無點平滑折線版)
 function renderModalChart(historyData) {
   const canvas = document.getElementById('modalHeartRateChart');
   if (!canvas) return;
@@ -341,22 +342,9 @@ function renderModalChart(historyData) {
 
   const heartRates = sortedData.map(item => item.heart_rate || item.bpm || 0);
 
-  // 1. 動態根據 health_light 決定每個資料點的顏色與大小
-  const pointBackgroundColors = sortedData.map(item => {
-    if (item.health_light === 'RED') return '#ef4444';    // 鮮紅
-    if (item.health_light === 'YELLOW') return '#f59e0b'; // 警示黃
-    return '#10b981';                                     // 正常綠
-  });
-
-  const pointRadii = sortedData.map(item => {
-    if (item.health_light === 'RED') return 8.5;          // 異常點特別放大
-    if (item.health_light === 'YELLOW') return 6.5;
-    return 5;
-  });
-
-  // 2. 建立折線下方柔和漸層
+  // 建立折線下方柔和漸層
   const gradient = ctx.createLinearGradient(0, 0, 0, 240);
-  gradient.addColorStop(0, 'rgba(16, 185, 129, 0.25)');
+  gradient.addColorStop(0, 'rgba(16, 185, 129, 0.2)');
   gradient.addColorStop(1, 'rgba(16, 185, 129, 0.0)');
 
   if (modalChartInstance) {
@@ -370,18 +358,17 @@ function renderModalChart(historyData) {
       datasets: [{
         label: '心率 (BPM)',
         data: heartRates,
-        borderColor: '#059669',            // 折線顏色 (Emerald 600)
-        borderWidth: 3,
+        borderColor: '#059669',            // 綠色折線 (Emerald 600)
+        borderWidth: 3,                    // 線條加粗增強視覺質感
         backgroundColor: gradient,
         fill: true,
-        tension: 0.35,                      // 平滑曲線
-        // 點的視覺強化
-        pointBackgroundColor: pointBackgroundColors, // 各點專屬顏色
-        pointBorderColor: '#ffffff',                 // 白色高對比邊框
-        pointBorderWidth: 2,
-        pointRadius: pointRadii,                     // 各點專屬尺寸
-        pointHoverRadius: 11,
-        pointHoverBorderWidth: 3,
+        tension: 0.35,                     // 平滑曲線
+        // 🎯 隱藏常駐點點
+        pointRadius: 0,                    // 平時完全不顯示點點
+        pointHoverRadius: 7,               // 滑鼠靠近時才顯示亮點
+        pointHoverBackgroundColor: '#047857',
+        pointHoverBorderColor: '#ffffff',
+        pointHoverBorderWidth: 2,
       }]
     },
     options: {
@@ -389,7 +376,7 @@ function renderModalChart(historyData) {
       maintainAspectRatio: false,
       interaction: {
         mode: 'index',
-        intersect: false,
+        intersect: false,                  // 只要滑鼠移動到該 X 軸區間就會觸發懸浮顯示
       },
       scales: {
         y: {
@@ -398,9 +385,9 @@ function renderModalChart(historyData) {
           suggestedMax: 130,
           grid: {
             color: (context) => {
-              // 標示正常心率範圍 (60 與 100 BPM) 的邊界線
+              // 標示正常心率範圍 (60 與 100 BPM) 的參考警示線
               if (context.tick.value === 60 || context.tick.value === 100) {
-                return 'rgba(239, 68, 68, 0.25)'; // 淡紅色警示線
+                return 'rgba(239, 68, 68, 0.25)';
               }
               return 'rgba(226, 232, 240, 0.6)';
             },
@@ -437,7 +424,7 @@ function renderModalChart(historyData) {
               const lightEmoji = rawItem.health_light === 'RED' ? '🔴' : (rawItem.health_light === 'YELLOW' ? '🟡' : '🟢');
               return [
                 `${lightEmoji} 燈號狀態：${rawItem.health_light || 'NORMAL'}`,
-                `❤️️ 心率數值：${rawItem.heart_rate} BPM`,
+                `❤ 心率數值：${rawItem.heart_rate} BPM`,
                 `⚡ 壓力指數：${rawItem.stress_score ?? '--'} / 100`
               ];
             }
