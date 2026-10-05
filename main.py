@@ -1,11 +1,12 @@
 import os
 import math
 import json
+import re
 import random
 import requests
 import numpy as np
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional
+from typing import List, Optional, Union, Dict, Any
 from contextlib import asynccontextmanager
 from scipy.signal import butter, filtfilt, find_peaks
 
@@ -14,16 +15,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Text, Boolean, text, or_
-from sqlalchemy.orm import declarative_base, sessionmaker, Session
+from sqlalchemy.orm import DeclarativeBase, sessionmaker, Session
 
 # LINE Bot SDK Imports
 try:
     from linebot import WebhookHandler
     from linebot.exceptions import InvalidSignatureError
+    from linebot.models import MessageEvent, TextMessage, TextSendMessage
 except ImportError:
     # 備援：若使用 linebot v3 SDK
     from linebot.v3.webhook import WebhookHandler
     from linebot.v3.exceptions import InvalidSignatureError
+    MessageEvent = TextMessage = TextSendMessage = None
 
 import google.generativeai as genai
 
@@ -62,10 +65,16 @@ if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 connect_args = {"check_same_thread": False} if "sqlite" in DATABASE_URL or not DATABASE_URL else {}
-engine = create_engine(DATABASE_URL if DATABASE_URL else "sqlite:///./pharmpulse.db", pool_pre_ping=True, connect_args=connect_args)
+engine = create_engine(
+    DATABASE_URL if DATABASE_URL else "sqlite:///./pharmpulse.db",
+    pool_pre_ping=True,
+    connect_args=connect_args
+)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+
+class Base(DeclarativeBase):
+    pass
 
 # ----------------------------------------------------
 # 2. 資料庫 Model 定義
@@ -77,7 +86,7 @@ class UserConsent(Base):
     user_line_id = Column(String(255), unique=True, index=True, nullable=False)
     agreed = Column(String(10), default="true")
     terms_version = Column(String(50), default="v1.0")
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 class RPPGRecord(Base):
     __tablename__ = "rppg_records"
@@ -92,7 +101,7 @@ class RPPGRecord(Base):
     is_resolved = Column(Boolean, default=False)  # 標記藥師是否已完成電話/臨櫃關懷
     summary = Column(Text, nullable=True)
     action_advice = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 Base.metadata.create_all(bind=engine)
 
@@ -102,7 +111,7 @@ Base.metadata.create_all(bind=engine)
 def auto_migrate_db():
     if "postgresql" in DATABASE_URL:
         try:
-            with engine.connect() as conn:
+            with engine.begin() as conn:
                 columns_to_add = [
                     ("user_uuid", "VARCHAR(255)"),
                     ("user_line_id", "VARCHAR(255)"),
@@ -113,9 +122,7 @@ def auto_migrate_db():
                 for col_name, col_type in columns_to_add:
                     try:
                         conn.execute(text(f"ALTER TABLE rppg_records ADD COLUMN IF NOT EXISTS {col_name} {col_type};"))
-                        conn.commit()
                     except Exception as e:
-                        conn.rollback()
                         print(f"[Migration Warning] Add column {col_name}: {e}")
         except Exception as e:
             print(f"[Migration Error] Database connection failed: {e}")
@@ -156,8 +163,25 @@ def verify_line_id_token(id_token: str, expected_user_id: str) -> bool:
         return False
 
 # ----------------------------------------------------
-# 5. Gemini AI 衛教生成模組
+# 5. Gemini AI 衛教生成與強健 JSON 解析模組
 # ----------------------------------------------------
+def extract_json_from_text(text_content: str) -> Optional[dict]:
+    """強健的 JSON 解析器，能自動從 Gemini 的 Markdown 回應中提取 JSON"""
+    if not text_content:
+        return None
+    try:
+        return json.loads(text_content.strip())
+    except json.JSONDecodeError:
+        pass
+
+    json_match = re.search(r"\{.*\}", text_content, re.DOTALL)
+    if json_match:
+        try:
+            return json.loads(json_match.group(0))
+        except json.JSONDecodeError:
+            pass
+    return None
+
 def generate_gemini_health_advice(heart_rate: int, sdnn: float, stress_score: int, health_light: str) -> Optional[dict]:
     """使用 Google Gemini 根據生理數據產生專業且溫暖的藥局衛教摘要與建議"""
     if not GEMINI_API_KEY:
@@ -167,26 +191,26 @@ def generate_gemini_health_advice(heart_rate: int, sdnn: float, stress_score: in
         model = genai.GenerativeModel(GEMINI_MODEL_NAME)
         
         prompt = f"""
-        你是一位 PharmPulse 社區智慧藥局系統的「AI 臨床衛教藥師」。
-        請根據以下民眾透過手機鏡頭 rPPG 測得的即時生理數據，撰寫一份簡明、具專業衛教價值且充滿關懷的分析報告。
+你是一位 PharmPulse 社區智慧藥局系統的「AI 臨床衛教藥師」。
+請根據以下民眾透過手機鏡頭 rPPG 測得的即時生理數據，撰寫一份簡明、具專業衛教價值且充滿關懷的分析報告。
 
-        【生理數據資料】
-        - 心率 (Heart Rate): {heart_rate} BPM
-        - 心率變異度 (HRV SDNN): {sdnn} ms
-        - 壓力指數 (Stress Score): {stress_score} / 100
-        - 健康狀態燈號 (Health Light): {health_light} (GREEN: 良好穩定, YELLOW: 輕度疲勞/壓力上升, RED: 顯著異常/負擔過重)
+【生理數據資料】
+- 心率 (Heart Rate): {heart_rate} BPM
+- 心率變異度 (HRV SDNN): {sdnn} ms
+- 壓力指數 (Stress Score): {stress_score} / 100
+- 健康狀態燈號 (Health Light): {health_light} (GREEN: 良好穩定, YELLOW: 輕度疲勞/壓力上升, RED: 顯著異常/負擔過重)
 
-        【輸出要求】
-        請務必以繁體中文 (台灣醫療衛教用語) 並且回傳「標準 JSON 格式」，包含以下兩個欄位：
-        1. "summary": 25 ~ 45 字的簡短摘要，評估其心血管與自律神經狀態。
-        2. "action_advice": 100 ~ 150 字的具體處置建議（需包含生活作息調整、水分補充、社區藥局血壓量測諮詢或就醫警示，請適度加入 emoji 並以編號條列）。
+【輸出要求】
+請務必以繁體中文 (台灣醫療衛教用語) 並且回傳「標準 JSON 格式」，包含以下兩個欄位：
+1. "summary": 25 ~ 45 字的簡短摘要，評估其心血管與自律神經狀態。
+2. "action_advice": 100 ~ 150 字的具體處置建議（需包含生活作息調整、水分補充、社區藥局血壓量測諮詢或就醫警示，請適度加入 emoji 並以編號條列）。
 
-        輸出 JSON 範例：
-        {{
-            "summary": "您的心率趨於穩定，自律神經調節功能良好，目前生理壓力處於理想狀態。",
-            "action_advice": "🟢 【衛教藥師建議】\\n1. 請繼續保持規律作息與均衡飲食。\\n2. 建議每日補充足量水分 (1500-2000c.c.)。\\n3. 歡迎隨時至合作藥局免費測量血壓與諮詢專業藥師。"
-        }}
-        """
+輸出 JSON 範例：
+{{
+    "summary": "您的心率趨於穩定，自律神經調節功能良好，目前生理壓力處於理想狀態。",
+    "action_advice": "🟢 【衛教藥師建議】\\n1. 請繼續保持規律作息與均衡飲食。\\n2. 建議每日補充足量水分 (1500-2000c.c.)。\\n3. 歡迎隨時至合作藥局免費測量血壓與諮詢專業藥師。"
+}}
+"""
 
         response = model.generate_content(
             prompt,
@@ -196,16 +220,10 @@ def generate_gemini_health_advice(heart_rate: int, sdnn: float, stress_score: in
             )
         )
 
-        raw_text = response.text.strip()
-        # 清除 Markdown ```json ... ``` 包覆
-        if raw_text.startswith("```"):
-            raw_text = raw_text.split("```")[1]
-            if raw_text.startswith("json"):
-                raw_text = raw_text[4:].strip()
-
-        data = json.loads(raw_text)
-        if "summary" in data and "action_advice" in data:
-            return data
+        if response and response.text:
+            parsed_data = extract_json_from_text(response.text)
+            if parsed_data and "summary" in parsed_data and "action_advice" in parsed_data:
+                return parsed_data
         return None
 
     except Exception as e:
@@ -434,7 +452,7 @@ def get_db():
         db.close()
 
 # ----------------------------------------------------
-# 9. 前端頁面託管路由
+# 9. 前端頁面託管與 LINE Webhook 處理
 # ----------------------------------------------------
 @app.get("/")
 @app.get("/liff")
@@ -449,13 +467,19 @@ def serve_pharmacy():
         return FileResponse("pharmacy.html")
     return {"status": "error", "message": "pharmacy.html not found"}
 
+# 註冊基本 Webhook 訊息處理程序
+if handler and MessageEvent:
+    @handler.add(MessageEvent, message=TextMessage)
+    def handle_message(event):
+        pass  # 供擴充點對點聊天邏輯，保留介面
+
 # ----------------------------------------------------
 # 10. Request / Response Pydantic Schemas
 # ----------------------------------------------------
 class AnalyzeRequest(BaseModel):
     user_line_id: str
     id_token: Optional[str] = None
-    rgb_signals: List[List[float]]
+    rgb_signals: Union[List[List[float]], List[float]]
     fps: int = 30
 
 class ConsentRequest(BaseModel):
@@ -480,7 +504,7 @@ def check_consent(user_line_id: str, db: Session = Depends(get_db)):
             return {"status": "success", "agreed": True}
         return {"status": "success", "agreed": False}
     except Exception as e:
-        return {"status": "error", "agreed": True, "message": str(e)}
+        return {"status": "error", "agreed": False, "message": str(e)}
 
 @app.post("/api/v1/user/consent")
 def save_consent(req: ConsentRequest, db: Session = Depends(get_db)):
@@ -549,20 +573,22 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
             stress = random.randint(20, 42)
         else:
             # ----------------------------------------------------
-            # B. 正式分析邏輯 (包含 RGB 訊號格式轉換)
+            # B. 正式分析邏輯 (包含 RGB 訊號格式強健轉換)
             # ----------------------------------------------------
-            if not req.rgb_signals:
+            if not req.rgb_signals or len(req.rgb_signals) == 0:
                 raise HTTPException(status_code=400, detail="rgb_signals cannot be empty")
 
             if isinstance(req.rgb_signals[0], list):
+                # [3, N] -> [[R...], [G...], [B...]]
                 if len(req.rgb_signals) == 3 and len(req.rgb_signals[0]) > 3:
                     green_signal = req.rgb_signals[1]
+                # [N, 3] -> [[R1, G1, B1], [R2, G2, B2], ...]
+                elif len(req.rgb_signals[0]) >= 2:
+                    green_signal = [frame[1] for frame in req.rgb_signals]
                 else:
-                    green_signal = [
-                        frame[1] if (isinstance(frame, list) and len(frame) > 1) else (frame[0] if isinstance(frame, list) else frame)
-                        for frame in req.rgb_signals
-                    ]
+                    green_signal = [frame[0] for frame in req.rgb_signals]
             else:
+                # 1D List [G1, G2, G3, ...]
                 green_signal = req.rgb_signals
 
             if len(green_signal) < 60:
@@ -693,36 +719,38 @@ def ai_health_consultation(req: AIChatRequest, db: Session = Depends(get_db)):
 
     context_str = ""
     if record:
+        created_str = record.created_at.strftime('%Y-%m-%d %H:%M') if record.created_at else '近期'
         context_str = f"""
-        【民眾最新生理紀錄】
-        - 心率: {record.heart_rate} BPM
-        - HRV (SDNN): {record.hrv_sdnn} ms
-        - 壓力指數: {record.stress_score} / 100
-        - 健康燈號: {record.health_light}
-        - 檢測時間: {record.created_at.strftime('%Y-%m-%d %H:%M') if record.created_at else '近期'}
-        """
+【民眾最新生理紀錄】
+- 心率: {record.heart_rate} BPM
+- HRV (SDNN): {record.hrv_sdnn} ms
+- 壓力指數: {record.stress_score} / 100
+- 健康燈號: {record.health_light}
+- 檢測時間: {created_str}
+"""
 
     prompt = f"""
-    你是一位 PharmPulse 社區藥局的「AI 臨床衛教藥師」。請秉持專業、親切且嚴謹的態度回答民眾的問題。
+你是一位 PharmPulse 社區藥局的「AI 臨床衛教藥師」。請秉持專業、親切且嚴謹的態度回答民眾的問題。
 
-    {context_str}
+{context_str}
 
-    【民眾的問題】
-    "{req.question}"
+【民眾的問題】
+"{req.question}"
 
-    【回答規則】
-    1. 使用繁體中文，態度溫暖且專業。
-    2. 若涉及急重症症狀（如胸痛、呼吸困難、嚴重頭眩），請明確提醒立即就醫。
-    3. 強調 rPPG 與本軟體非醫療診斷設備，成果僅供個人健康管理與藥局衛教參考。
-    4. 控管在 200 字以內，清晰條列。
-    """
+【回答規則】
+1. 使用繁體中文，態度溫暖且專業。
+2. 若涉及急重症症狀（如胸痛、呼吸困難、嚴重頭眩），請明確提醒立即就醫。
+3. 強調 rPPG 與本軟體非醫療診斷設備，成果僅供個人健康管理與藥局衛教參考。
+4. 控管在 200 字以內，清晰條列。
+"""
 
     try:
         model = genai.GenerativeModel(GEMINI_MODEL_NAME)
         response = model.generate_content(prompt)
+        reply_text = response.text.strip() if response and response.text else "目前無法取得回應，請稍後再試。"
         return {
             "status": "success",
-            "reply": response.text.strip(),
+            "reply": reply_text,
             "referenced_record_id": record.id if record else None
         }
     except Exception as e:
