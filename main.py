@@ -1,5 +1,6 @@
 import os
 import math
+import json
 import random
 import requests
 import numpy as np
@@ -15,12 +16,22 @@ from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Text, Boolean, text, or_
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
+import google.generativeai as genai
+
 # ----------------------------------------------------
-# 1. 環境變數與資料庫連線設定
+# 1. 環境變數與 Google Gemini / 資料庫設定
 # ----------------------------------------------------
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./test.db")
 LINE_CHANNEL_ID = os.getenv("LINE_CHANNEL_ID", "")  # 用於 id_token 驗證 audience (aud)
 LIFF_URL = os.getenv("LIFF_URL", "https://liff.line.me/YOUR_LIFF_ID")  # 請替換為你的 LIFF URL
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+
+# 設定與初始化 Google Gemini SDK
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    print("[Gemini AI] Google Gemini API 已成功初始化。")
+else:
+    print("[Gemini AI Warning] 未設定 GEMINI_API_KEY，將使用預設規則生成衛教建議。")
 
 # 設定允許的 CORS 網域
 allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "")
@@ -132,7 +143,57 @@ def verify_line_id_token(id_token: str, expected_user_id: str) -> bool:
         return False
 
 # ----------------------------------------------------
-# 5. 訊號處理與進階 HRV 演算法
+# 5. Gemini AI 衛教生成模組
+# ----------------------------------------------------
+def generate_gemini_health_advice(heart_rate: int, sdnn: float, stress_score: int, health_light: str) -> Optional[dict]:
+    """使用 Google Gemini 根據生理數據產生專業且溫暖的藥局衛教摘要與建議"""
+    if not GEMINI_API_KEY:
+        return None
+
+    try:
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        
+        prompt = f"""
+        你是一位 PharmPulse 社區智慧藥局系統的「AI 臨床衛教藥師」。
+        請根據以下民眾透過手機鏡頭 rPPG 測得的即時生理數據，撰寫一份簡明、具專業衛教價值且充滿關懷的分析報告。
+
+        【生理數據資料】
+        - 心率 (Heart Rate): {heart_rate} BPM
+        - 心率變異度 (HRV SDNN): {sdnn} ms
+        - 壓力指數 (Stress Score): {stress_score} / 100
+        - 健康狀態燈號 (Health Light): {health_light} (GREEN: 良好穩定, YELLOW: 輕度疲勞/壓力上升, RED: 顯著異常/負擔過重)
+
+        【輸出要求】
+        請務必以繁體中文 (台灣醫療衛教用語) 並且回傳「標準 JSON 格式」，包含以下兩個欄位：
+        1. "summary": 25 ~ 45 字的簡短摘要，評估其心血管與自律神經狀態。
+        2. "action_advice": 100 ~ 150 字的具體處置建議（需包含生活作息調整、水分補充、社區藥局血壓量測諮詢或就醫警示，請適度加入 emoji 並以編號條列）。
+
+        輸出 JSON 範例：
+        {{
+            "summary": "您的心율趨於穩定，自律神經調節功能良好，目前生理壓力處於理想狀態。",
+            "action_advice": "🟢 【衛教藥師建議】\\n1. 請繼續保持規律作息與均衡飲食。\\n2. 建議每日補充足量水分 (1500-2000c.c.)。\\n3. 歡迎隨時至合作藥局免費測量血壓與諮詢專業藥師。"
+        }}
+        """
+
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.GenerationConfig(
+                response_mime_type="application/json",
+                temperature=0.4
+            )
+        )
+
+        data = json.loads(response.text)
+        if "summary" in data and "action_advice" in data:
+            return data
+        return None
+
+    except Exception as e:
+        print(f"[Gemini AI Error] 呼叫 Gemini 產生衛教建議時發生異常: {str(e)}")
+        return None
+
+# ----------------------------------------------------
+# 6. 訊號處理與進階 HRV 演算法
 # ----------------------------------------------------
 def butter_bandpass_filter(data, lowcut=0.75, highcut=2.5, fs=30.0, order=2):
     nyq = 0.5 * fs
@@ -176,7 +237,7 @@ def calculate_rppg_metrics(green_signal: List[float], fps: int = 30):
     return hr, sdnn
 
 # ----------------------------------------------------
-# 6. LINE Flex Message + Quick Reply 互動卡片
+# 7. LINE Flex Message + Quick Reply 互動卡片
 # ----------------------------------------------------
 def build_flex_message(heart_rate: int, stress_score: int, health_light: str, summary: str, advice: str):
     color_map = {
@@ -241,7 +302,7 @@ def build_flex_message(heart_rate: int, stress_score: int, health_light: str, su
                 {"type": "separator", "margin": "lg"},
                 {
                     "type": "text",
-                    "text": "📝 檢測摘要",
+                    "text": "📝 AI 檢測摘要",
                     "weight": "bold",
                     "size": "xs",
                     "color": "#555555",
@@ -257,7 +318,7 @@ def build_flex_message(heart_rate: int, stress_score: int, health_light: str, su
                 },
                 {
                     "type": "text",
-                    "text": "💡 處置與處方建議",
+                    "text": "💡 藥師處置與建議",
                     "weight": "bold",
                     "size": "xs",
                     "color": "#555555",
@@ -333,9 +394,9 @@ def send_line_push_message(user_id: str, heart_rate: int, stress_score: int, hea
         print(f"[LINE Push Error] 發送異常: {str(e)}")
 
 # ----------------------------------------------------
-# 7. FastAPI 應用程式與安全 CORS 設定
+# 8. FastAPI 應用程式與安全 CORS 設定
 # ----------------------------------------------------
-app = FastAPI(title="PharmPulse Backend API", version="1.3.0", lifespan=lifespan)
+app = FastAPI(title="PharmPulse Backend API", version="1.4.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -353,7 +414,7 @@ def get_db():
         db.close()
 
 # ----------------------------------------------------
-# 8. 前端頁面託管路由
+# 9. 前端頁面託管路由
 # ----------------------------------------------------
 @app.get("/")
 @app.get("/liff")
@@ -369,7 +430,7 @@ def serve_pharmacy():
     return {"status": "error", "message": "pharmacy.html not found"}
 
 # ----------------------------------------------------
-# 9. Request / Response Pydantic Schemas
+# 10. Request / Response Pydantic Schemas
 # ----------------------------------------------------
 class AnalyzeRequest(BaseModel):
     user_line_id: str
@@ -382,8 +443,14 @@ class ConsentRequest(BaseModel):
     id_token: Optional[str] = None
     terms_version: str = "v1.0"
 
+class AIChatRequest(BaseModel):
+    user_line_id: str
+    id_token: Optional[str] = None
+    question: str
+    record_id: Optional[int] = None
+
 # ----------------------------------------------------
-# 10. 使用者同意與生理分析 API
+# 11. 使用者同意與生理分析 API (含 Gemini 整合)
 # ----------------------------------------------------
 @app.get("/api/v1/user/consent-status/{user_line_id}")
 def check_consent(user_line_id: str, db: Session = Depends(get_db)):
@@ -449,7 +516,6 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
             if not req.rgb_signals:
                 raise HTTPException(status_code=400, detail="rgb_signals cannot be empty")
 
-            # 判斷傳入的是 [R_channel, G_channel, B_channel] 還是 [[r,g,b], [r,g,b], ...] 影格陣列
             if isinstance(req.rgb_signals[0], list):
                 if len(req.rgb_signals) == 3 and len(req.rgb_signals[0]) > 3:
                     green_signal = req.rgb_signals[1]
@@ -475,36 +541,50 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
             stress = int(round(np.clip(calc_stress, 15, 95)))
 
         # ----------------------------------------------------
-        # C. 健康燈號與處置建議判定
+        # C. 判定健康燈號
         # ----------------------------------------------------
         if stress > 75 or hr > 100 or hr < 50:
             light = "RED"
-            summary = "生理數值顯著偏離基準，心血管與自律神經負擔較高。"
-            advice = (
-                "🚨 【處置建議】壓力或心率偏高：\n"
-                "1. 請保持環境通風，閉目進行 5 分鐘深呼吸。\n"
-                "2. 建議於今日量測血壓，若連續 2 天數值異常，請至門診複診。\n"
-                "3. 可前往附近合作藥局，尋求藥師量測血壓與用藥諮詢。"
-            )
         elif stress > 50 or hr >= 85:
             light = "YELLOW"
-            summary = "生理指標輕微波動，呈現輕度疲勞或壓力上升狀態。"
-            advice = (
-                "⚠️ 【處置建議】輕度疲勞：\n"
-                "1. 建議補充 300c.c. 溫開水並稍微休息 10 分鐘。\n"
-                "2. 觀察晚間睡眠品質，避免睡前過度使用電子產品。"
-            )
         else:
             light = "GREEN"
-            summary = "生理指標良好，心律與自律神經狀態相當穩定。"
-            advice = (
-                "🟢 【處置建議】狀態非常棒：\n"
-                "1. 請繼續保持規律作息與均衡飲食。\n"
-                "2. 建議每日同一時間持續進行生理量測記錄。"
-            )
 
         # ----------------------------------------------------
-        # D. 資料庫寫入與 LINE 背景推播
+        # D. 優先呼叫 Gemini AI 產生衛教摘要與建議 (若 failure 則觸發 Fallback 規則)
+        # ----------------------------------------------------
+        ai_res = generate_gemini_health_advice(heart_rate=hr, sdnn=sdnn, stress_score=stress, health_light=light)
+
+        if ai_res:
+            summary = ai_res.get("summary", "")
+            advice = ai_res.get("action_advice", "")
+        else:
+            # Rule-based Fallback 備援衛教庫
+            if light == "RED":
+                summary = "生理數值顯著偏離基準，心血管與自律神經負擔較高。"
+                advice = (
+                    "🚨 【處置建議】壓力或心率偏高：\n"
+                    "1. 請保持環境通風，閉目進行 5 分鐘深呼吸。\n"
+                    "2. 建議於今日量測血壓，若連續 2 天數值異常，請至門診複診。\n"
+                    "3. 可前往附近合作藥局，尋求藥師量測血壓與用藥諮詢。"
+                )
+            elif light == "YELLOW":
+                summary = "生理指標輕微波動，呈現輕度疲勞或壓力上升狀態。"
+                advice = (
+                    "⚠️ 【處置建議】輕度疲勞：\n"
+                    "1. 建議補充 300c.c. 溫開水並稍微休息 10 分鐘。\n"
+                    "2. 觀察晚間睡眠品質，避免睡前過度使用電子產品。"
+                )
+            else:
+                summary = "生理指標良好，心律與自律神經狀態相當穩定。"
+                advice = (
+                    "🟢 【處置建議】狀態非常棒：\n"
+                    "1. 請繼續保持規律作息與均衡飲食。\n"
+                    "2. 建議每日同一時間持續進行生理量測記錄。"
+                )
+
+        # ----------------------------------------------------
+        # E. 資料庫寫入與 LINE 背景推播
         # ----------------------------------------------------
         record = RPPGRecord(
             user_uuid=req.user_line_id,
@@ -554,7 +634,64 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 # ----------------------------------------------------
-# 11. 民眾歷史紀錄 API
+# 12. 新增：Gemini 互動式 AI 健康諮詢 API
+# ----------------------------------------------------
+@app.post("/api/v1/ai/chat")
+def ai_health_consultation(req: AIChatRequest, db: Session = Depends(get_db)):
+    """提供民眾對生理檢測結果向 Gemini AI 藥師進行自由追問與衛教諮詢"""
+    if req.id_token and not verify_line_id_token(req.id_token, req.user_line_id):
+        raise HTTPException(status_code=401, detail="Invalid LINE id_token verification failed")
+
+    if not GEMINI_API_KEY:
+        raise HTTPException(status_code=503, detail="Gemini AI API Key 未配置，暫無法使用 AI 諮詢服務")
+
+    # 取得最新的一筆紀錄或指定 record_id
+    if req.record_id:
+        record = db.query(RPPGRecord).filter(RPPGRecord.id == req.record_id).first()
+    else:
+        record = db.query(RPPGRecord)\
+                   .filter(or_(RPPGRecord.user_line_id == req.user_line_id, RPPGRecord.user_uuid == req.user_line_id))\
+                   .order_by(RPPGRecord.created_at.desc()).first()
+
+    context_str = ""
+    if record:
+        context_str = f"""
+        【民眾最新生理紀錄】
+        - 心率: {record.heart_rate} BPM
+        - HRV (SDNN): {record.hrv_sdnn} ms
+        - 壓力指數: {record.stress_score} / 100
+        - 健康燈號: {record.health_light}
+        - 檢測時間: {record.created_at.strftime('%Y-%m-%d %H:%M') if record.created_at else '近期'}
+        """
+
+    prompt = f"""
+    你是一位 PharmPulse 社區藥局的「AI 臨床衛教藥師」。請秉持專業、親切且嚴謹的態度回答民眾的問題。
+
+    {context_str}
+
+    【民眾的問題】
+    "{req.question}"
+
+    【回答規則】
+    1. 使用繁體中文，態度溫暖且專業。
+    2. 若涉及急重症症狀（如胸痛、呼吸困難、嚴重頭眩），請明確提醒立即就醫。
+    3. 強調 rPPG 與本軟體非醫療診斷設備，成果僅供個人健康管理與藥局衛教參考。
+    4. 控管在 200 字以內，清晰條列。
+    """
+
+    try:
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        response = model.generate_content(prompt)
+        return {
+            "status": "success",
+            "reply": response.text.strip(),
+            "referenced_record_id": record.id if record else None
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Gemini AI Consultation Failed: {str(e)}")
+
+# ----------------------------------------------------
+# 13. 民眾歷史紀錄 API
 # ----------------------------------------------------
 @app.get("/api/v1/user/history/{user_line_id}")
 def get_user_history(user_line_id: str, limit: int = 10, db: Session = Depends(get_db)):
@@ -587,7 +724,7 @@ def get_user_history(user_line_id: str, limit: int = 10, db: Session = Depends(g
         return {"status": "error", "history": [], "message": str(e)}
 
 # ----------------------------------------------------
-# 12. 藥局端專用 API (Pharmacy Alerts & QR Code History)
+# 14. 藥局端專用 API (Pharmacy Alerts & QR Code History)
 # ----------------------------------------------------
 
 # (1) 取得未處理的紅燈/黃燈緊急卡片流
