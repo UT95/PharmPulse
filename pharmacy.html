@@ -6,6 +6,8 @@
   <title>PharmPulse 藥局端健康關懷與調閱系統</title>
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
 <body class="bg-slate-50 min-h-screen text-slate-800 font-sans">
@@ -14,10 +16,10 @@
   <header class="bg-emerald-700 text-white shadow-md sticky top-0 z-50">
     <div class="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
       <div class="flex items-center space-x-3">
-        <i class="fa-solid fa-[#ffffff] fa-notes-medical text-2xl text-emerald-200"></i>
+        <i class="fa-solid fa-notes-medical text-2xl text-emerald-200"></i>
         <div>
           <h1 class="text-xl font-bold tracking-wide">PharmPulse 藥局端關懷系統</h1>
-          <p class="text-xs text-emerald-100">社區藥局生理即時追蹤與照護月台</p>
+          <p class="text-xs text-emerald-100">社區藥局生理即時追蹤與照護平台</p>
         </div>
       </div>
       <button onclick="fetchAlerts()" class="bg-emerald-800 hover:bg-emerald-900 text-emerald-100 text-sm px-3 py-1.5 rounded-lg transition flex items-center gap-1.5">
@@ -68,10 +70,10 @@
           </div>
         </div>
 
-        <!-- Patient History Output Area -->
+        <!-- Patient History Output Area (包含圖表與列表) -->
         <div id="patient-history-result" class="space-y-3 pt-2">
           <p class="text-xs text-slate-400 text-center py-6 border border-dashed border-slate-200 rounded-lg">
-            輸入或掃描民眾 ID 後，此處將顯示近 7 天歷史數據趨勢
+            輸入或掃描民眾 ID 後，此處將顯示近 7 天歷史數據趨勢圖
           </p>
         </div>
       </div>
@@ -81,6 +83,7 @@
 
   <script>
     const API_BASE = "/api/v1";
+    let pharmacyChartInstance = null; // 全域圖表實例，避免重複繪製重疊
 
     // 1. 載入待關懷警示卡片
     async function fetchAlerts() {
@@ -174,7 +177,7 @@
       }
     }
 
-    // 4. 調閱 7 天歷史紀錄
+    // 4. 調閱 7 天歷史紀錄與繪製趨勢圖
     async function fetchPatientHistory() {
       const lineId = document.getElementById("lookup-line-id").value.trim();
       const resultDiv = document.getElementById("patient-history-result");
@@ -195,12 +198,27 @@
           return;
         }
 
-        let html = `<div class="text-xs text-slate-500 mb-2 font-medium">共查得 ${data.total_records} 筆近 7 天紀錄：</div><div class="space-y-2 max-h-96 overflow-y-auto pr-1">`;
-        
+        // 建立圖表畫布與詳細紀錄列表區塊
+        let html = `
+          <div class="space-y-3">
+            <div class="flex justify-between items-center text-xs font-medium text-slate-600">
+              <span>📈 7 天心率趨勢圖 (BPM)</span>
+              <span class="text-slate-400">共 ${data.total_records || data.history.length} 筆</span>
+            </div>
+            
+            <!-- Chart Container -->
+            <div class="relative w-full h-48 bg-slate-50 p-2 rounded-lg border border-slate-200">
+              <canvas id="pharmacyHeartRateChart"></canvas>
+            </div>
+
+            <div class="text-xs font-medium text-slate-600 pt-1">📋 詳細歷史紀錄：</div>
+            <div class="space-y-2 max-h-60 overflow-y-auto pr-1">
+        `;
+
         data.history.forEach(r => {
           const lightBg = r.health_light === "RED" ? "bg-red-50 border-red-200" : (r.health_light === "YELLOW" ? "bg-amber-50 border-amber-200" : "bg-emerald-50 border-emerald-200");
           const timeStr = r.created_at ? new Date(r.created_at).toLocaleString("zh-TW") : "";
-          
+
           html += `
             <div class="p-3 rounded-lg border text-xs space-y-1 ${lightBg}">
               <div class="flex justify-between font-bold text-slate-700">
@@ -215,12 +233,80 @@
             </div>`;
         });
 
-        html += `</div>`;
+        html += `</div></div>`;
         resultDiv.innerHTML = html;
 
+        // 渲染趨勢圖
+        renderPharmacyChart(data.history);
+
       } catch (err) {
+        console.error("Fetch Patient History Error:", err);
         resultDiv.innerHTML = `<p class="text-xs text-red-500 text-center py-4">查詢失敗，請檢查系統狀態。</p>`;
       }
+    }
+
+    // 5. 繪製藥局端心率趨勢圖 (Chart.js)
+    function renderPharmacyChart(historyData) {
+      const canvas = document.getElementById('pharmacyHeartRateChart');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+
+      // 按時間舊 -> 新排序，確保趨勢圖由左至右顯示
+      const sortedData = [...historyData].reverse();
+
+      const labels = sortedData.map(item => {
+        if (!item.created_at) return '未知';
+        const d = new Date(item.created_at);
+        return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+      });
+
+      const heartRates = sortedData.map(item => item.heart_rate || item.bpm || 0);
+
+      // 若已有圖表實例則先銷毀，避免重疊渲染問題
+      if (pharmacyChartInstance) {
+        pharmacyChartInstance.destroy();
+      }
+
+      pharmacyChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: '心率 (BPM)',
+            data: heartRates,
+            borderColor: '#059669', // Emerald 600
+            backgroundColor: 'rgba(5, 150, 105, 0.12)',
+            borderWidth: 2,
+            pointRadius: 4,
+            pointBackgroundColor: '#047857',
+            fill: true,
+            tension: 0.3
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            y: {
+              beginAtZero: false,
+              suggestedMin: 50,
+              suggestedMax: 130,
+              ticks: { font: { size: 10 } }
+            },
+            x: {
+              ticks: { maxRotation: 45, font: { size: 10 } }
+            }
+          },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: (context) => `心率: ${context.parsed.y} BPM`
+              }
+            }
+          }
+        }
+      });
     }
 
     // 初始化載入
