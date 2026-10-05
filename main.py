@@ -36,13 +36,13 @@ import google.generativeai as genai
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 LINE_CHANNEL_ID = os.getenv("LINE_CHANNEL_ID", "")  # 用於 id_token 驗證 audience (aud)
 LIFF_URL = os.getenv("LIFF_URL", "")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash").strip()
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "dummy_secret_for_init")
 
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# 設定與初始化 Google Gemini SDK
+# 初始化 Google Gemini SDK
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
     print(f"[Gemini AI] Google Gemini API 已成功初始化 (Model: {GEMINI_MODEL_NAME})。")
@@ -166,7 +166,7 @@ def verify_line_id_token(id_token: str, expected_user_id: str) -> bool:
 # 5. Gemini AI 衛教生成與強健 JSON 解析模組
 # ----------------------------------------------------
 def extract_json_from_text(text_content: str) -> Optional[dict]:
-    """強健的 JSON 解析器，能自動從 Gemini 的 Markdown 回應中提取 JSON"""
+    """強健的 JSON 解析器，能自動從 Gemini 的 Markdown 回送中提取 JSON"""
     if not text_content:
         return None
     try:
@@ -184,11 +184,15 @@ def extract_json_from_text(text_content: str) -> Optional[dict]:
 
 def generate_gemini_health_advice(heart_rate: int, sdnn: float, stress_score: int, health_light: str) -> Optional[dict]:
     """使用 Google Gemini 根據生理數據產生專業且溫暖的藥局衛教摘要與建議"""
-    if not GEMINI_API_KEY:
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        print("[Gemini AI Warning] GEMINI_API_KEY 未設置，切換至預設規則產出衛教內容。")
         return None
 
     try:
-        model = genai.GenerativeModel(GEMINI_MODEL_NAME)
+        genai.configure(api_key=api_key)
+        model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash").strip()
+        model = genai.GenerativeModel(model_name)
         
         prompt = f"""
 你是一位 PharmPulse 社區智慧藥局系統的「AI 臨床衛教藥師」。
@@ -214,10 +218,10 @@ def generate_gemini_health_advice(heart_rate: int, sdnn: float, stress_score: in
 
         response = model.generate_content(
             prompt,
-            generation_config=genai.GenerationConfig(
-                response_mime_type="application/json",
-                temperature=0.4
-            )
+            generation_config={
+                "response_mime_type": "application/json",
+                "temperature": 0.4
+            }
         )
 
         if response and response.text:
@@ -615,7 +619,7 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
             light = "GREEN"
 
         # ----------------------------------------------------
-        # D. 優先呼叫 Gemini AI 產生衛教摘要與建議 (若 failure 則觸發 Fallback 規則)
+        # D. 優先呼叫 Gemini AI 產生衛教摘要與建議 (若失敗則觸發 Fallback 規則)
         # ----------------------------------------------------
         ai_res = generate_gemini_health_advice(heart_rate=hr, sdnn=sdnn, stress_score=stress, health_light=light)
 
@@ -706,8 +710,12 @@ def ai_health_consultation(req: AIChatRequest, db: Session = Depends(get_db)):
     if req.id_token and not verify_line_id_token(req.id_token, req.user_line_id):
         raise HTTPException(status_code=401, detail="Invalid LINE id_token verification failed")
 
-    if not GEMINI_API_KEY:
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
         raise HTTPException(status_code=503, detail="Gemini AI API Key 未配置，暫無法使用 AI 諮詢服務")
+
+    genai.configure(api_key=api_key)
+    model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash").strip()
 
     # 取得最新的一筆紀錄或指定 record_id
     if req.record_id:
@@ -745,7 +753,7 @@ def ai_health_consultation(req: AIChatRequest, db: Session = Depends(get_db)):
 """
 
     try:
-        model = genai.GenerativeModel(GEMINI_MODEL_NAME)
+        model = genai.GenerativeModel(model_name)
         response = model.generate_content(prompt)
         reply_text = response.text.strip() if response and response.text else "目前無法取得回應，請稍後再試。"
         return {
