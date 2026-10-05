@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PharmPulse 藥局端健康關懷與調閱系統</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body class="bg-slate-50 min-h-screen text-slate-800 font-sans">
+
+  <!-- Header / Navbar -->
+  <header class="bg-emerald-700 text-white shadow-md sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
+      <div class="flex items-center space-x-3">
+        <i class="fa-solid fa-[#ffffff] fa-notes-medical text-2xl text-emerald-200"></i>
+        <div>
+          <h1 class="text-xl font-bold tracking-wide">PharmPulse 藥局端關懷系統</h1>
+          <p class="text-xs text-emerald-100">社區藥局生理即時追蹤與照護月台</p>
+        </div>
+      </div>
+      <button onclick="fetchAlerts()" class="bg-emerald-800 hover:bg-emerald-900 text-emerald-100 text-sm px-3 py-1.5 rounded-lg transition flex items-center gap-1.5">
+        <i class="fa-solid fa-rotate-right"></i> 重新整理
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="max-w-7xl mx-auto px-4 py-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+    <!-- Left Column: Pending Alerts (2 cols on large screen) -->
+    <section class="lg:col-span-2 space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-200 pb-3">
+        <div class="flex items-center gap-2">
+          <span class="w-3 h-3 rounded-full bg-red-500 animate-pulse"></span>
+          <h2 class="text-lg font-bold text-slate-800">待處置紅/黃燈警示個案</h2>
+        </div>
+        <span id="alert-count" class="bg-slate-200 text-slate-700 text-xs font-semibold px-2.5 py-0.5 rounded-full">載入中...</span>
+      </div>
+
+      <!-- Alert Cards Container -->
+      <div id="alerts-container" class="space-y-4">
+        <div class="text-center py-12 text-slate-400 bg-white rounded-xl shadow-sm border border-slate-100">
+          <i class="fa-solid fa-spinner fa-spin text-2xl mb-2 text-emerald-600"></i>
+          <p>正在載入緊急關懷卡片...</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Right Column: Patient 7-Day History Lookup -->
+    <section class="space-y-4">
+      <div class="border-b border-slate-200 pb-3">
+        <h2 class="text-lg font-bold text-slate-800 flex items-center gap-2">
+          <i class="fa-solid fa-qrcode text-emerald-600"></i> 掃碼 / 查詢民眾 7 天紀錄
+        </h2>
+      </div>
+
+      <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-200 space-y-4">
+        <div>
+          <label class="block text-xs font-semibold text-slate-600 mb-1">民眾 LINE User ID (或掃描 QR Code)</label>
+          <div class="flex gap-2">
+            <input type="text" id="lookup-line-id" placeholder="例如：U1234567890..." 
+                   class="flex-1 px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500">
+            <button onclick="fetchPatientHistory()" class="bg-emerald-600 hover:bg-emerald-700 text-white text-sm px-4 py-2 rounded-lg font-medium transition">
+              查詢
+            </button>
+          </div>
+        </div>
+
+        <!-- Patient History Output Area -->
+        <div id="patient-history-result" class="space-y-3 pt-2">
+          <p class="text-xs text-slate-400 text-center py-6 border border-dashed border-slate-200 rounded-lg">
+            輸入或掃描民眾 ID 後，此處將顯示近 7 天歷史數據趨勢
+          </p>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+    const API_BASE = "http://127.0.0.1:8000/api/v1";
+
+    // 1. 載入待關懷警示卡片
+    async function fetchAlerts() {
+      const container = document.getElementById("alerts-container");
+      const countBadge = document.getElementById("alert-count");
+
+      try {
+        const res = await fetch(`${API_BASE}/pharmacy/alerts`);
+        const data = await res.json();
+
+        if (data.status !== "success" || !data.alerts || data.alerts.length === 0) {
+          container.innerHTML = `
+            <div class="bg-white p-8 rounded-xl shadow-sm border border-slate-200 text-center text-slate-500">
+              <i class="fa-solid fa-circle-check text-4xl text-emerald-500 mb-3"></i>
+              <p class="font-medium">目前無待處理的紅/黃燈個案</p>
+              <p class="text-xs text-slate-400 mt-1">社區居民生理狀況皆維持良好狀態</p>
+            </div>`;
+          countBadge.textContent = "0 筆待處理";
+          return;
+        }
+
+        countBadge.textContent = `${data.alerts.length} 筆待處理`;
+        container.innerHTML = data.alerts.map(item => buildAlertCard(item)).join("");
+
+      } catch (err) {
+        console.error("Fetch Alerts Error:", err);
+        container.innerHTML = `<div class="bg-red-50 p-4 rounded-xl text-red-600 text-sm">載入資料失敗，請確認後端服務是否正常運行。</div>`;
+      }
+    }
+
+    // 2. 建立卡片 HTML
+    function buildAlertCard(item) {
+      const isRed = item.health_light === "RED";
+      const badgeBg = isRed ? "bg-red-100 text-red-700 border-red-200" : "bg-amber-100 text-amber-700 border-amber-200";
+      const lightTitle = isRed ? "🔴 高度警示 (RED)" : "🟡 輕度風險 (YELLOW)";
+      const timeStr = item.created_at ? new Date(item.created_at).toLocaleString("zh-TW") : "剛剛";
+
+      return `
+        <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-200 space-y-3 relative hover:shadow-md transition">
+          <div class="flex justify-between items-start">
+            <div>
+              <span class="inline-block text-xs px-2.5 py-1 rounded-full border font-bold ${badgeBg}">
+                ${lightTitle}
+              </span>
+              <p class="text-xs text-slate-400 mt-1">個案 ID: <span class="font-mono text-slate-600">${item.user_line_id}</span></p>
+            </div>
+            <span class="text-xs text-slate-400">${timeStr}</span>
+          </div>
+
+          <!-- Metrics -->
+          <div class="grid grid-cols-2 gap-3 bg-slate-50 p-3 rounded-lg text-sm">
+            <div>
+              <span class="text-xs text-slate-500">心率 (Heart Rate)</span>
+              <p class="font-bold text-slate-800 text-lg">${item.heart_rate} <span class="text-xs font-normal">BPM</span></p>
+            </div>
+            <div>
+              <span class="text-xs text-slate-500">壓力指數 (Stress)</span>
+              <p class="font-bold text-slate-800 text-lg">${item.stress_score} <span class="text-xs font-normal">/ 100</span></p>
+            </div>
+          </div>
+
+          <!-- Summary & Advice -->
+          <div class="text-xs text-slate-600 space-y-1">
+            <p><strong class="text-slate-700">檢測摘要：</strong>${item.summary || '無摘要'}</p>
+            <p class="bg-amber-50 text-amber-900 p-2.5 rounded-lg border border-amber-100">
+              <strong class="text-amber-800">處置建議：</strong>${item.action_advice || '建議進行臨櫃詢問與衛教。'}
+            </p>
+          </div>
+
+          <!-- Action Button -->
+          <div class="pt-1 flex justify-end">
+            <button onclick="resolveAlert(${item.id})" class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs px-4 py-2 rounded-lg font-medium transition flex items-center gap-1.5 shadow-sm">
+              <i class="fa-solid fa-check"></i> 標示已電話/臨櫃關懷
+            </button>
+          </div>
+        </div>`;
+    }
+
+    // 3. 標示已關懷
+    async function resolveAlert(recordId) {
+      try {
+        const res = await fetch(`${API_BASE}/pharmacy/resolve/${recordId}`, { method: "POST" });
+        const data = await res.json();
+        if (data.status === "success") {
+          fetchAlerts(); // 刷新警示清單
+        } else {
+          alert("更新狀態失敗：" + data.message);
+        }
+      } catch (err) {
+        alert("請求發送失敗，請檢查後端連線");
+      }
+    }
+
+    // 4. 調閱 7 天歷史紀錄
+    async function fetchPatientHistory() {
+      const lineId = document.getElementById("lookup-line-id").value.trim();
+      const resultDiv = document.getElementById("patient-history-result");
+
+      if (!lineId) {
+        alert("請輸入或掃描民眾的 LINE User ID");
+        return;
+      }
+
+      resultDiv.innerHTML = `<p class="text-xs text-slate-400 text-center py-4">查詢中...</p>`;
+
+      try {
+        const res = await fetch(`${API_BASE}/pharmacy/patient/${encodeURIComponent(lineId)}/history`);
+        const data = await res.json();
+
+        if (data.status !== "success" || !data.history || data.history.length === 0) {
+          resultDiv.innerHTML = `<p class="text-xs text-slate-500 text-center py-4 bg-slate-50 rounded-lg">該民眾近 7 天無檢測紀錄。</p>`;
+          return;
+        }
+
+        let html = `<div class="text-xs text-slate-500 mb-2 font-medium">共查得 ${data.total_records} 筆近 7 天紀錄：</div><div class="space-y-2 max-h-96 overflow-y-auto pr-1">`;
+        
+        data.history.forEach(r => {
+          const lightBg = r.health_light === "RED" ? "bg-red-50 border-red-200" : (r.health_light === "YELLOW" ? "bg-amber-50 border-amber-200" : "bg-emerald-50 border-emerald-200");
+          const timeStr = r.created_at ? new Date(r.created_at).toLocaleString("zh-TW") : "";
+          
+          html += `
+            <div class="p-3 rounded-lg border text-xs space-y-1 ${lightBg}">
+              <div class="flex justify-between font-bold text-slate-700">
+                <span>${r.health_light} 狀態</span>
+                <span class="text-slate-400 font-normal">${timeStr}</span>
+              </div>
+              <div class="flex justify-between text-slate-600">
+                <span>心率: <strong>${r.heart_rate} BPM</strong></span>
+                <span>壓力: <strong>${r.stress_score} / 100</strong></span>
+                <span>SDNN: <strong>${r.hrv_sdnn} ms</strong></span>
+              </div>
+            </div>`;
+        });
+
+        html += `</div>`;
+        resultDiv.innerHTML = html;
+
+      } catch (err) {
+        resultDiv.innerHTML = `<p class="text-xs text-red-500 text-center py-4">查詢失敗，請檢查系統狀態。</p>`;
+      }
+    }
+
+    // 初始化載入
+    window.onload = () => {
+      fetchAlerts();
+    };
+  </script>
+</body>
+</html>
