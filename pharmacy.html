@@ -13,7 +13,7 @@
 <body class="bg-slate-50 min-h-screen text-slate-800 font-sans">
 
   <!-- Header / Navbar -->
-  <header class="bg-emerald-700 text-white shadow-md sticky top-0 z-50">
+  <header class="bg-emerald-700 text-white shadow-md sticky top-0 z-40">
     <div class="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
       <div class="flex items-center space-x-3">
         <i class="fa-solid fa-notes-medical text-2xl text-emerald-200"></i>
@@ -50,7 +50,7 @@
       </div>
     </section>
 
-    <!-- Right Column: Patient 7-Day History Lookup -->
+    <!-- Right Column: Patient Lookup Trigger -->
     <section class="space-y-4">
       <div class="border-b border-slate-200 pb-3">
         <h2 class="text-lg font-bold text-slate-800 flex items-center gap-2">
@@ -64,26 +64,81 @@
           <div class="flex gap-2">
             <input type="text" id="lookup-line-id" placeholder="例如：U1234567890..." 
                    class="flex-1 px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500">
-            <button onclick="fetchPatientHistory()" class="bg-emerald-600 hover:bg-emerald-700 text-white text-sm px-4 py-2 rounded-lg font-medium transition">
-              查詢
+            <button id="search-btn" onclick="fetchPatientHistory()" class="bg-emerald-600 hover:bg-emerald-700 text-white text-sm px-4 py-2 rounded-lg font-medium transition flex items-center gap-1.5">
+              <i class="fa-solid fa-magnifying-glass"></i> 查詢
             </button>
           </div>
         </div>
 
-        <!-- Patient History Output Area (包含圖表與列表) -->
-        <div id="patient-history-result" class="space-y-3 pt-2">
-          <p class="text-xs text-slate-400 text-center py-6 border border-dashed border-slate-200 rounded-lg">
-            輸入或掃描民眾 ID 後，此處將顯示近 7 天歷史數據趨勢圖
-          </p>
+        <div class="p-4 bg-emerald-50 border border-emerald-100 rounded-lg text-xs text-emerald-800 space-y-1">
+          <p class="font-bold flex items-center gap-1"><i class="fa-solid fa-circle-info"></i> 操作提示：</p>
+          <p>輸入或掃描民眾 ID 後，系統將會彈出<strong>專屬健康分析畫面</strong>，即時顯示 7 天心率與壓力變化趨勢圖。</p>
         </div>
       </div>
     </section>
 
   </main>
 
+  <!-- 🎯 獨立大畫面彈窗 (Patient Detail Modal) -->
+  <div id="patient-detail-modal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4 transition-opacity">
+    <div class="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] flex flex-col overflow-hidden border border-slate-100">
+      
+      <!-- Modal Header -->
+      <div class="bg-emerald-700 text-white px-6 py-4 flex justify-between items-center">
+        <div>
+          <h3 class="text-lg font-bold flex items-center gap-2">
+            <i class="fa-solid fa-chart-line text-emerald-200"></i> 民眾近 7 天健康數據分析
+          </h3>
+          <p class="text-xs text-emerald-100 mt-0.5">個案 ID: <span id="modal-patient-id" class="font-mono font-bold">---</span></p>
+        </div>
+        <button onclick="closePatientModal()" class="text-emerald-100 hover:text-white hover:bg-emerald-800/50 w-8 h-8 rounded-full flex items-center justify-center transition">
+          <i class="fa-solid fa-xmark text-xl"></i>
+        </button>
+      </div>
+
+      <!-- Modal Body (可滾動區域) -->
+      <div class="p-6 overflow-y-auto space-y-6 flex-1 bg-slate-50/50">
+        
+        <!-- 上半部：7 天心率趨勢圖 -->
+        <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3">
+          <div class="flex justify-between items-center">
+            <h4 class="font-bold text-slate-800 text-sm flex items-center gap-2">
+              <i class="fa-solid fa-heart-pulse text-red-500"></i> 7 天心率趨勢變化 (BPM)
+            </h4>
+            <span id="modal-total-records" class="text-xs bg-emerald-100 text-emerald-800 font-semibold px-2.5 py-0.5 rounded-full">載入中...</span>
+          </div>
+          
+          <!-- Chart Container (高度固定 240px) -->
+          <div class="relative w-full h-60">
+            <canvas id="modalHeartRateChart"></canvas>
+          </div>
+        </div>
+
+        <!-- 下半部：詳細歷史紀錄明細 -->
+        <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3">
+          <h4 class="font-bold text-slate-800 text-sm flex items-center gap-2">
+            <i class="fa-solid fa-clock-rotate-left text-emerald-600"></i> 詳細檢測歷史紀錄
+          </h4>
+          <div id="modal-history-list" class="space-y-2.5">
+            <!-- 歷史紀錄項目將在此動態生成 -->
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Modal Footer -->
+      <div class="bg-slate-100 border-t border-slate-200 px-6 py-3 flex justify-end">
+        <button onclick="closePatientModal()" class="bg-slate-700 hover:bg-slate-800 text-white text-xs px-5 py-2 rounded-lg font-medium transition">
+          關閉視窗
+        </button>
+      </div>
+
+    </div>
+  </div>
+
   <script>
     const API_BASE = "/api/v1";
-    let pharmacyChartInstance = null; // 全域圖表實例，避免重複繪製重疊
+    let modalChartInstance = null; // 全域圖表實例
 
     // 1. 載入待關懷警示卡片
     async function fetchAlerts() {
@@ -154,9 +209,12 @@
           </div>
 
           <!-- Action Button -->
-          <div class="pt-1 flex justify-end">
+          <div class="pt-1 flex justify-end gap-2">
+            <button onclick="quickLookup('${item.user_line_id}')" class="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs px-3 py-2 rounded-lg font-medium transition flex items-center gap-1">
+              <i class="fa-solid fa-chart-line"></i> 查看 7 天趨勢
+            </button>
             <button onclick="resolveAlert(${item.id})" class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs px-4 py-2 rounded-lg font-medium transition flex items-center gap-1.5 shadow-sm">
-              <i class="fa-solid fa-check"></i> 標示已電話/臨櫃關懷
+              <i class="fa-solid fa-check"></i> 標示已關懷
             </button>
           </div>
         </div>`;
@@ -168,7 +226,7 @@
         const res = await fetch(`${API_BASE}/pharmacy/resolve/${recordId}`, { method: "POST" });
         const data = await res.json();
         if (data.status === "success") {
-          fetchAlerts(); // 刷新警示清單
+          fetchAlerts();
         } else {
           alert("更新狀態失敗：" + data.message);
         }
@@ -177,81 +235,101 @@
       }
     }
 
-    // 4. 調閱 7 天歷史紀錄與繪製趨勢圖
+    // 4. 快速帶入 ID 並查詢
+    function quickLookup(lineId) {
+      document.getElementById("lookup-line-id").value = lineId;
+      fetchPatientHistory();
+    }
+
+    // 5. 調閱 7 天歷史紀錄並開啟獨立彈窗畫面
     async function fetchPatientHistory() {
       const lineId = document.getElementById("lookup-line-id").value.trim();
-      const resultDiv = document.getElementById("patient-history-result");
+      const btn = document.getElementById("search-btn");
 
       if (!lineId) {
         alert("請輸入或掃描民眾的 LINE User ID");
         return;
       }
 
-      resultDiv.innerHTML = `<p class="text-xs text-slate-400 text-center py-4">查詢中...</p>`;
+      btn.disabled = true;
+      btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> 查詢中...`;
 
       try {
         const res = await fetch(`${API_BASE}/pharmacy/patient/${encodeURIComponent(lineId)}/history`);
         const data = await res.json();
 
         if (data.status !== "success" || !data.history || data.history.length === 0) {
-          resultDiv.innerHTML = `<p class="text-xs text-slate-500 text-center py-4 bg-slate-50 rounded-lg">該民眾近 7 天無檢測紀錄。</p>`;
+          alert("該民眾近 7 天無檢測紀錄。");
           return;
         }
 
-        // 建立圖表畫布與詳細紀錄列表區塊
-        let html = `
-          <div class="space-y-3">
-            <div class="flex justify-between items-center text-xs font-medium text-slate-600">
-              <span>📈 7 天心率趨勢圖 (BPM)</span>
-              <span class="text-slate-400">共 ${data.total_records || data.history.length} 筆</span>
-            </div>
-            
-            <!-- Chart Container -->
-            <div class="relative w-full h-48 bg-slate-50 p-2 rounded-lg border border-slate-200">
-              <canvas id="pharmacyHeartRateChart"></canvas>
-            </div>
-
-            <div class="text-xs font-medium text-slate-600 pt-1">📋 詳細歷史紀錄：</div>
-            <div class="space-y-2 max-h-60 overflow-y-auto pr-1">
-        `;
-
-        data.history.forEach(r => {
-          const lightBg = r.health_light === "RED" ? "bg-red-50 border-red-200" : (r.health_light === "YELLOW" ? "bg-amber-50 border-amber-200" : "bg-emerald-50 border-emerald-200");
-          const timeStr = r.created_at ? new Date(r.created_at).toLocaleString("zh-TW") : "";
-
-          html += `
-            <div class="p-3 rounded-lg border text-xs space-y-1 ${lightBg}">
-              <div class="flex justify-between font-bold text-slate-700">
-                <span>${r.health_light} 狀態</span>
-                <span class="text-slate-400 font-normal">${timeStr}</span>
-              </div>
-              <div class="flex justify-between text-slate-600">
-                <span>心率: <strong>${r.heart_rate} BPM</strong></span>
-                <span>壓力: <strong>${r.stress_score} / 100</strong></span>
-                <span>SDNN: <strong>${r.hrv_sdnn} ms</strong></span>
-              </div>
-            </div>`;
-        });
-
-        html += `</div></div>`;
-        resultDiv.innerHTML = html;
-
-        // 渲染趨勢圖
-        renderPharmacyChart(data.history);
+        // 開啟彈窗畫面並載入資料
+        openPatientModal(lineId, data);
 
       } catch (err) {
         console.error("Fetch Patient History Error:", err);
-        resultDiv.innerHTML = `<p class="text-xs text-red-500 text-center py-4">查詢失敗，請檢查系統狀態。</p>`;
+        alert("查詢失敗，請檢查系統與後端狀態。");
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = `<i class="fa-solid fa-magnifying-glass"></i> 查詢`;
       }
     }
 
-    // 5. 繪製藥局端心率趨勢圖 (Chart.js)
-    function renderPharmacyChart(historyData) {
-      const canvas = document.getElementById('pharmacyHeartRateChart');
+    // 6. 開啟彈窗與填充內容
+    function openPatientModal(lineId, data) {
+      document.getElementById("modal-patient-id").textContent = lineId;
+      document.getElementById("modal-total-records").textContent = `共 ${data.total_records || data.history.length} 筆紀錄`;
+
+      const historyListDiv = document.getElementById("modal-history-list");
+      historyListDiv.innerHTML = "";
+
+      // 填充歷史紀錄清單
+      data.history.forEach(r => {
+        const lightBg = r.health_light === "RED" ? "bg-red-50 border-red-200 text-red-800" : (r.health_light === "YELLOW" ? "bg-amber-50 border-amber-200 text-amber-800" : "bg-emerald-50 border-emerald-200 text-emerald-800");
+        const timeStr = r.created_at ? new Date(r.created_at).toLocaleString("zh-TW") : "未知時間";
+
+        const div = document.createElement("div");
+        div.className = `p-3 rounded-xl border text-xs space-y-1.5 ${lightBg}`;
+        div.innerHTML = `
+          <div class="flex justify-between items-center font-bold">
+            <span class="flex items-center gap-1.5">
+              <span class="w-2 h-2 rounded-full ${r.health_light === 'RED' ? 'bg-red-500' : (r.health_light === 'YELLOW' ? 'bg-amber-500' : 'bg-emerald-500')}"></span>
+              ${r.health_light} 燈號狀態
+            </span>
+            <span class="text-slate-400 font-normal">${timeStr}</span>
+          </div>
+          <div class="grid grid-cols-3 gap-2 pt-1 border-t border-slate-200/50 text-slate-700">
+            <div>心率: <strong class="text-slate-900">${r.heart_rate} BPM</strong></div>
+            <div>壓力指數: <strong class="text-slate-900">${r.stress_score} / 100</strong></div>
+            <div>HRV (SDNN): <strong class="text-slate-900">${r.hrv_sdnn || '--'} ms</strong></div>
+          </div>
+        `;
+        historyListDiv.appendChild(div);
+      });
+
+      // 顯示 Modal 彈窗
+      const modal = document.getElementById("patient-detail-modal");
+      modal.classList.remove("hidden");
+
+      // 繪製趨勢圖 (延遲一瞬間確保 Modal Canvas 已完全渲染)
+      setTimeout(() => {
+        renderModalChart(data.history);
+      }, 50);
+    }
+
+    // 7. 關閉彈窗
+    function closePatientModal() {
+      const modal = document.getElementById("patient-detail-modal");
+      modal.classList.add("hidden");
+    }
+
+    // 8. 繪製彈窗心率折線圖 (Chart.js)
+    function renderModalChart(historyData) {
+      const canvas = document.getElementById('modalHeartRateChart');
       if (!canvas) return;
       const ctx = canvas.getContext('2d');
 
-      // 按時間舊 -> 新排序，確保趨勢圖由左至右顯示
+      // 時間舊 -> 新排序
       const sortedData = [...historyData].reverse();
 
       const labels = sortedData.map(item => {
@@ -262,12 +340,11 @@
 
       const heartRates = sortedData.map(item => item.heart_rate || item.bpm || 0);
 
-      // 若已有圖表實例則先銷毀，避免重疊渲染問題
-      if (pharmacyChartInstance) {
-        pharmacyChartInstance.destroy();
+      if (modalChartInstance) {
+        modalChartInstance.destroy();
       }
 
-      pharmacyChartInstance = new Chart(ctx, {
+      modalChartInstance = new Chart(ctx, {
         type: 'line',
         data: {
           labels: labels,
@@ -276,11 +353,12 @@
             data: heartRates,
             borderColor: '#059669', // Emerald 600
             backgroundColor: 'rgba(5, 150, 105, 0.12)',
-            borderWidth: 2,
-            pointRadius: 4,
+            borderWidth: 2.5,
+            pointRadius: 5,
+            pointHoverRadius: 7,
             pointBackgroundColor: '#047857',
             fill: true,
-            tension: 0.3
+            tension: 0.35
           }]
         },
         options: {
@@ -291,23 +369,31 @@
               beginAtZero: false,
               suggestedMin: 50,
               suggestedMax: 130,
-              ticks: { font: { size: 10 } }
+              grid: { color: 'rgba(0, 0, 0, 0.05)' },
+              ticks: { font: { size: 11 } }
             },
             x: {
+              grid: { display: false },
               ticks: { maxRotation: 45, font: { size: 10 } }
             }
           },
           plugins: {
             legend: { display: false },
             tooltip: {
+              padding: 10,
               callbacks: {
-                label: (context) => `心率: ${context.parsed.y} BPM`
+                label: (context) => ` 心率: ${context.parsed.y} BPM`
               }
             }
           }
         }
       });
     }
+
+    // 按下 ESC 鍵自動關閉彈窗
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closePatientModal();
+    });
 
     // 初始化載入
     window.onload = () => {
