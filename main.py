@@ -1,5 +1,6 @@
 import os
 import math
+import random
 import requests
 import numpy as np
 from datetime import datetime, timezone, timedelta
@@ -424,24 +425,58 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
         raise HTTPException(status_code=401, detail="Invalid LINE id_token verification failed")
 
     try:
-        if not req.rgb_signals:
-            raise HTTPException(status_code=400, detail="rgb_signals cannot be empty")
+        user_id_upper = req.user_line_id.upper()
 
-        green_signal = req.rgb_signals[1] if len(req.rgb_signals) > 1 else req.rgb_signals[0]
-        
-        if len(green_signal) < 60:
-            hr, sdnn = 72, 38.5
+        # ----------------------------------------------------
+        # A. 測試模擬模式：依 user_line_id 關鍵字快速產生對應燈號
+        # ----------------------------------------------------
+        if "RED" in user_id_upper or "HIGH" in user_id_upper:
+            hr = random.randint(105, 125)
+            sdnn = round(random.uniform(15.0, 22.0), 1)
+            stress = random.randint(82, 95)
+        elif "YELLOW" in user_id_upper or "WARN" in user_id_upper:
+            hr = random.randint(88, 98)
+            sdnn = round(random.uniform(28.0, 36.0), 1)
+            stress = random.randint(62, 74)
+        elif "GREEN" in user_id_upper or "NORMAL" in user_id_upper:
+            hr = random.randint(65, 76)
+            sdnn = round(random.uniform(48.0, 68.0), 1)
+            stress = random.randint(20, 42)
         else:
-            hr, sdnn = calculate_rppg_metrics(green_signal, fps=req.fps)
+            # ----------------------------------------------------
+            # B. 正式分析邏輯 (包含 RGB 訊號格式轉換)
+            # ----------------------------------------------------
+            if not req.rgb_signals:
+                raise HTTPException(status_code=400, detail="rgb_signals cannot be empty")
 
-        normalized_sdnn = np.clip(sdnn, 15.0, 80.0)
-        calc_stress = 85.0 - ((normalized_sdnn - 15.0) / (80.0 - 15.0)) * 70.0
-        
-        if hr > 85:
-            calc_stress += (hr - 85) * 0.3
-            
-        stress = int(round(np.clip(calc_stress, 15, 95)))
+            # 判斷傳入的是 [R_channel, G_channel, B_channel] 還是 [[r,g,b], [r,g,b], ...] 影格陣列
+            if isinstance(req.rgb_signals[0], list):
+                if len(req.rgb_signals) == 3 and len(req.rgb_signals[0]) > 3:
+                    green_signal = req.rgb_signals[1]
+                else:
+                    green_signal = [
+                        frame[1] if (isinstance(frame, list) and len(frame) > 1) else (frame[0] if isinstance(frame, list) else frame)
+                        for frame in req.rgb_signals
+                    ]
+            else:
+                green_signal = req.rgb_signals
 
+            if len(green_signal) < 60:
+                hr, sdnn = 72, 38.5
+            else:
+                hr, sdnn = calculate_rppg_metrics(green_signal, fps=req.fps)
+
+            normalized_sdnn = np.clip(sdnn, 15.0, 80.0)
+            calc_stress = 85.0 - ((normalized_sdnn - 15.0) / (80.0 - 15.0)) * 70.0
+
+            if hr > 85:
+                calc_stress += (hr - 85) * 0.3
+
+            stress = int(round(np.clip(calc_stress, 15, 95)))
+
+        # ----------------------------------------------------
+        # C. 健康燈號與處置建議判定
+        # ----------------------------------------------------
         if stress > 75 or hr > 100 or hr < 50:
             light = "RED"
             summary = "生理數值顯著偏離基準，心血管與自律神經負擔較高。"
@@ -451,7 +486,7 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
                 "2. 建議於今日量測血壓，若連續 2 天數值異常，請至門診複診。\n"
                 "3. 可前往附近合作藥局，尋求藥師量測血壓與用藥諮詢。"
             )
-        elif stress > 50:
+        elif stress > 50 or hr >= 85:
             light = "YELLOW"
             summary = "生理指標輕微波動，呈現輕度疲勞或壓力上升狀態。"
             advice = (
@@ -468,6 +503,9 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
                 "2. 建議每日同一時間持續進行生理量測記錄。"
             )
 
+        # ----------------------------------------------------
+        # D. 資料庫寫入與 LINE 背景推播
+        # ----------------------------------------------------
         record = RPPGRecord(
             user_uuid=req.user_line_id,
             user_line_id=req.user_line_id,
