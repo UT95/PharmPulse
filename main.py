@@ -21,10 +21,12 @@ import google.generativeai as genai
 # ----------------------------------------------------
 # 1. 環境變數與 Google Gemini / 資料庫設定
 # ----------------------------------------------------
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./test.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 LINE_CHANNEL_ID = os.getenv("LINE_CHANNEL_ID", "")  # 用於 id_token 驗證 audience (aud)
-LIFF_URL = os.getenv("LIFF_URL", "https://liff.line.me/YOUR_LIFF_ID")  # 請替換為你的 LIFF URL
+LIFF_URL = os.getenv("LIFF_URL", "")  # 請替換為你的 LIFF URL
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
+handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 # 設定與初始化 Google Gemini SDK
 if GEMINI_API_KEY:
@@ -485,6 +487,24 @@ def save_consent(req: ConsentRequest, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         return {"status": "error", "message": str(e)}
+    
+@app.post("/callback")
+async def callback(
+    request: Request, 
+    x_line_signature: str = Header(None, alias="X-Line-Signature")
+):
+    if not x_line_signature:
+        raise HTTPException(status_code=400, detail="Missing X-Line-Signature header")
+
+    body = await request.body()
+    body_str = body.decode("utf-8")
+
+    try:
+        handler.handle(body_str, x_line_signature)
+    except InvalidSignatureError:
+        raise HTTPException(status_code=400, detail="Invalid signature. Check your LINE_CHANNEL_SECRET.")
+
+    return "OK"    
 
 @app.post("/api/v1/analyze-rppg")
 def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
