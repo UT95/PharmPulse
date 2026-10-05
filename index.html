@@ -11,6 +11,8 @@
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
     <!-- QRCode.js CDN -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <!-- Chart.js CDN (新增) -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -120,6 +122,12 @@
                 <h3>📊 歷史量測紀錄</h3>
                 <span class="close-btn" onclick="closeHistoryModal()">&times;</span>
             </div>
+
+            <!-- 📈 新增：心率趨勢圖畫布容器 -->
+            <div style="margin-bottom: 15px; padding: 10px; background: #fafafa; border-radius: 10px; height: 200px;">
+                <canvas id="heartRateChart"></canvas>
+            </div>
+
             <div id="history-list">
                 <p style="text-align:center; color:#888;">讀取中...</p>
             </div>
@@ -129,6 +137,8 @@
     <script>
         let currentUserId = "";
         let qrCodeInstance = null;
+        let historyChartInstance = null; // 儲存心率圖表實例
+        
         const videoElement = document.getElementById('webcam');
         const canvasElement = document.getElementById('output-canvas');
         const canvasCtx = canvasElement.getContext('2d');
@@ -347,7 +357,59 @@
             }
         }
 
-        // 6. 載入並顯示歷史紀錄
+        // 6. 繪製心率歷史趨勢圖
+        function renderHeartRateChart(historyData) {
+            const ctx = document.getElementById('heartRateChart').getContext('2d');
+            
+            // 時間由舊至新排列
+            const sortedData = [...historyData].reverse();
+            const labels = sortedData.map(item => {
+                const d = new Date(item.created_at);
+                return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
+            });
+            const heartRates = sortedData.map(item => item.heart_rate);
+
+            if (historyChartInstance) {
+                historyChartInstance.destroy();
+            }
+
+            historyChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: '心率 (BPM)',
+                        data: heartRates,
+                        borderColor: '#1DB446',
+                        backgroundColor: 'rgba(29, 180, 70, 0.1)',
+                        borderWidth: 2,
+                        pointRadius: 4,
+                        pointBackgroundColor: '#166534',
+                        fill: true,
+                        tension: 0.3
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            min: 40,
+                            max: 140,
+                            title: { display: true, text: 'BPM' }
+                        },
+                        x: {
+                            ticks: { maxRotation: 45, font: { size: 10 } }
+                        }
+                    },
+                    plugins: {
+                        legend: { display: false }
+                    }
+                }
+            });
+        }
+
+        // 7. 載入並顯示歷史紀錄
         async function fetchAndShowHistory() {
             const modal = document.getElementById("history-modal");
             const historyList = document.getElementById("history-list");
@@ -364,6 +426,10 @@
                 const data = await res.json();
 
                 if (data.status === "success" && data.history && data.history.length > 0) {
+                    // 📊 渲染趨勢圖
+                    renderHeartRateChart(data.history);
+
+                    // 📝 渲染歷史文字列表
                     historyList.innerHTML = "";
                     data.history.forEach(item => {
                         const lightIcon = item.health_light === "RED" ? "🔴" : (item.health_light === "YELLOW" ? "🟡" : "🟢");
