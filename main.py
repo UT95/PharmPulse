@@ -19,14 +19,12 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker, Session
 
 # LINE Bot SDK Imports
 try:
-    from linebot import WebhookHandler
+    from linebot import LineBotApi, WebhookHandler
     from linebot.exceptions import InvalidSignatureError
     from linebot.models import MessageEvent, TextMessage, TextSendMessage
 except ImportError:
-    # 備援：若使用 linebot v3 SDK
-    from linebot.v3.webhook import WebhookHandler
-    from linebot.v3.exceptions import InvalidSignatureError
-    MessageEvent = TextMessage = TextSendMessage = None
+    # 備援：若使用 linebot v3 SDK 或環境未完整安裝
+    LineBotApi = WebhookHandler = InvalidSignatureError = MessageEvent = TextMessage = TextSendMessage = None
 
 import google.generativeai as genai
 
@@ -35,12 +33,14 @@ import google.generativeai as genai
 # ----------------------------------------------------
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 LINE_CHANNEL_ID = os.getenv("LINE_CHANNEL_ID", "")  # 用於 id_token 驗證 audience (aud)
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
+LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "").strip()
 LIFF_URL = os.getenv("LIFF_URL", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash").strip()
-LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "dummy_secret_for_init")
 
 handler = WebhookHandler(LINE_CHANNEL_SECRET) if LINE_CHANNEL_SECRET else None
+line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN) if (LineBotApi and LINE_CHANNEL_ACCESS_TOKEN) else None
 
 # 初始化 Google Gemini SDK
 if GEMINI_API_KEY:
@@ -233,6 +233,60 @@ def generate_gemini_health_advice(heart_rate: int, sdnn: float, stress_score: in
     except Exception as e:
         print(f"[Gemini AI Error] 呼叫 Gemini 產生衛教建議時發生異常: {str(e)}")
         return None
+
+def generate_ai_chat_response(db: Session, user_line_id: str, question: str, record_id: Optional[int] = None) -> str:
+    """共通 Gemini 對話邏輯：供 LINE Webhook 與 API 共同呼叫"""
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        return "感謝您的諮詢！目前 AI 衛教諮詢服務暫時維護中。若您有緊急身體不適，請務必先就醫或尋求社區藥師協助。"
+
+    model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash").strip()
+
+    # 取得關聯的歷史檢測紀錄
+    if record_id:
+        record = db.query(RPPGRecord).filter(RPPGRecord.id == record_id).first()
+    else:
+        record = db.query(RPPGRecord)\
+                   .filter(or_(RPPGRecord.user_line_id == user_line_id, RPPGRecord.user_uuid == user_line_id))\
+                   .order_by(RPPGRecord.created_at.desc()).first()
+
+    context_str = ""
+    if record:
+        created_str = record.created_at.strftime('%Y-%m-%d %H:%M') if record.created_at else '近期'
+        context_str = f"""
+【民眾最新生理紀錄】
+- 心率: {record.heart_rate} BPM
+- HRV (SDNN): {record.hrv_sdnn} ms
+- 壓力指數: {record.stress_score} / 100
+- 健康燈號: {record.health_light}
+- 檢測時間: {created_str}
+"""
+
+    prompt = f"""
+你是一位 PharmPulse 社區藥局的「AI 臨床衛教藥師」。請秉持專業、親切且嚴謹的態度回答民眾的問題。
+
+{context_str}
+
+【民眾的問題】
+"{question}"
+
+【回答規則】
+1. 使用繁體中文，態度溫暖且專業。
+2. 若涉及急重症症狀（如胸痛、呼吸困難、嚴重頭眩），請明確提醒立即就醫。
+3. 強調 rPPG 與本軟體非醫療診斷設備，成果僅供個人健康管理與藥局衛教參考。
+4. 控管在 200 字以內，清晰條列或分段。
+"""
+
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(model_name)
+        response = model.generate_content(prompt)
+        if response and response.text:
+            return response.text.strip()
+        return "目前暫時無法回應，請稍後再試。"
+    except Exception as e:
+        print(f"[Gemini Chat Error] {str(e)}")
+        return f"抱歉，AI 衛教系統處理時發生異常，請稍後再試。"
 
 # ----------------------------------------------------
 # 6. 訊號處理與進階 HRV 演算法
@@ -471,11 +525,32 @@ def serve_pharmacy():
         return FileResponse("pharmacy.html")
     return {"status": "error", "message": "pharmacy.html not found"}
 
-# 註冊基本 Webhook 訊息處理程序
+# 註冊 LINE Webhook 對話處理程序
 if handler and MessageEvent:
     @handler.add(MessageEvent, message=TextMessage)
     def handle_message(event):
-        pass  # 供擴充點對點聊天邏輯，保留介面
+        """當使用者向 LINE 官方帳號傳送文字訊息時的自動 AI 衛教對話處理"""
+        if not line_bot_api:
+            print("[LINE Webhook Warning] line_bot_api 未能正常初始化，跳過訊息回覆。")
+            return
+
+        user_text = event.message.text
+        user_id = event.source.user_id
+
+        # 開啟獨立 Session 查詢檢測資料並呼叫 Gemini 生成回應
+        db = SessionLocal()
+        try:
+            reply_text = generate_ai_chat_response(db, user_line_id=user_id, question=user_text)
+            
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text=reply_text)
+            )
+            print(f"[LINE Webhook] 已成功回覆 AI 衛教訊息給使用者 ({user_id})")
+        except Exception as e:
+            print(f"[LINE Webhook Error] 處理訊息時發生異常: {str(e)}")
+        finally:
+            db.close()
 
 # ----------------------------------------------------
 # 10. Request / Response Pydantic Schemas
@@ -691,65 +766,24 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 # ----------------------------------------------------
-# 12. Gemini 互動式 AI 健康諮詢 API
+# 12. Gemini 互動式 AI 健康諮詢 API (提供 LIFF 與 Web 端調用)
 # ----------------------------------------------------
 @app.post("/api/v1/ai/chat")
 def ai_health_consultation(req: AIChatRequest, db: Session = Depends(get_db)):
     if req.id_token and not verify_line_id_token(req.id_token, req.user_line_id):
         raise HTTPException(status_code=401, detail="Invalid LINE id_token verification failed")
 
-    api_key = os.getenv("GEMINI_API_KEY", "").strip()
-    if not api_key:
-        raise HTTPException(status_code=503, detail="Gemini AI API Key 未配置，暫無法使用 AI 諮詢服務")
+    reply_text = generate_ai_chat_response(
+        db=db,
+        user_line_id=req.user_line_id,
+        question=req.question,
+        record_id=req.record_id
+    )
 
-    genai.configure(api_key=api_key)
-    model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash").strip()
-
-    if req.record_id:
-        record = db.query(RPPGRecord).filter(RPPGRecord.id == req.record_id).first()
-    else:
-        record = db.query(RPPGRecord)\
-                   .filter(or_(RPPGRecord.user_line_id == req.user_line_id, RPPGRecord.user_uuid == req.user_line_id))\
-                   .order_by(RPPGRecord.created_at.desc()).first()
-
-    context_str = ""
-    if record:
-        created_str = record.created_at.strftime('%Y-%m-%d %H:%M') if record.created_at else '近期'
-        context_str = f"""
-【民眾最新生理紀錄】
-- 心率: {record.heart_rate} BPM
-- HRV (SDNN): {record.hrv_sdnn} ms
-- 壓力指數: {record.stress_score} / 100
-- 健康燈號: {record.health_light}
-- 檢測時間: {created_str}
-"""
-
-    prompt = f"""
-你是一位 PharmPulse 社區藥局的「AI 臨床衛教藥師」。請秉持專業、親切且嚴謹的態度回答民眾的問題。
-
-{context_str}
-
-【民眾的問題】
-"{req.question}"
-
-【回答規則】
-1. 使用繁體中文，態度溫暖且專業。
-2. 若涉及急重症症狀（如胸痛、呼吸困難、嚴重頭眩），請明確提醒立即就醫。
-3. 強調 rPPG 與本軟體非醫療診斷設備，成果僅供個人健康管理與藥局衛教參考。
-4. 控管在 200 字以內，清晰條列。
-"""
-
-    try:
-        model = genai.GenerativeModel(model_name)
-        response = model.generate_content(prompt)
-        reply_text = response.text.strip() if response and response.text else "目前無法取得回應，請稍後再試。"
-        return {
-            "status": "success",
-            "reply": reply_text,
-            "referenced_record_id": record.id if record else None
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Gemini AI Consultation Failed: {str(e)}")
+    return {
+        "status": "success",
+        "reply": reply_text
+    }
 
 # ----------------------------------------------------
 # 13. 民眾歷史紀錄 API
@@ -832,7 +866,7 @@ def resolve_pharmacy_alert(record_id: int, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
-# (3) 掃描民眾 QR Code 後，調閱近 7 天歷史紀錄 (修復完成)
+# (3) 掃描民眾 QR Code 後，調閱近 7 天歷史紀錄
 @app.get("/api/v1/pharmacy/patient/{user_line_id}/history")
 def get_patient_7day_history(user_line_id: str, db: Session = Depends(get_db)):
     try:
