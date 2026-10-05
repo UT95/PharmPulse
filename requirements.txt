@@ -8,5 +8,4 @@ psycopg2-binary
 numpy
 scipy
 python-dotenv
-google-generativeai
 google-genai

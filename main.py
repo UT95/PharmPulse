@@ -40,7 +40,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash").strip()
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "dummy_secret_for_init")
 
-handler = WebhookHandler(LINE_CHANNEL_SECRET)
+handler = WebhookHandler(LINE_CHANNEL_SECRET) if LINE_CHANNEL_SECRET else None
 
 # 初始化 Google Gemini SDK
 if GEMINI_API_KEY:
@@ -539,6 +539,9 @@ async def callback(
     request: Request, 
     x_line_signature: str = Header(None, alias="X-Line-Signature")
 ):
+    if not handler:
+        raise HTTPException(status_code=500, detail="LINE Webhook handler not configured")
+
     if not x_line_signature:
         raise HTTPException(status_code=400, detail="Missing X-Line-Signature header")
 
@@ -560,9 +563,7 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
     try:
         user_id_upper = req.user_line_id.upper()
 
-        # ----------------------------------------------------
-        # A. 測試模擬模式：依 user_line_id 關鍵字快速產生對應燈號
-        # ----------------------------------------------------
+        # A. 測試模擬模式
         if "RED" in user_id_upper or "HIGH" in user_id_upper:
             hr = random.randint(105, 125)
             sdnn = round(random.uniform(15.0, 22.0), 1)
@@ -576,23 +577,18 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
             sdnn = round(random.uniform(48.0, 68.0), 1)
             stress = random.randint(20, 42)
         else:
-            # ----------------------------------------------------
-            # B. 正式分析邏輯 (包含 RGB 訊號格式強健轉換)
-            # ----------------------------------------------------
+            # B. 正式分析邏輯
             if not req.rgb_signals or len(req.rgb_signals) == 0:
                 raise HTTPException(status_code=400, detail="rgb_signals cannot be empty")
 
             if isinstance(req.rgb_signals[0], list):
-                # [3, N] -> [[R...], [G...], [B...]]
                 if len(req.rgb_signals) == 3 and len(req.rgb_signals[0]) > 3:
                     green_signal = req.rgb_signals[1]
-                # [N, 3] -> [[R1, G1, B1], [R2, G2, B2], ...]
                 elif len(req.rgb_signals[0]) >= 2:
                     green_signal = [frame[1] for frame in req.rgb_signals]
                 else:
                     green_signal = [frame[0] for frame in req.rgb_signals]
             else:
-                # 1D List [G1, G2, G3, ...]
                 green_signal = req.rgb_signals
 
             if len(green_signal) < 60:
@@ -608,9 +604,7 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
 
             stress = int(round(np.clip(calc_stress, 15, 95)))
 
-        # ----------------------------------------------------
         # C. 判定健康燈號
-        # ----------------------------------------------------
         if stress > 75 or hr > 100 or hr < 50:
             light = "RED"
         elif stress > 50 or hr >= 85:
@@ -618,16 +612,13 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
         else:
             light = "GREEN"
 
-        # ----------------------------------------------------
-        # D. 優先呼叫 Gemini AI 產生衛教摘要與建議 (若失敗則觸發 Fallback 規則)
-        # ----------------------------------------------------
+        # D. Gemini AI 衛教與 Fallback 規則
         ai_res = generate_gemini_health_advice(heart_rate=hr, sdnn=sdnn, stress_score=stress, health_light=light)
 
         if ai_res:
             summary = ai_res.get("summary", "")
             advice = ai_res.get("action_advice", "")
         else:
-            # Rule-based Fallback 備援衛教庫
             if light == "RED":
                 summary = "生理數值顯著偏離基準，心血管與自律神經負擔較高。"
                 advice = (
@@ -651,9 +642,7 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
                     "2. 建議每日同一時間持續進行生理量測記錄。"
                 )
 
-        # ----------------------------------------------------
-        # E. 資料庫寫入與 LINE 背景推播
-        # ----------------------------------------------------
+        # E. 資料庫寫入與背景推播
         record = RPPGRecord(
             user_uuid=req.user_line_id,
             user_line_id=req.user_line_id,
@@ -706,7 +695,6 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
 # ----------------------------------------------------
 @app.post("/api/v1/ai/chat")
 def ai_health_consultation(req: AIChatRequest, db: Session = Depends(get_db)):
-    """提供民眾對生理檢測結果向 Gemini AI 藥師進行自由追問與衛教諮詢"""
     if req.id_token and not verify_line_id_token(req.id_token, req.user_line_id):
         raise HTTPException(status_code=401, detail="Invalid LINE id_token verification failed")
 
@@ -717,7 +705,6 @@ def ai_health_consultation(req: AIChatRequest, db: Session = Depends(get_db)):
     genai.configure(api_key=api_key)
     model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash").strip()
 
-    # 取得最新的一筆紀錄或指定 record_id
     if req.record_id:
         record = db.query(RPPGRecord).filter(RPPGRecord.id == req.record_id).first()
     else:
@@ -845,7 +832,7 @@ def resolve_pharmacy_alert(record_id: int, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
-# (3) 掃描民眾 QR Code 後，調閱近 7 天歷史紀錄
+# (3) 掃描民眾 QR Code 後，調閱近 7 天歷史紀錄 (修復完成)
 @app.get("/api/v1/pharmacy/patient/{user_line_id}/history")
 def get_patient_7day_history(user_line_id: str, db: Session = Depends(get_db)):
     try:
@@ -870,17 +857,20 @@ def get_patient_7day_history(user_line_id: str, db: Session = Depends(get_db)):
                 "stress_score": r.stress_score,
                 "health_light": r.health_light,
                 "summary": r.summary,
+                "action_advice": r.action_advice,
                 "created_at": r.created_at.isoformat() if r.created_at else None
             })
         return {
             "status": "success",
             "user_line_id": user_line_id,
-            "total_records": len(result),
-            "history": result
+            "records": result
         }
     except Exception as e:
-        return {"status": "error", "history": [], "message": str(e)}
+        return {"status": "error", "records": [], "message": str(e)}
 
+# ----------------------------------------------------
+# 15. 本地直接執行進入點
+# ----------------------------------------------------
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
