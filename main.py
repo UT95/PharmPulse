@@ -2,7 +2,7 @@ import os
 import math
 import requests
 import numpy as np
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 from contextlib import asynccontextmanager
 from scipy.signal import butter, filtfilt, find_peaks
@@ -11,22 +11,21 @@ from fastapi import FastAPI, HTTPException, Request, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Text, text, or_
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Text, Boolean, text, or_
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
 # ----------------------------------------------------
 # 1. 環境變數與資料庫連線設定
 # ----------------------------------------------------
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./test.db")
-LINE_CHANNEL_ID = os.getenv("LINE_CHANNEL_ID", "")  # 用於 id_token 驗證 аудитория (aud)
+LINE_CHANNEL_ID = os.getenv("LINE_CHANNEL_ID", "")  # 用於 id_token 驗證 audience (aud)
 LIFF_URL = os.getenv("LIFF_URL", "https://liff.line.me/YOUR_LIFF_ID")  # 請替換為你的 LIFF URL
 
-# 設定允許的 CORS 網域 (可透過環境變數以逗號分隔，如 "https://yourdomain.com,https://liff.line.me")
+# 設定允許的 CORS 網域
 allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "")
 if allowed_origins_env:
     ALLOWED_ORIGINS = [origin.strip() for origin in allowed_origins_env.split(",") if origin.strip()]
 else:
-    # 預設允許常用環境與本地開發
     ALLOWED_ORIGINS = [
         "http://localhost:8000",
         "http://localhost:3000",
@@ -65,6 +64,7 @@ class RPPGRecord(Base):
     hrv_sdnn = Column(Float, nullable=False)
     stress_score = Column(Integer, nullable=False)
     health_light = Column(String(20), nullable=False)
+    is_resolved = Column(Boolean, default=False)  # 標記藥師是否已完成電話/臨櫃關懷
     summary = Column(Text, nullable=True)
     action_advice = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -81,6 +81,7 @@ def auto_migrate_db():
                 columns_to_add = [
                     ("user_uuid", "VARCHAR(255)"),
                     ("user_line_id", "VARCHAR(255)"),
+                    ("is_resolved", "BOOLEAN DEFAULT FALSE"),
                     ("summary", "TEXT"),
                     ("action_advice", "TEXT")
                 ]
@@ -103,9 +104,6 @@ async def lifespan(app: FastAPI):
 # 4. 資安輔助函式：LINE id_token 驗證
 # ----------------------------------------------------
 def verify_line_id_token(id_token: str, expected_user_id: str) -> bool:
-    """
-    呼叫 LINE 官方 API 驗證 id_token 的合法性與對應的 sub (LINE User ID)
-    """
     if not id_token:
         print("[Auth Warning] 未提供 id_token，跳過嚴格驗證（本地開發模式）")
         return True
@@ -180,7 +178,6 @@ def calculate_rppg_metrics(green_signal: List[float], fps: int = 30):
 # 6. LINE Flex Message + Quick Reply 互動卡片
 # ----------------------------------------------------
 def build_flex_message(heart_rate: int, stress_score: int, health_light: str, summary: str, advice: str):
-    """建立包含 Quick Reply 按鈕的 Flex Message"""
     color_map = {
         "GREEN": "#1DB954",
         "YELLOW": "#FFB800",
@@ -304,7 +301,6 @@ def build_flex_message(heart_rate: int, stress_score: int, health_light: str, su
     }
 
 def send_line_push_message(user_id: str, heart_rate: int, stress_score: int, health_light: str, summary: str, advice: str):
-    """背景非同步發送包含 Quick Reply 的 LINE 推播"""
     token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
     if not token or token.startswith("你的") or token == "YOUR_LINE_CHANNEL_ACCESS_TOKEN":
         print("[LINE Push Warning] 未設定正確的 LINE_CHANNEL_ACCESS_TOKEN，跳過推播。")
@@ -338,9 +334,8 @@ def send_line_push_message(user_id: str, heart_rate: int, stress_score: int, hea
 # ----------------------------------------------------
 # 7. FastAPI 應用程式與安全 CORS 設定
 # ----------------------------------------------------
-app = FastAPI(title="PharmPulse Backend API", version="1.2.0", lifespan=lifespan)
+app = FastAPI(title="PharmPulse Backend API", version="1.3.0", lifespan=lifespan)
 
-# 🔒 資安防護：限定 Allowed Origins (避免任意網域跨域請求)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -366,6 +361,12 @@ def serve_liff():
         return FileResponse("index.html")
     return {"status": "online", "message": "PharmPulse API Service is running"}
 
+@app.get("/pharmacy")
+def serve_pharmacy():
+    if os.path.exists("pharmacy.html"):
+        return FileResponse("pharmacy.html")
+    return {"status": "error", "message": "pharmacy.html not found"}
+
 # ----------------------------------------------------
 # 9. Request / Response Pydantic Schemas
 # ----------------------------------------------------
@@ -381,7 +382,7 @@ class ConsentRequest(BaseModel):
     terms_version: str = "v1.0"
 
 # ----------------------------------------------------
-# 10. API 路由定義
+# 10. 使用者同意與生理分析 API
 # ----------------------------------------------------
 @app.get("/api/v1/user/consent-status/{user_line_id}")
 def check_consent(user_line_id: str, db: Session = Depends(get_db)):
@@ -395,7 +396,6 @@ def check_consent(user_line_id: str, db: Session = Depends(get_db)):
 
 @app.post("/api/v1/user/consent")
 def save_consent(req: ConsentRequest, db: Session = Depends(get_db)):
-    # 🔒 資安驗證 id_token
     if req.id_token and not verify_line_id_token(req.id_token, req.user_line_id):
         raise HTTPException(status_code=401, detail="Invalid LINE id_token verification failed")
 
@@ -420,7 +420,6 @@ def save_consent(req: ConsentRequest, db: Session = Depends(get_db)):
 
 @app.post("/api/v1/analyze-rppg")
 def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    # 🔒 資安驗證 id_token
     if req.id_token and not verify_line_id_token(req.id_token, req.user_line_id):
         raise HTTPException(status_code=401, detail="Invalid LINE id_token verification failed")
 
@@ -435,7 +434,6 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
         else:
             hr, sdnn = calculate_rppg_metrics(green_signal, fps=req.fps)
 
-        # 壓力指數動態區間映射
         normalized_sdnn = np.clip(sdnn, 15.0, 80.0)
         calc_stress = 85.0 - ((normalized_sdnn - 15.0) / (80.0 - 15.0)) * 70.0
         
@@ -477,6 +475,7 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
             hrv_sdnn=sdnn,
             stress_score=stress,
             health_light=light,
+            is_resolved=False,
             summary=summary,
             action_advice=advice,
             created_at=datetime.now(timezone.utc)
@@ -485,7 +484,6 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
         db.commit()
         db.refresh(record)
 
-        # 背景推播，附帶 Quick Reply 按鈕
         background_tasks.add_task(
             send_line_push_message,
             user_id=req.user_line_id,
@@ -518,7 +516,7 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 # ----------------------------------------------------
-# 11. 歷史紀錄 API
+# 11. 民眾歷史紀錄 API
 # ----------------------------------------------------
 @app.get("/api/v1/user/history/{user_line_id}")
 def get_user_history(user_line_id: str, limit: int = 10, db: Session = Depends(get_db)):
@@ -547,6 +545,90 @@ def get_user_history(user_line_id: str, limit: int = 10, db: Session = Depends(g
                 "created_at": r.created_at.isoformat() if r.created_at else None
             })
         return {"status": "success", "history": result}
+    except Exception as e:
+        return {"status": "error", "history": [], "message": str(e)}
+
+# ----------------------------------------------------
+# 12. 藥局端專用 API (Pharmacy Alerts & QR Code History)
+# ----------------------------------------------------
+
+# (1) 取得未處理的紅燈/黃燈緊急卡片流
+@app.get("/api/v1/pharmacy/alerts")
+def get_pharmacy_alerts(db: Session = Depends(get_db)):
+    try:
+        records = db.query(RPPGRecord)\
+                    .filter(RPPGRecord.health_light.in_(["RED", "YELLOW"]))\
+                    .filter(or_(RPPGRecord.is_resolved == False, RPPGRecord.is_resolved.is_(None)))\
+                    .order_by(RPPGRecord.created_at.desc())\
+                    .limit(30)\
+                    .all()
+        
+        result = []
+        for r in records:
+            result.append({
+                "id": r.id,
+                "user_line_id": r.user_line_id or r.user_uuid,
+                "heart_rate": r.heart_rate,
+                "hrv_sdnn": r.hrv_sdnn,
+                "stress_score": r.stress_score,
+                "health_light": r.health_light,
+                "summary": r.summary,
+                "action_advice": r.action_advice,
+                "created_at": r.created_at.isoformat() if r.created_at else None
+            })
+        return {"status": "success", "alerts": result}
+    except Exception as e:
+        return {"status": "error", "alerts": [], "message": str(e)}
+
+# (2) 藥師點擊「標示已關懷」
+@app.post("/api/v1/pharmacy/resolve/{record_id}")
+def resolve_pharmacy_alert(record_id: int, db: Session = Depends(get_db)):
+    try:
+        rec = db.query(RPPGRecord).filter(RPPGRecord.id == record_id).first()
+        if not rec:
+            raise HTTPException(status_code=404, detail="Record not found")
+        rec.is_resolved = True
+        db.commit()
+        return {"status": "success", "message": "Marked as resolved"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+# (3) 掃描民眾 QR Code 後，調閱近 7 天歷史紀錄
+@app.get("/api/v1/pharmacy/patient/{user_line_id}/history")
+def get_patient_7day_history(user_line_id: str, db: Session = Depends(get_db)):
+    try:
+        seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+        records = db.query(RPPGRecord)\
+                    .filter(
+                        or_(
+                            RPPGRecord.user_uuid == user_line_id,
+                            RPPGRecord.user_line_id == user_line_id
+                        )
+                    )\
+                    .filter(RPPGRecord.created_at >= seven_days_ago)\
+                    .order_by(RPPGRecord.created_at.asc())\
+                    .all()
+        
+        result = []
+        for r in records:
+            result.append({
+                "id": r.id,
+                "heart_rate": r.heart_rate,
+                "hrv_sdnn": r.hrv_sdnn,
+                "stress_score": r.stress_score,
+                "health_light": r.health_light,
+                "summary": r.summary,
+                "created_at": r.created_at.isoformat() if r.created_at else None
+            })
+        return {
+            "status": "success",
+            "user_line_id": user_line_id,
+            "total_records": len(result),
+            "history": result
+        }
     except Exception as e:
         return {"status": "error", "history": [], "message": str(e)}
 
