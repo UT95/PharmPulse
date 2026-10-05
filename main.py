@@ -9,12 +9,21 @@ from typing import List, Optional
 from contextlib import asynccontextmanager
 from scipy.signal import butter, filtfilt, find_peaks
 
-from fastapi import FastAPI, HTTPException, Request, Depends, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Request, Depends, BackgroundTasks, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Text, Boolean, text, or_
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
+
+# LINE Bot SDK Imports
+try:
+    from linebot import WebhookHandler
+    from linebot.exceptions import InvalidSignatureError
+except ImportError:
+    # 備援：若使用 linebot v3 SDK
+    from linebot.v3.webhook import WebhookHandler
+    from linebot.v3.exceptions import InvalidSignatureError
 
 import google.generativeai as genai
 
@@ -23,15 +32,17 @@ import google.generativeai as genai
 # ----------------------------------------------------
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 LINE_CHANNEL_ID = os.getenv("LINE_CHANNEL_ID", "")  # 用於 id_token 驗證 audience (aud)
-LIFF_URL = os.getenv("LIFF_URL", "")  # 請替換為你的 LIFF URL
+LIFF_URL = os.getenv("LIFF_URL", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
+GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash")
+LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "dummy_secret_for_init")
+
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 # 設定與初始化 Google Gemini SDK
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    print("[Gemini AI] Google Gemini API 已成功初始化。")
+    print(f"[Gemini AI] Google Gemini API 已成功初始化 (Model: {GEMINI_MODEL_NAME})。")
 else:
     print("[Gemini AI Warning] 未設定 GEMINI_API_KEY，將使用預設規則生成衛教建議。")
 
@@ -50,8 +61,8 @@ else:
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-connect_args = {"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, connect_args=connect_args)
+connect_args = {"check_same_thread": False} if "sqlite" in DATABASE_URL or not DATABASE_URL else {}
+engine = create_engine(DATABASE_URL if DATABASE_URL else "sqlite:///./pharmpulse.db", pool_pre_ping=True, connect_args=connect_args)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -153,7 +164,7 @@ def generate_gemini_health_advice(heart_rate: int, sdnn: float, stress_score: in
         return None
 
     try:
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        model = genai.GenerativeModel(GEMINI_MODEL_NAME)
         
         prompt = f"""
         你是一位 PharmPulse 社區智慧藥局系統的「AI 臨床衛教藥師」。
@@ -172,7 +183,7 @@ def generate_gemini_health_advice(heart_rate: int, sdnn: float, stress_score: in
 
         輸出 JSON 範例：
         {{
-            "summary": "您的心율趨於穩定，自律神經調節功能良好，目前生理壓力處於理想狀態。",
+            "summary": "您的心率趨於穩定，自律神經調節功能良好，目前生理壓力處於理想狀態。",
             "action_advice": "🟢 【衛教藥師建議】\\n1. 請繼續保持規律作息與均衡飲食。\\n2. 建議每日補充足量水分 (1500-2000c.c.)。\\n3. 歡迎隨時至合作藥局免費測量血壓與諮詢專業藥師。"
         }}
         """
@@ -185,7 +196,14 @@ def generate_gemini_health_advice(heart_rate: int, sdnn: float, stress_score: in
             )
         )
 
-        data = json.loads(response.text)
+        raw_text = response.text.strip()
+        # 清除 Markdown ```json ... ``` 包覆
+        if raw_text.startswith("```"):
+            raw_text = raw_text.split("```")[1]
+            if raw_text.startswith("json"):
+                raw_text = raw_text[4:].strip()
+
+        data = json.loads(raw_text)
         if "summary" in data and "action_advice" in data:
             return data
         return None
@@ -349,7 +367,7 @@ def build_flex_message(heart_rate: int, stress_score: int, health_light: str, su
                     "action": {
                         "type": "uri",
                         "label": "📊 查看歷史紀錄",
-                        "uri": f"{LIFF_URL}?page=history"
+                        "uri": f"{LIFF_URL}?page=history" if LIFF_URL else "https://liff.line.me"
                     }
                 },
                 {
@@ -357,7 +375,7 @@ def build_flex_message(heart_rate: int, stress_score: int, health_light: str, su
                     "action": {
                         "type": "uri",
                         "label": "🔄 重新量測",
-                        "uri": LIFF_URL
+                        "uri": LIFF_URL if LIFF_URL else "https://liff.line.me"
                     }
                 }
             ]
@@ -487,7 +505,7 @@ def save_consent(req: ConsentRequest, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         return {"status": "error", "message": str(e)}
-    
+
 @app.post("/callback")
 async def callback(
     request: Request, 
@@ -504,7 +522,7 @@ async def callback(
     except InvalidSignatureError:
         raise HTTPException(status_code=400, detail="Invalid signature. Check your LINE_CHANNEL_SECRET.")
 
-    return "OK"    
+    return "OK"
 
 @app.post("/api/v1/analyze-rppg")
 def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
@@ -654,7 +672,7 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 # ----------------------------------------------------
-# 12. 新增：Gemini 互動式 AI 健康諮詢 API
+# 12. Gemini 互動式 AI 健康諮詢 API
 # ----------------------------------------------------
 @app.post("/api/v1/ai/chat")
 def ai_health_consultation(req: AIChatRequest, db: Session = Depends(get_db)):
@@ -700,7 +718,7 @@ def ai_health_consultation(req: AIChatRequest, db: Session = Depends(get_db)):
     """
 
     try:
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        model = genai.GenerativeModel(GEMINI_MODEL_NAME)
         response = model.generate_content(prompt)
         return {
             "status": "success",
