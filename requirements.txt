@@ -9,3 +9,4 @@ numpy
 scipy
 python-dotenv
 google-genai
+google-generativeai
