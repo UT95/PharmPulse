@@ -34,10 +34,10 @@ from openai import OpenAI
 # 1. 環境變數與 AI 模型 / 資料庫設定
 # ----------------------------------------------------
 DATABASE_URL = os.getenv("DATABASE_URL", "")
-LINE_CHANNEL_ID = os.getenv("LINE_CHANNEL_ID", "")
+LINE_CHANNEL_ID = os.getenv("LINE_CHANNEL_ID", "").strip()
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "").strip()
-LIFF_URL = os.getenv("LIFF_URL", "")
+LIFF_URL = os.getenv("LIFF_URL", "").strip()
 
 # AI 模型 Key 設定
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
@@ -122,9 +122,10 @@ class RPPGRecord(Base):
 Base.metadata.create_all(bind=engine)
 
 # ----------------------------------------------------
-# 3. 自動檢查與修復 PostgreSQL 欄位
+# 3. 自動檢查與修復 資料庫欄位
 # ----------------------------------------------------
 def auto_migrate_db():
+    """相容 PostgreSQL 與 SQLite 的自動 Column 補充 Migration"""
     if "postgresql" in DATABASE_URL:
         try:
             with engine.begin() as conn:
@@ -167,9 +168,9 @@ def verify_line_id_token(id_token: str, expected_user_id: str) -> bool:
             return False
 
         payload = res.json()
-        token_sub = payload.get("sub")
+        token_sub = payload.get("sub", "")
         
-        if token_sub != expected_user_id:
+        if token_sub.strip().lower() != expected_user_id.strip().lower():
             print(f"[Auth Error] token_sub ({token_sub}) 與宣稱的 user_id ({expected_user_id}) 不符！")
             return False
 
@@ -231,9 +232,6 @@ def call_llm_with_fallback(prompt: str, is_json: bool = False) -> Optional[str]:
     1. 主要模型：OpenAI (gpt-4o-mini)
     2. 備援模型：Google Gemini (帶 503 重試)
     """
-    # ------------------------------------------------
-    # 階段 1：優先呼叫主要模型 OpenAI (gpt-4o-mini)
-    # ------------------------------------------------
     if openai_client:
         try:
             messages = [
@@ -257,9 +255,6 @@ def call_llm_with_fallback(prompt: str, is_json: bool = False) -> Optional[str]:
             print(f"[AI Warning] ⚠️ 主要模型 OpenAI 呼叫失敗: {e}，準備自動切換至 Gemini 備援...")
             time.sleep(0.3)
 
-    # ------------------------------------------------
-    # 階段 2：OpenAI 失敗或未設定時，切換至 Gemini 備援
-    # ------------------------------------------------
     if gemini_client:
         try:
             config = {"temperature": 0.4}
@@ -517,9 +512,6 @@ def build_flex_message(heart_rate: int, stress_score: int, health_light: str, su
         }
     }
 
-# ----------------------------------------------------
-# 7.5 LINE 主動推播訊息處理
-# ----------------------------------------------------
 def send_line_push_message(user_id: str, heart_rate: int, stress_score: int, health_light: str, summary: str, advice: str):
     token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
     if not token or token.startswith("你的") or token == "YOUR_LINE_CHANNEL_ACCESS_TOKEN":
@@ -572,7 +564,7 @@ def get_db():
         db.close()
 
 # ----------------------------------------------------
-# 9. 靜態網頁與 LINE Bot Webhook 訊息處理
+# 9. 靜態頁面與 LINE Webhook 入口
 # ----------------------------------------------------
 @app.get("/")
 @app.get("/liff")
@@ -723,6 +715,9 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
             # 多層嵌套降維處理（應對 [[[r,g,b]...]] 結構）
             while raw_signal.ndim > 2 and raw_signal.shape[0] == 1:
                 raw_signal = raw_signal[0]
+
+            if raw_signal.size == 0:
+                raise HTTPException(status_code=400, detail="傳入的生理訊號數據為空，請重新進行量測")
 
             if raw_signal.ndim == 2:
                 if raw_signal.shape[0] == 3 and raw_signal.shape[1] > 3:
