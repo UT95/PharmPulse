@@ -239,8 +239,6 @@
                 const landmarks = results.multiFaceLandmarks[0];
                 const foreheadPt = landmarks[10]; // 額頭特徵點
                 
-                // Canvas 畫布上有 css transform scaleX(-1) 進行鏡像顯示
-                // MediaPipe 的 x 座標在繪製時需轉為內部像素座標
                 const x = Math.floor(foreheadPt.x * canvasElement.width);
                 const y = Math.floor(foreheadPt.y * canvasElement.height);
 
@@ -249,9 +247,9 @@
                 canvasCtx.arc(x, y, 6, 0, 2 * Math.PI);
                 canvasCtx.fill();
 
-                if (isMeasuring) {
+                // 防護：必須是啟動狀態且數量未滿
+                if (isMeasuring && collectedGreenSignals.length < TOTAL_FRAMES) {
                     const roiSize = 20;
-                    // getImageData 取的是原始未經過 CSS 翻轉的 Canvas 陣列資料
                     const imgData = canvasCtx.getImageData(
                         Math.max(0, Math.min(canvasElement.width - roiSize, x - roiSize / 2)), 
                         Math.max(0, Math.min(canvasElement.height - roiSize, y - roiSize / 2)), 
@@ -269,10 +267,13 @@
                     collectedGreenSignals.push(sumG / totalPixels);
                     collectedRedSignals.push(sumR / totalPixels);
 
-                    const progress = (collectedGreenSignals.length / TOTAL_FRAMES) * 100;
+                    const currentCount = collectedGreenSignals.length;
+                    const progress = (currentCount / TOTAL_FRAMES) * 100;
                     document.getElementById("progress-bar").style.width = progress + "%";
+                    document.getElementById("status-text").innerText = `⏳ 正在即時擷取綠光訊號 (${currentCount}/${TOTAL_FRAMES})... 請保持靜止`;
 
-                    if (collectedGreenSignals.length >= TOTAL_FRAMES) {
+                    // 達到指定幀數時，立即設定開關為 false 並觸發後端分析
+                    if (currentCount >= TOTAL_FRAMES) {
                         isMeasuring = false;
                         processRppgAnalysis();
                     }
@@ -303,15 +304,22 @@
                 }
             }
 
+            // 重置與鎖定介面狀態
+            isMeasuring = false;
             document.getElementById("start-btn").disabled = true;
             document.getElementById("report-card").style.display = "none";
             document.getElementById("progress-container").style.display = "block";
             document.getElementById("progress-bar").style.width = "0%";
-            document.getElementById("status-text").innerText = "⏳ 正在即時擷取額頭皮膚綠光微血管變化，請保持靜止 (約 10 秒)...";
+            document.getElementById("status-text").innerText = "⏳ 準備中，請對準視訊畫面並保持靜止...";
 
+            // 確保陣列完全清空
             collectedGreenSignals = [];
             collectedRedSignals = [];
-            isMeasuring = true;
+
+            // 緩衝 300ms 確保前面的幀不會干擾新一輪量測
+            setTimeout(() => {
+                isMeasuring = true;
+            }, 300);
         }
 
         // 5. 傳送真實擷取訊號至後端
