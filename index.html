@@ -201,7 +201,7 @@
 
             } catch (err) {
                 console.error("LIFF 初始化失敗:", err);
-                document.getElementById("user-info").innerText = "⚠️ 請由 LINE App 內開啟此頁面";
+                document.getElementById("user-info").innerText = "⚠️️ 請由 LINE App 內開啟此頁面";
             }
         }
 
@@ -265,7 +265,7 @@
                     const totalPixels = imgData.data.length / 4;
 
                     for (let i = 0; i < imgData.data.length; i += 4) {
-                        sumR += imgData.data[i];     // Red
+                        sumR += imgData.data[i];    // Red
                         sumG += imgData.data[i + 1]; // Green
                     }
 
@@ -325,8 +325,17 @@
             }, 300);
         }
 
-        // 5. 傳送真實擷取訊號至後端
+        // 5. 傳送真實擷取訊號至後端（已加入前端防呆檢查，避免因未收集滿而送出極少點數）
         async function processRppgAnalysis() {
+            // 防呆檢查：若綠光點數小於 90 點，強制拒絕發送並解鎖按鈕
+            if (collectedGreenSignals.length < 90) {
+                document.getElementById("status-text").innerText = "❌ 採樣點數不足（畫面中斷或時間太短），請重新量測。";
+                document.getElementById("progress-container").style.display = "none";
+                document.getElementById("start-btn").disabled = false;
+                isMeasuring = false;
+                return;
+            }
+
             document.getElementById("status-text").innerText = "🔄 訊號擷取完成，正在進行演算法分析...";
             document.getElementById("progress-container").style.display = "none";
 
@@ -344,7 +353,7 @@
                 });
 
                 const result = await response.json();
-                if (result.status === "success" && result.data) {
+                if (response.ok && result.status === "success" && result.data) {
                     const data = result.data;
                     document.getElementById("status-text").innerText = "✅ 真實生理量測完成！報告已發送至 LINE。";
 
@@ -356,7 +365,7 @@
                     document.getElementById("report-advice").innerText = "💡 處置建議：\n" + data.action_advice;
                     reportCard.style.display = "block";
                 } else {
-                    document.getElementById("status-text").innerText = "❌ 分析失敗: " + (result.message || JSON.stringify(result));
+                    document.getElementById("status-text").innerText = "❌ 分析失敗: " + (result.detail || result.message || JSON.stringify(result));
                 }
             } catch (err) {
                 console.error("API 請求錯誤:", err);
@@ -369,7 +378,6 @@
         // 跨瀏覽器相容日期格式化解析
         function parseDateString(dateStr) {
             if (!dateStr) return "未知";
-            // 將 iOS 不支援的 "YYYY-MM-DD HH:MM:SS" 轉為標準 ISO 8601
             const formattedStr = dateStr.replace(/-/g, "/").replace("T", " ");
             const d = new Date(formattedStr);
             if (isNaN(d.getTime())) return "未知";
