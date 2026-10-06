@@ -602,7 +602,6 @@ if handler and MessageEvent:
 
         db = SessionLocal()
         try:
-            # 呼叫雙模組自動切換 AI 生成衛教建議
             reply_text = generate_ai_chat_response(db, user_line_id=user_id, question=user_text)
             
             line_bot_api.reply_message(
@@ -698,56 +697,59 @@ async def callback(
 
 @app.post("/api/v1/analyze-rppg")
 def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    """核心 rPPG 影像訊號分析 API (計算 HR/SDNN/壓力指數並由 AI 生成衛教)"""
+    """核心 rPPG 影像訊號真實動態分析 API"""
     if req.id_token and not verify_line_id_token(req.id_token, req.user_line_id):
         raise HTTPException(status_code=401, detail="Invalid LINE id_token verification failed")
 
     try:
         user_id_upper = req.user_line_id.upper()
 
-        # 測試/演示 ID 自動觸發特定燈號模擬機制
-        if "RED" in user_id_upper or "HIGH" in user_id_upper:
-            hr = random.randint(105, 125)
-            sdnn = round(random.uniform(15.0, 22.0), 1)
-            stress = random.randint(82, 95)
-        elif "YELLOW" in user_id_upper or "WARN" in user_id_upper:
-            hr = random.randint(88, 98)
-            sdnn = round(random.uniform(28.0, 36.0), 1)
-            stress = random.randint(62, 74)
-        elif "GREEN" in user_id_upper or "NORMAL" in user_id_upper:
-            hr = random.randint(65, 76)
-            sdnn = round(random.uniform(48.0, 68.0), 1)
-            stress = random.randint(20, 42)
-        else:
-            if not req.rgb_signals or len(req.rgb_signals) == 0:
+        # 僅當明確帶有 DEMO/TEST 前綴且無有效數據時才觸發模擬；有真實 rgb_signals 時優先進行真實演算法計算
+        is_mock = False
+        if not req.rgb_signals or len(req.rgb_signals) == 0:
+            if "DEMO_RED" in user_id_upper or "TEST_HIGH" in user_id_upper:
+                hr, sdnn, stress, is_mock = random.randint(105, 125), round(random.uniform(15.0, 22.0), 1), random.randint(82, 95), True
+            elif "DEMO_YELLOW" in user_id_upper or "TEST_WARN" in user_id_upper:
+                hr, sdnn, stress, is_mock = random.randint(88, 98), round(random.uniform(28.0, 36.0), 1), random.randint(62, 74), True
+            elif "DEMO_GREEN" in user_id_upper:
+                hr, sdnn, stress, is_mock = random.randint(65, 76), round(random.uniform(48.0, 68.0), 1), random.randint(20, 42), True
+            else:
                 raise HTTPException(status_code=400, detail="rgb_signals cannot be empty")
 
-            # 解構與解析 Green Channel 訊號
-            if isinstance(req.rgb_signals[0], list):
-                if len(req.rgb_signals) == 3 and len(req.rgb_signals[0]) > 3:
-                    green_signal = req.rgb_signals[1]
-                elif len(req.rgb_signals[0]) >= 2:
-                    green_signal = [frame[1] for frame in req.rgb_signals]
+        if not is_mock:
+            # 1. 精準提取 Green Channel 訊號
+            raw_signal = np.array(req.rgb_signals, dtype=float)
+            if raw_signal.ndim == 2:
+                if raw_signal.shape[0] == 3 and raw_signal.shape[1] > 3:
+                    green_signal = raw_signal[1].tolist()  # [3, N] 格式：第 1 列為 G
+                elif raw_signal.shape[1] >= 2:
+                    green_signal = raw_signal[:, 1].tolist()  # [N, 3] 格式：第 2 欄為 G
                 else:
-                    green_signal = [frame[0] for frame in req.rgb_signals]
+                    green_signal = raw_signal[:, 0].tolist()
             else:
-                green_signal = req.rgb_signals
+                green_signal = raw_signal.tolist()
 
-            if len(green_signal) < 60:
-                hr, sdnn = 72, 38.5
-            else:
-                hr, sdnn = calculate_rppg_metrics(green_signal, fps=req.fps)
+            if len(green_signal) < 15:
+                raise HTTPException(status_code=400, detail="鏡頭採樣時間過短，請保持臉部穩定並重新測量（至少需 15 幀數據）")
 
-            # 壓力指數算式轉換
+            # 2. 當幀數介於 15~60 幀時進行線性/三次插值補幀，確保訊號長度足以進行帶通濾波與 FFT 頻譜分析
+            target_fps = max(req.fps, 10)
+            if len(green_signal) < 90:
+                x_orig = np.linspace(0, 1, len(green_signal))
+                x_interp = np.linspace(0, 1, 150)  # 擴展至 150 點以確保頻域解析度
+                green_signal = np.interp(x_interp, x_orig, green_signal).tolist()
+
+            # 3. 呼叫第一部分定義的 rPPG 物理演算法計算真實心率與 HRV (SDNN)
+            hr, sdnn = calculate_rppg_metrics(green_signal, fps=target_fps)
+
+            # 4. 根據真實 SDNN 與 HR 動態換算壓力指數 (Stress Index)
             normalized_sdnn = np.clip(sdnn, 15.0, 80.0)
             calc_stress = 85.0 - ((normalized_sdnn - 15.0) / (80.0 - 15.0)) * 70.0
-
             if hr > 85:
-                calc_stress += (hr - 85) * 0.3
-
+                calc_stress += (hr - 85) * 0.35
             stress = int(round(np.clip(calc_stress, 15, 95)))
 
-        # 健康燈號評估 logic
+        # 健康燈號評估
         if stress > 75 or hr > 100 or hr < 50:
             light = "RED"
         elif stress > 50 or hr >= 85:
@@ -755,20 +757,20 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
         else:
             light = "GREEN"
 
-        # 呼叫 AI 模組生成衛教分析 (優先 OpenAI gpt-4o-mini，失敗自動退避切換至 Gemini)
+        # AI 生成衛教分析 (優先 OpenAI，失敗退避至 Gemini)
         ai_res = generate_gemini_health_advice(heart_rate=hr, sdnn=sdnn, stress_score=stress, health_light=light)
 
         if ai_res:
             summary = ai_res.get("summary", "")
             advice = ai_res.get("action_advice", "")
         else:
-            # AI 完全不可用時的保底機制
+            # AI 模組異常時的保底機制
             if light == "RED":
-                summary = "生理數值顯著偏離基準，心血管與自律神經負擔較高。"
+                summary = "生理數值偏離基準，心血管與自律神經負擔較高。"
                 advice = (
                     "🚨 【處置建議】壓力或心率偏高：\n"
                     "1. 請保持環境通風，閉目進行 5 分鐘深呼吸。\n"
-                    "2. 建議於今日量測血壓，若連續 2 天數值異常，請至門診複診。\n"
+                    "2. 建議今日量測血壓，若連續 2 天數值異常，請至門診複診。\n"
                     "3. 可前往附近合作藥局，尋求藥師量測血壓與用藥諮詢。"
                 )
             elif light == "YELLOW":
@@ -803,7 +805,7 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
         db.commit()
         db.refresh(record)
 
-        # 透過 FastAPI BackgroundTasks 發送 LINE Flex Message 主動推播
+        # 背景推播 LINE Flex Message
         background_tasks.add_task(
             send_line_push_message,
             user_id=req.user_line_id,
