@@ -620,7 +620,7 @@ if handler and MessageEvent:
 class AnalyzeRequest(BaseModel):
     user_line_id: str
     id_token: Optional[str] = None
-    rgb_signals: Union[List[List[float]], List[float]]
+    rgb_signals: Any  # 使用 Any 提升對前端陣列格式變化的相容度
     fps: int = 30
 
 class ConsentRequest(BaseModel):
@@ -704,9 +704,9 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
     try:
         user_id_upper = req.user_line_id.upper()
 
-        # 僅當明確帶有 DEMO/TEST 前綴且無有效數據時才觸發模擬；有真實 rgb_signals 時優先進行真實演算法計算
+        # 僅當明確帶有 DEMO/TEST 前綴且完全沒有傳入 rgb_signals 時才觸發 Mock 模擬
         is_mock = False
-        if not req.rgb_signals or len(req.rgb_signals) == 0:
+        if req.rgb_signals is None or (isinstance(req.rgb_signals, list) and len(req.rgb_signals) == 0):
             if "DEMO_RED" in user_id_upper or "TEST_HIGH" in user_id_upper:
                 hr, sdnn, stress, is_mock = random.randint(105, 125), round(random.uniform(15.0, 22.0), 1), random.randint(82, 95), True
             elif "DEMO_YELLOW" in user_id_upper or "TEST_WARN" in user_id_upper:
@@ -714,35 +714,49 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
             elif "DEMO_GREEN" in user_id_upper:
                 hr, sdnn, stress, is_mock = random.randint(65, 76), round(random.uniform(48.0, 68.0), 1), random.randint(20, 42), True
             else:
-                raise HTTPException(status_code=400, detail="rgb_signals cannot be empty")
+                raise HTTPException(status_code=400, detail="rgb_signals 不能為空，請保持鏡頭對準臉部並重新開始測量")
 
         if not is_mock:
-            # 1. 精準提取 Green Channel 訊號
+            # 1. 解析與提取 Green Channel 訊號
             raw_signal = np.array(req.rgb_signals, dtype=float)
+
+            # 多層嵌套降維處理（應對 [[[r,g,b]...]] 結構）
+            while raw_signal.ndim > 2 and raw_signal.shape[0] == 1:
+                raw_signal = raw_signal[0]
+
             if raw_signal.ndim == 2:
                 if raw_signal.shape[0] == 3 and raw_signal.shape[1] > 3:
-                    green_signal = raw_signal[1].tolist()  # [3, N] 格式：第 1 列為 G
+                    green_signal = raw_signal[1].tolist()  # [3, N] 格式：取第 1 列為 G
                 elif raw_signal.shape[1] >= 2:
-                    green_signal = raw_signal[:, 1].tolist()  # [N, 3] 格式：第 2 欄為 G
+                    green_signal = raw_signal[:, 1].tolist()  # [N, 3] 格式：取第 2 欄為 G
                 else:
                     green_signal = raw_signal[:, 0].tolist()
-            else:
+            elif raw_signal.ndim == 1:
                 green_signal = raw_signal.tolist()
+            else:
+                green_signal = raw_signal.flatten().tolist()
 
-            if len(green_signal) < 15:
-                raise HTTPException(status_code=400, detail="鏡頭採樣時間過短，請保持臉部穩定並重新測量（至少需 15 幀數據）")
+            # 記錄 Debug Log 於 Server 終端機
+            print(f"[rPPG Debug] 收到來自 {req.user_line_id} 的 Green 訊號點數: {len(green_signal)}")
 
-            # 2. 當幀數介於 15~60 幀時進行線性/三次插值補幀，確保訊號長度足以進行帶通濾波與 FFT 頻譜分析
+            # 極短保護判定（若少於 5 個數據點，代表鏡頭未順利捕捉波形）
+            if len(green_signal) < 5:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"鏡頭採樣數據不足（僅收到 {len(green_signal)} 幀數據），請讓相機保持對準臉部 3~5 秒後重新試試！"
+                )
+
+            # 2. 自動重採樣與插值擴展：當點數介於 5~90 時，插值擴展至 150 點以確保頻域分析精確度
             target_fps = max(req.fps, 10)
             if len(green_signal) < 90:
                 x_orig = np.linspace(0, 1, len(green_signal))
-                x_interp = np.linspace(0, 1, 150)  # 擴展至 150 點以確保頻域解析度
+                x_interp = np.linspace(0, 1, 150)
                 green_signal = np.interp(x_interp, x_orig, green_signal).tolist()
 
-            # 3. 呼叫第一部分定義的 rPPG 物理演算法計算真實心率與 HRV (SDNN)
+            # 3. 呼叫物理演算法計算動態心率 (BPM) 與 HRV (SDNN)
             hr, sdnn = calculate_rppg_metrics(green_signal, fps=target_fps)
 
-            # 4. 根據真實 SDNN 與 HR 動態換算壓力指數 (Stress Index)
+            # 4. 根據真實 SDNN 與 HR 動態換算壓力指數
             normalized_sdnn = np.clip(sdnn, 15.0, 80.0)
             calc_stress = 85.0 - ((normalized_sdnn - 15.0) / (80.0 - 15.0)) * 70.0
             if hr > 85:
@@ -757,14 +771,14 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
         else:
             light = "GREEN"
 
-        # AI 生成衛教分析 (優先 OpenAI，失敗退避至 Gemini)
+        # AI 生成衛教分析 (優先使用 LLM 模組，失敗自動轉為範本保底)
         ai_res = generate_gemini_health_advice(heart_rate=hr, sdnn=sdnn, stress_score=stress, health_light=light)
 
         if ai_res:
             summary = ai_res.get("summary", "")
             advice = ai_res.get("action_advice", "")
         else:
-            # AI 模組異常時的保底機制
+            # 保底預設文字
             if light == "RED":
                 summary = "生理數值偏離基準，心血管與自律神經負擔較高。"
                 advice = (
@@ -805,7 +819,7 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
         db.commit()
         db.refresh(record)
 
-        # 背景推播 LINE Flex Message
+        # 背景非同步推播 LINE Flex Message
         background_tasks.add_task(
             send_line_push_message,
             user_id=req.user_line_id,
