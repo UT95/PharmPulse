@@ -11,7 +11,7 @@
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
     <!-- QRCode.js CDN -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-    <!-- Chart.js CDN (新增) -->
+    <!-- Chart.js CDN -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     
     <style>
@@ -29,7 +29,7 @@
         .qrcode-card { display: none; background: #f0fdf4; border: 1.5px dashed #1DB446; border-radius: 12px; padding: 16px; margin-bottom: 16px; text-align: center; transition: all 0.3s ease; }
         .qrcode-title { font-weight: bold; color: #166534; font-size: 15px; margin-bottom: 4px; }
         .qrcode-sub { font-size: 12px; color: #666; margin-bottom: 10px; }
-        .qrcode-box { display: flex; justify-content: center; margin: 10px 0; background: #ffffff; padding: 12px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); display: inline-block; }
+        .qrcode-box { display: inline-flex; justify-content: center; align-items: center; margin: 10px 0; background: #ffffff; padding: 12px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
         .qrcode-id { font-size: 12px; color: #333; background: #e2e8f0; padding: 4px 10px; border-radius: 6px; display: inline-block; font-family: monospace; font-weight: 600; }
 
         /* 視訊與人臉綠光 ROI 區域 */
@@ -51,7 +51,7 @@
         .btn:active { background-color: #159338; }
         .btn:disabled { background-color: #ccc; cursor: not-allowed; }
         
-        .status { margin-top: 15px; font-size: 15px; color: #555; font-weight: 500; }
+        .status { margin-top: 15px; font-size: 15px; color: #555; font-weight: 500; min-height: 22px; }
 
         .report-card { display: none; margin-top: 20px; padding: 16px; border-radius: 12px; background: #f0fdf4; border: 1px solid #bbf7d0; text-align: left; }
         .report-card.yellow { background: #fefce8; border-color: #fef08a; }
@@ -116,14 +116,14 @@
     </div>
 
     <!-- 歷史紀錄 Modal -->
-    <div id="history-modal" class="modal">
+    <div id="history-modal" class="modal" onclick="handleModalOutsideClick(event)">
         <div class="modal-content">
             <div class="modal-header">
                 <h3>📊 歷史量測紀錄</h3>
                 <span class="close-btn" onclick="closeHistoryModal()">&times;</span>
             </div>
 
-            <!-- 📈 新增：心率趨勢圖畫布容器 -->
+            <!-- 📈 心率趨勢圖畫布容器 -->
             <div style="margin-bottom: 15px; padding: 10px; background: #fafafa; border-radius: 10px; height: 200px;">
                 <canvas id="heartRateChart"></canvas>
             </div>
@@ -347,7 +347,7 @@
                     document.getElementById("report-advice").innerText = "💡 處置建議：\n" + data.action_advice;
                     reportCard.style.display = "block";
                 } else {
-                    document.getElementById("status-text").innerText = "❌ 分析失敗: " + JSON.stringify(result);
+                    document.getElementById("status-text").innerText = "❌ 分析失敗: " + (result.message || JSON.stringify(result));
                 }
             } catch (err) {
                 console.error("API 請求錯誤:", err);
@@ -364,8 +364,13 @@
             // 時間由舊至新排列
             const sortedData = [...historyData].reverse();
             const labels = sortedData.map(item => {
+                if (!item.created_at) return "未知";
                 const d = new Date(item.created_at);
-                return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
+                const month = d.getMonth() + 1;
+                const date = d.getDate();
+                const hours = String(d.getHours()).padStart(2, '0');
+                const minutes = String(d.getMinutes()).padStart(2, '0');
+                return `${month}/${date} ${hours}:${minutes}`;
             });
             const heartRates = sortedData.map(item => item.heart_rate);
 
@@ -448,6 +453,9 @@
                     });
                 } else {
                     historyList.innerHTML = "<p style='text-align:center; color:#888;'>尚無歷史量測紀錄。</p>";
+                    if (historyChartInstance) {
+                        historyChartInstance.destroy();
+                    }
                 }
             } catch (err) {
                 console.error("取得歷史紀錄失敗:", err);
@@ -457,6 +465,12 @@
 
         function closeHistoryModal() {
             document.getElementById("history-modal").style.display = "none";
+        }
+
+        function handleModalOutsideClick(event) {
+            if (event.target.id === "history-modal") {
+                closeHistoryModal();
+            }
         }
     </script>
 </body>
