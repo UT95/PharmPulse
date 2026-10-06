@@ -26,7 +26,8 @@ except ImportError:
     # 備援：若使用 linebot v3 SDK 或環境未完整安裝
     LineBotApi = WebhookHandler = InvalidSignatureError = MessageEvent = TextMessage = TextSendMessage = None
 
-import google.generativeai as genai
+# ✅ 新版 Google Gemini SDK
+from google import genai
 
 # ----------------------------------------------------
 # 1. 環境變數與 Google Gemini / 資料庫設定
@@ -37,14 +38,15 @@ LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "").strip()
 LIFF_URL = os.getenv("LIFF_URL", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash").strip()
+GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-2.0-flash").strip()
 
 handler = WebhookHandler(LINE_CHANNEL_SECRET) if LINE_CHANNEL_SECRET else None
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN) if (LineBotApi and LINE_CHANNEL_ACCESS_TOKEN) else None
 
-# 初始化 Google Gemini SDK
+# ✅ 初始化 Google Gemini SDK (新版 google-genai Client)
+gemini_client = None
 if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+    gemini_client = genai.Client(api_key=GEMINI_API_KEY)
     print(f"[Gemini AI] Google Gemini API 已成功初始化 (Model: {GEMINI_MODEL_NAME})。")
 else:
     print("[Gemini AI Warning] 未設定 GEMINI_API_KEY，將使用預設規則生成衛教建議。")
@@ -184,16 +186,11 @@ def extract_json_from_text(text_content: str) -> Optional[dict]:
 
 def generate_gemini_health_advice(heart_rate: int, sdnn: float, stress_score: int, health_light: str) -> Optional[dict]:
     """使用 Google Gemini 根據生理數據產生專業且溫暖的藥局衛教摘要與建議"""
-    api_key = os.getenv("GEMINI_API_KEY", "").strip()
-    if not api_key:
-        print("[Gemini AI Warning] GEMINI_API_KEY 未設置，切換至預設規則產出衛教內容。")
+    if not gemini_client:
+        print("[Gemini AI Warning] gemini_client 未初始化，切換至預設規則產出衛教內容。")
         return None
 
     try:
-        genai.configure(api_key=api_key)
-        model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash").strip()
-        model = genai.GenerativeModel(model_name)
-        
         prompt = f"""
 你是一位 PharmPulse 社區智慧藥局系統的「AI 臨床衛教藥師」。
 請根據以下民眾透過手機鏡頭 rPPG 測得的即時生理數據，撰寫一份簡明、具專業衛教價值且充滿關懷的分析報告。
@@ -216,9 +213,11 @@ def generate_gemini_health_advice(heart_rate: int, sdnn: float, stress_score: in
 }}
 """
 
-        response = model.generate_content(
-            prompt,
-            generation_config={
+        # ✅ 改用新版 client.models.generate_content 呼叫
+        response = gemini_client.models.generate_content(
+            model=GEMINI_MODEL_NAME,
+            contents=prompt,
+            config={
                 "response_mime_type": "application/json",
                 "temperature": 0.4
             }
@@ -236,11 +235,8 @@ def generate_gemini_health_advice(heart_rate: int, sdnn: float, stress_score: in
 
 def generate_ai_chat_response(db: Session, user_line_id: str, question: str, record_id: Optional[int] = None) -> str:
     """共通 Gemini 對話邏輯：供 LINE Webhook 與 API 共同呼叫"""
-    api_key = os.getenv("GEMINI_API_KEY", "").strip()
-    if not api_key:
+    if not gemini_client:
         return "感謝您的諮詢！目前 AI 衛教諮詢服務暫時維護中。若您有緊急身體不適，請務必先就醫或尋求社區藥師協助。"
-
-    model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash").strip()
 
     # 取得關聯的歷史檢測紀錄
     if record_id:
@@ -278,15 +274,17 @@ def generate_ai_chat_response(db: Session, user_line_id: str, question: str, rec
 """
 
     try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(model_name)
-        response = model.generate_content(prompt)
+        # ✅ 改用新版 client.models.generate_content 呼叫
+        response = gemini_client.models.generate_content(
+            model=GEMINI_MODEL_NAME,
+            contents=prompt
+        )
         if response and response.text:
             return response.text.strip()
         return "目前暫時無法回應，請稍後再試。"
     except Exception as e:
         print(f"[Gemini Chat Error] {str(e)}")
-        return f"抱歉，AI 衛教系統處理時發生異常，請稍後再試。"
+        return "抱歉，AI 衛教系統處理時發生異常，請稍後再試。"
 
 # ----------------------------------------------------
 # 6. 訊號處理與進階 HRV 演算法
@@ -457,9 +455,11 @@ def build_flex_message(heart_rate: int, stress_score: int, health_light: str, su
             ]
         }
     }
-
+# ----------------------------------------------------
+# 7.5 LINE 主動推播訊息處理
+# ----------------------------------------------------
 def send_line_push_message(user_id: str, heart_rate: int, stress_score: int, health_light: str, summary: str, advice: str):
-    token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+    token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
     if not token or token.startswith("你的") or token == "YOUR_LINE_CHANNEL_ACCESS_TOKEN":
         print("[LINE Push Warning] 未設定正確的 LINE_CHANNEL_ACCESS_TOKEN，跳過推播。")
         return
