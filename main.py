@@ -2,6 +2,7 @@ import os
 import math
 import json
 import re
+import time
 import random
 import requests
 import numpy as np
@@ -23,7 +24,6 @@ try:
     from linebot.exceptions import InvalidSignatureError
     from linebot.models import MessageEvent, TextMessage, TextSendMessage
 except ImportError:
-    # 備援：若使用 linebot v3 SDK 或環境未完整安裝
     LineBotApi = WebhookHandler = InvalidSignatureError = MessageEvent = TextMessage = TextSendMessage = None
 
 # ✅ 新版 Google Gemini SDK
@@ -33,7 +33,7 @@ from google import genai
 # 1. 環境變數與 Google Gemini / 資料庫設定
 # ----------------------------------------------------
 DATABASE_URL = os.getenv("DATABASE_URL", "")
-LINE_CHANNEL_ID = os.getenv("LINE_CHANNEL_ID", "")  # 用於 id_token 驗證 audience (aud)
+LINE_CHANNEL_ID = os.getenv("LINE_CHANNEL_ID", "")
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "").strip()
 LIFF_URL = os.getenv("LIFF_URL", "")
@@ -43,7 +43,7 @@ GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-3.8-flash").strip()
 handler = WebhookHandler(LINE_CHANNEL_SECRET) if LINE_CHANNEL_SECRET else None
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN) if (LineBotApi and LINE_CHANNEL_ACCESS_TOKEN) else None
 
-# ✅ 初始化 Google Gemini SDK (新版 google-genai Client)
+# ✅ 初始化 Google Gemini SDK
 gemini_client = None
 if GEMINI_API_KEY:
     gemini_client = genai.Client(api_key=GEMINI_API_KEY)
@@ -100,7 +100,7 @@ class RPPGRecord(Base):
     hrv_sdnn = Column(Float, nullable=False)
     stress_score = Column(Integer, nullable=False)
     health_light = Column(String(20), nullable=False)
-    is_resolved = Column(Boolean, default=False)  # 標記藥師是否已完成電話/臨櫃關懷
+    is_resolved = Column(Boolean, default=False)
     summary = Column(Text, nullable=True)
     action_advice = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -165,7 +165,7 @@ def verify_line_id_token(id_token: str, expected_user_id: str) -> bool:
         return False
 
 # ----------------------------------------------------
-# 5. Gemini AI 衛教生成與強健 JSON 解析模組
+# 5. Gemini AI 衛教生成、重試機制與 JSON 解析模組
 # ----------------------------------------------------
 def extract_json_from_text(text_content: str) -> Optional[dict]:
     """強健的 JSON 解析器，能自動從 Gemini 的 Markdown 回送中提取 JSON"""
@@ -183,6 +183,36 @@ def extract_json_from_text(text_content: str) -> Optional[dict]:
         except json.JSONDecodeError:
             pass
     return None
+
+def call_gemini_with_retry(contents: str, config: Optional[dict] = None, max_retries: int = 3):
+    """
+    呼叫 Gemini API 並包含「指數退避 + 隨機抖動 (Jitter)」重試機制，專門應對 503 暫時過載
+    """
+    if not gemini_client:
+        return None
+
+    # 重試基礎等待秒數：第 1 次 0.5s, 第 2 次 1.5s, 第 3 次 3.0s
+    base_delays = [0.5, 1.5, 3.0]
+
+    for attempt in range(max_retries + 1):
+        try:
+            kwargs = {"model": GEMINI_MODEL_NAME, "contents": contents}
+            if config:
+                kwargs["config"] = config
+
+            response = gemini_client.models.generate_content(**kwargs)
+            return response
+        except Exception as e:
+            err_msg = str(e)
+            is_503 = "503" in err_msg or "UNAVAILABLE" in err_msg or "high demand" in err_msg
+
+            if is_503 and attempt < max_retries:
+                jitter = random.uniform(0.1, 0.4)
+                sleep_time = base_delays[attempt] + jitter
+                print(f"[Gemini 503 重試] 第 {attempt + 1} 次遇過載，等待 {sleep_time:.2f} 秒後進行重試... (原因: {err_msg})")
+                time.sleep(sleep_time)
+            else:
+                raise e
 
 def generate_gemini_health_advice(heart_rate: int, sdnn: float, stress_score: int, health_light: str) -> Optional[dict]:
     """使用 Google Gemini 根據生理數據產生專業且溫暖的藥局衛教摘要與建議"""
@@ -213,9 +243,8 @@ def generate_gemini_health_advice(heart_rate: int, sdnn: float, stress_score: in
 }}
 """
 
-        # ✅ 改用新版 client.models.generate_content 呼叫
-        response = gemini_client.models.generate_content(
-            model=GEMINI_MODEL_NAME,
+        # ✅ 套用帶有退避重試的 API 呼叫
+        response = call_gemini_with_retry(
             contents=prompt,
             config={
                 "response_mime_type": "application/json",
@@ -238,7 +267,6 @@ def generate_ai_chat_response(db: Session, user_line_id: str, question: str, rec
     if not gemini_client:
         return "感謝您的諮詢！目前 AI 衛教諮詢服務暫時維護中。若您有緊急身體不適，請務必先就醫或尋求社區藥師協助。"
 
-    # 取得關聯的歷史檢測紀錄
     if record_id:
         record = db.query(RPPGRecord).filter(RPPGRecord.id == record_id).first()
     else:
@@ -274,11 +302,8 @@ def generate_ai_chat_response(db: Session, user_line_id: str, question: str, rec
 """
 
     try:
-        # ✅ 改用新版 client.models.generate_content 呼叫
-        response = gemini_client.models.generate_content(
-            model=GEMINI_MODEL_NAME,
-            contents=prompt
-        )
+        # ✅ 套用帶有退避重試的 API 呼叫
+        response = call_gemini_with_retry(contents=prompt)
         if response and response.text:
             return response.text.strip()
         return "目前暫時無法回應，請稍後再試。"
@@ -455,6 +480,7 @@ def build_flex_message(heart_rate: int, stress_score: int, health_light: str, su
             ]
         }
     }
+
 # ----------------------------------------------------
 # 7.5 LINE 主動推播訊息處理
 # ----------------------------------------------------
@@ -525,7 +551,6 @@ def serve_pharmacy():
         return FileResponse("pharmacy.html")
     return {"status": "error", "message": "pharmacy.html not found"}
 
-# 註冊 LINE Webhook 對話處理程序
 if handler and MessageEvent:
     @handler.add(MessageEvent, message=TextMessage)
     def handle_message(event):
@@ -537,7 +562,6 @@ if handler and MessageEvent:
         user_text = event.message.text
         user_id = event.source.user_id
 
-        # 開啟獨立 Session 查詢檢測資料並呼叫 Gemini 生成回應
         db = SessionLocal()
         try:
             reply_text = generate_ai_chat_response(db, user_line_id=user_id, question=user_text)
@@ -553,7 +577,7 @@ if handler and MessageEvent:
             db.close()
 
 # ----------------------------------------------------
-# 10. Request / Response Pydantic Schemas
+# 10. Pydantic Request Models
 # ----------------------------------------------------
 class AnalyzeRequest(BaseModel):
     user_line_id: str
@@ -573,7 +597,7 @@ class AIChatRequest(BaseModel):
     record_id: Optional[int] = None
 
 # ----------------------------------------------------
-# 11. 使用者同意與生理分析 API (含 Gemini 整合)
+# 11. 使用者同意與生理分析 API
 # ----------------------------------------------------
 @app.get("/api/v1/user/consent-status/{user_line_id}")
 def check_consent(user_line_id: str, db: Session = Depends(get_db)):
@@ -638,7 +662,6 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
     try:
         user_id_upper = req.user_line_id.upper()
 
-        # A. 測試模擬模式
         if "RED" in user_id_upper or "HIGH" in user_id_upper:
             hr = random.randint(105, 125)
             sdnn = round(random.uniform(15.0, 22.0), 1)
@@ -652,7 +675,6 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
             sdnn = round(random.uniform(48.0, 68.0), 1)
             stress = random.randint(20, 42)
         else:
-            # B. 正式分析邏輯
             if not req.rgb_signals or len(req.rgb_signals) == 0:
                 raise HTTPException(status_code=400, detail="rgb_signals cannot be empty")
 
@@ -679,7 +701,6 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
 
             stress = int(round(np.clip(calc_stress, 15, 95)))
 
-        # C. 判定健康燈號
         if stress > 75 or hr > 100 or hr < 50:
             light = "RED"
         elif stress > 50 or hr >= 85:
@@ -687,7 +708,6 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
         else:
             light = "GREEN"
 
-        # D. Gemini AI 衛教與 Fallback 規則
         ai_res = generate_gemini_health_advice(heart_rate=hr, sdnn=sdnn, stress_score=stress, health_light=light)
 
         if ai_res:
@@ -717,7 +737,6 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
                     "2. 建議每日同一時間持續進行生理量測記錄。"
                 )
 
-        # E. 資料庫寫入與背景推播
         record = RPPGRecord(
             user_uuid=req.user_line_id,
             user_line_id=req.user_line_id,
@@ -766,7 +785,7 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 # ----------------------------------------------------
-# 12. Gemini 互動式 AI 健康諮詢 API (提供 LIFF 與 Web 端調用)
+# 12. Gemini 互動式 AI 健康諮詢 API
 # ----------------------------------------------------
 @app.post("/api/v1/ai/chat")
 def ai_health_consultation(req: AIChatRequest, db: Session = Depends(get_db)):
@@ -819,10 +838,8 @@ def get_user_history(user_line_id: str, limit: int = 10, db: Session = Depends(g
         return {"status": "error", "history": [], "message": str(e)}
 
 # ----------------------------------------------------
-# 14. 藥局端專用 API (Pharmacy Alerts & QR Code History)
+# 14. 藥局端專用 API
 # ----------------------------------------------------
-
-# (1) 取得未處理的紅燈/黃燈緊急卡片流
 @app.get("/api/v1/pharmacy/alerts")
 def get_pharmacy_alerts(db: Session = Depends(get_db)):
     try:
@@ -850,7 +867,6 @@ def get_pharmacy_alerts(db: Session = Depends(get_db)):
     except Exception as e:
         return {"status": "error", "alerts": [], "message": str(e)}
 
-# (2) 藥師點擊「標示已關懷」
 @app.post("/api/v1/pharmacy/resolve/{record_id}")
 def resolve_pharmacy_alert(record_id: int, db: Session = Depends(get_db)):
     try:
@@ -866,7 +882,6 @@ def resolve_pharmacy_alert(record_id: int, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
-# (3) 掃描民眾 QR Code 後，調閱近 7 天歷史紀錄
 @app.get("/api/v1/pharmacy/patient/{user_line_id}/history")
 def get_patient_7day_history(user_line_id: str, db: Session = Depends(get_db)):
     try:
