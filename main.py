@@ -26,30 +26,44 @@ try:
 except ImportError:
     LineBotApi = WebhookHandler = InvalidSignatureError = MessageEvent = TextMessage = TextSendMessage = None
 
-# ✅ 新版 Google Gemini SDK
+# ✅ 新版 Google Gemini SDK & OpenAI SDK
 from google import genai
+from openai import OpenAI
 
 # ----------------------------------------------------
-# 1. 環境變數與 Google Gemini / 資料庫設定
+# 1. 環境變數與 AI 模型 / 資料庫設定
 # ----------------------------------------------------
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 LINE_CHANNEL_ID = os.getenv("LINE_CHANNEL_ID", "")
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "").strip()
 LIFF_URL = os.getenv("LIFF_URL", "")
+
+# AI 模型 Key 設定
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL_NAME = os.getenv("OPENAI_MODEL_NAME", "gpt-4o-mini").strip()
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-3.8-flash").strip()
+GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash").strip()
 
 handler = WebhookHandler(LINE_CHANNEL_SECRET) if LINE_CHANNEL_SECRET else None
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN) if (LineBotApi and LINE_CHANNEL_ACCESS_TOKEN) else None
 
-# ✅ 初始化 Google Gemini SDK
+# ✅ 1. 初始化主要模型：OpenAI Client
+openai_client = None
+if OPENAI_API_KEY:
+    openai_client = OpenAI(api_key=OPENAI_API_KEY)
+    print(f"[AI System] ✅ 主要模型 OpenAI 已初始化 (Model: {OPENAI_MODEL_NAME})。")
+else:
+    print("[AI System Warning] 未設定 OPENAI_API_KEY，將無法以 OpenAI 作為主要模型。")
+
+# ✅ 2. 初始化備援模型：Google Gemini Client
 gemini_client = None
 if GEMINI_API_KEY:
     gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-    print(f"[Gemini AI] Google Gemini API 已成功初始化 (Model: {GEMINI_MODEL_NAME})。")
+    print(f"[AI System] 🔄 備援模型 Google Gemini 已初始化 (Model: {GEMINI_MODEL_NAME})。")
 else:
-    print("[Gemini AI Warning] 未設定 GEMINI_API_KEY，將使用預設規則生成衛教建議。")
+    print("[AI System Warning] 未設定 GEMINI_API_KEY，將無 Gemini 備援模型支援。")
 
 # 設定允許的 CORS 網域
 allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "")
@@ -165,10 +179,10 @@ def verify_line_id_token(id_token: str, expected_user_id: str) -> bool:
         return False
 
 # ----------------------------------------------------
-# 5. Gemini AI 衛教生成、重試機制與 JSON 解析模組
+# 5. 跨廠商 AI 核心調度模組 (OpenAI 主模型 + Gemini 自動備援)
 # ----------------------------------------------------
 def extract_json_from_text(text_content: str) -> Optional[dict]:
-    """強健的 JSON 解析器，能自動從 Gemini 的 Markdown 回送中提取 JSON"""
+    """強健的 JSON 解析器，能自動從 AI 回應文字中提取 JSON 內容"""
     if not text_content:
         return None
     try:
@@ -185,13 +199,10 @@ def extract_json_from_text(text_content: str) -> Optional[dict]:
     return None
 
 def call_gemini_with_retry(contents: str, config: Optional[dict] = None, max_retries: int = 3):
-    """
-    呼叫 Gemini API 並包含「指數退避 + 隨機抖動 (Jitter)」重試機制，專門應對 503 暫時過載
-    """
+    """呼叫 Gemini API 並包含指數退避重試機制，應對 503 過載"""
     if not gemini_client:
         return None
 
-    # 重試基礎等待秒數：第 1 次 0.5s, 第 2 次 1.5s, 第 3 次 3.0s
     base_delays = [0.5, 1.5, 3.0]
 
     for attempt in range(max_retries + 1):
@@ -209,19 +220,65 @@ def call_gemini_with_retry(contents: str, config: Optional[dict] = None, max_ret
             if is_503 and attempt < max_retries:
                 jitter = random.uniform(0.1, 0.4)
                 sleep_time = base_delays[attempt] + jitter
-                print(f"[Gemini 503 重試] 第 {attempt + 1} 次遇過載，等待 {sleep_time:.2f} 秒後進行重試... (原因: {err_msg})")
+                print(f"[Gemini 503 重試] 第 {attempt + 1} 次遇過載，等待 {sleep_time:.2f} 秒後進行重試...")
                 time.sleep(sleep_time)
             else:
                 raise e
 
-def generate_gemini_health_advice(heart_rate: int, sdnn: float, stress_score: int, health_light: str) -> Optional[dict]:
-    """使用 Google Gemini 根據生理數據產生專業且溫暖的藥局衛教摘要與建議"""
-    if not gemini_client:
-        print("[Gemini AI Warning] gemini_client 未初始化，切換至預設規則產出衛教內容。")
-        return None
+def call_llm_with_fallback(prompt: str, is_json: bool = False) -> Optional[str]:
+    """
+    跨廠商 AI 呼叫整合：
+    1. 主要模型：OpenAI (gpt-4o-mini)
+    2. 備援模型：Google Gemini (帶 503 重試)
+    """
+    # ------------------------------------------------
+    # 階段 1：優先呼叫主要模型 OpenAI (gpt-4o-mini)
+    # ------------------------------------------------
+    if openai_client:
+        try:
+            messages = [
+                {"role": "system", "content": "你是一位 PharmPulse 社區智慧藥局系統的「AI 臨床衛教藥師」。"},
+                {"role": "user", "content": prompt}
+            ]
+            kwargs = {
+                "model": OPENAI_MODEL_NAME,
+                "messages": messages,
+                "temperature": 0.4,
+            }
+            if is_json:
+                kwargs["response_format"] = {"type": "json_object"}
 
-    try:
-        prompt = f"""
+            response = openai_client.chat.completions.create(**kwargs)
+            content = response.choices[0].message.content
+            if content:
+                print(f"[AI Call] ✅ 主要模型 OpenAI ({OPENAI_MODEL_NAME}) 呼叫成功！")
+                return content.strip()
+        except Exception as e:
+            print(f"[AI Warning] ⚠️ 主要模型 OpenAI 呼叫失敗: {e}，準備自動切換至 Gemini 備援...")
+            time.sleep(0.3)
+
+    # ------------------------------------------------
+    # 階段 2：OpenAI 失敗或未設定時，切換至 Gemini 備援
+    # ------------------------------------------------
+    if gemini_client:
+        try:
+            config = {"temperature": 0.4}
+            if is_json:
+                config["response_mime_type"] = "application/json"
+
+            response = call_gemini_with_retry(contents=prompt, config=config)
+            if response and response.text:
+                print(f"[AI Call] 🔄 備援模型 Google Gemini ({GEMINI_MODEL_NAME}) 呼叫成功！")
+                return response.text.strip()
+        except Exception as e:
+            print(f"[AI Error] ❌ 備援模型 Gemini 呼叫失敗: {e}")
+
+    print("[AI Error] ❌ 所有 AI 模型 (OpenAI 與 Gemini) 均無法連線。")
+    return None
+
+def generate_gemini_health_advice(heart_rate: int, sdnn: float, stress_score: int, health_light: str) -> Optional[dict]:
+    """根據生理數據產生專業且溫暖的藥局衛教摘要與建議"""
+    prompt = f"""
 你是一位 PharmPulse 社區智慧藥局系統的「AI 臨床衛教藥師」。
 請根據以下民眾透過手機鏡頭 rPPG 測得的即時生理數據，撰寫一份簡明、具專業衛教價值且充滿關懷的分析報告。
 
@@ -242,31 +299,16 @@ def generate_gemini_health_advice(heart_rate: int, sdnn: float, stress_score: in
     "action_advice": "🟢 【衛教藥師建議】\\n1. 請繼續保持規律作息與均衡飲食。\\n2. 建議每日補充足量水分 (1500-2000c.c.)。\\n3. 歡迎隨時至合作藥局免費測量血壓與諮詢專業藥師。"
 }}
 """
-
-        # ✅ 套用帶有退避重試的 API 呼叫
-        response = call_gemini_with_retry(
-            contents=prompt,
-            config={
-                "response_mime_type": "application/json",
-                "temperature": 0.4
-            }
-        )
-
-        if response and response.text:
-            parsed_data = extract_json_from_text(response.text)
-            if parsed_data and "summary" in parsed_data and "action_advice" in parsed_data:
-                return parsed_data
-        return None
-
-    except Exception as e:
-        print(f"[Gemini AI Error] 呼叫 Gemini 產生衛教建議時發生異常: {str(e)}")
-        return None
+    raw_res = call_llm_with_fallback(prompt, is_json=True)
+    if raw_res:
+        parsed_data = extract_json_from_text(raw_res)
+        if parsed_data and "summary" in parsed_data and "action_advice" in parsed_data:
+            return parsed_data
+    return None
 
 def generate_ai_chat_response(db: Session, user_line_id: str, question: str, record_id: Optional[int] = None) -> str:
-    """共通 Gemini 對話邏輯：供 LINE Webhook 與 API 共同呼叫"""
-    if not gemini_client:
-        return "感謝您的諮詢！目前 AI 衛教諮詢服務暫時維護中。若您有緊急身體不適，請務必先就醫或尋求社區藥師協助。"
-
+    """共通 AI 對話邏輯：供 LINE Webhook 與 API 共同呼叫"""
+    record = None
     if record_id:
         record = db.query(RPPGRecord).filter(RPPGRecord.id == record_id).first()
     else:
@@ -300,16 +342,10 @@ def generate_ai_chat_response(db: Session, user_line_id: str, question: str, rec
 3. 強調 rPPG 與本軟體非醫療診斷設備，成果僅供個人健康管理與藥局衛教參考。
 4. 控管在 200 字以內，清晰條列或分段。
 """
-
-    try:
-        # ✅ 套用帶有退避重試的 API 呼叫
-        response = call_gemini_with_retry(contents=prompt)
-        if response and response.text:
-            return response.text.strip()
-        return "目前暫時無法回應，請稍後再試。"
-    except Exception as e:
-        print(f"[Gemini Chat Error] {str(e)}")
-        return "抱歉，AI 衛教系統處理時發生異常，請稍後再試。"
+    reply = call_llm_with_fallback(prompt, is_json=False)
+    if reply:
+        return reply
+    return "感謝您的諮詢！目前 AI 衛教諮詢服務忙碌中。若您有緊急身體不適，請務必先就醫或尋求社區藥師協助。"
 
 # ----------------------------------------------------
 # 6. 訊號處理與進階 HRV 演算法
@@ -536,17 +572,19 @@ def get_db():
         db.close()
 
 # ----------------------------------------------------
-# 9. 前端頁面託管與 LINE Webhook 處理
+# 9. 靜態網頁與 LINE Bot Webhook 訊息處理
 # ----------------------------------------------------
 @app.get("/")
 @app.get("/liff")
 def serve_liff():
+    """提供 LIFF 前端靜態頁面"""
     if os.path.exists("index.html"):
         return FileResponse("index.html")
     return {"status": "online", "message": "PharmPulse API Service is running"}
 
 @app.get("/pharmacy")
 def serve_pharmacy():
+    """提供藥局端管理後台靜態頁面"""
     if os.path.exists("pharmacy.html"):
         return FileResponse("pharmacy.html")
     return {"status": "error", "message": "pharmacy.html not found"}
@@ -564,6 +602,7 @@ if handler and MessageEvent:
 
         db = SessionLocal()
         try:
+            # 呼叫雙模組自動切換 AI 生成衛教建議
             reply_text = generate_ai_chat_response(db, user_line_id=user_id, question=user_text)
             
             line_bot_api.reply_message(
@@ -601,6 +640,7 @@ class AIChatRequest(BaseModel):
 # ----------------------------------------------------
 @app.get("/api/v1/user/consent-status/{user_line_id}")
 def check_consent(user_line_id: str, db: Session = Depends(get_db)):
+    """查詢使用者個人隱私與條款同意狀態"""
     try:
         record = db.query(UserConsent).filter(UserConsent.user_line_id == user_line_id).first()
         if record and record.agreed == "true":
@@ -611,6 +651,7 @@ def check_consent(user_line_id: str, db: Session = Depends(get_db)):
 
 @app.post("/api/v1/user/consent")
 def save_consent(req: ConsentRequest, db: Session = Depends(get_db)):
+    """更新或記錄使用者條款同意狀態"""
     if req.id_token and not verify_line_id_token(req.id_token, req.user_line_id):
         raise HTTPException(status_code=401, detail="Invalid LINE id_token verification failed")
 
@@ -638,6 +679,7 @@ async def callback(
     request: Request, 
     x_line_signature: str = Header(None, alias="X-Line-Signature")
 ):
+    """LINE Messaging API Webhook 入口"""
     if not handler:
         raise HTTPException(status_code=500, detail="LINE Webhook handler not configured")
 
@@ -656,12 +698,14 @@ async def callback(
 
 @app.post("/api/v1/analyze-rppg")
 def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """核心 rPPG 影像訊號分析 API (計算 HR/SDNN/壓力指數並由 AI 生成衛教)"""
     if req.id_token and not verify_line_id_token(req.id_token, req.user_line_id):
         raise HTTPException(status_code=401, detail="Invalid LINE id_token verification failed")
 
     try:
         user_id_upper = req.user_line_id.upper()
 
+        # 測試/演示 ID 自動觸發特定燈號模擬機制
         if "RED" in user_id_upper or "HIGH" in user_id_upper:
             hr = random.randint(105, 125)
             sdnn = round(random.uniform(15.0, 22.0), 1)
@@ -678,6 +722,7 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
             if not req.rgb_signals or len(req.rgb_signals) == 0:
                 raise HTTPException(status_code=400, detail="rgb_signals cannot be empty")
 
+            # 解構與解析 Green Channel 訊號
             if isinstance(req.rgb_signals[0], list):
                 if len(req.rgb_signals) == 3 and len(req.rgb_signals[0]) > 3:
                     green_signal = req.rgb_signals[1]
@@ -693,6 +738,7 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
             else:
                 hr, sdnn = calculate_rppg_metrics(green_signal, fps=req.fps)
 
+            # 壓力指數算式轉換
             normalized_sdnn = np.clip(sdnn, 15.0, 80.0)
             calc_stress = 85.0 - ((normalized_sdnn - 15.0) / (80.0 - 15.0)) * 70.0
 
@@ -701,6 +747,7 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
 
             stress = int(round(np.clip(calc_stress, 15, 95)))
 
+        # 健康燈號評估 logic
         if stress > 75 or hr > 100 or hr < 50:
             light = "RED"
         elif stress > 50 or hr >= 85:
@@ -708,12 +755,14 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
         else:
             light = "GREEN"
 
+        # 呼叫 AI 模組生成衛教分析 (優先 OpenAI gpt-4o-mini，失敗自動退避切換至 Gemini)
         ai_res = generate_gemini_health_advice(heart_rate=hr, sdnn=sdnn, stress_score=stress, health_light=light)
 
         if ai_res:
             summary = ai_res.get("summary", "")
             advice = ai_res.get("action_advice", "")
         else:
+            # AI 完全不可用時的保底機制
             if light == "RED":
                 summary = "生理數值顯著偏離基準，心血管與自律神經負擔較高。"
                 advice = (
@@ -737,6 +786,7 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
                     "2. 建議每日同一時間持續進行生理量測記錄。"
                 )
 
+        # 寫入資料庫
         record = RPPGRecord(
             user_uuid=req.user_line_id,
             user_line_id=req.user_line_id,
@@ -753,6 +803,7 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
         db.commit()
         db.refresh(record)
 
+        # 透過 FastAPI BackgroundTasks 發送 LINE Flex Message 主動推播
         background_tasks.add_task(
             send_line_push_message,
             user_id=req.user_line_id,
@@ -785,10 +836,11 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 # ----------------------------------------------------
-# 12. Gemini 互動式 AI 健康諮詢 API
+# 12. AI 互動式健康諮詢 API
 # ----------------------------------------------------
 @app.post("/api/v1/ai/chat")
 def ai_health_consultation(req: AIChatRequest, db: Session = Depends(get_db)):
+    """前端 LIFF AI 諮詢對話視窗 API"""
     if req.id_token and not verify_line_id_token(req.id_token, req.user_line_id):
         raise HTTPException(status_code=401, detail="Invalid LINE id_token verification failed")
 
@@ -809,6 +861,7 @@ def ai_health_consultation(req: AIChatRequest, db: Session = Depends(get_db)):
 # ----------------------------------------------------
 @app.get("/api/v1/user/history/{user_line_id}")
 def get_user_history(user_line_id: str, limit: int = 10, db: Session = Depends(get_db)):
+    """取得特定使用者的生理檢測歷史數據"""
     try:
         records = db.query(RPPGRecord)\
                     .filter(
@@ -838,10 +891,11 @@ def get_user_history(user_line_id: str, limit: int = 10, db: Session = Depends(g
         return {"status": "error", "history": [], "message": str(e)}
 
 # ----------------------------------------------------
-# 14. 藥局端專用 API
+# 14. 藥局端專用管理 API
 # ----------------------------------------------------
 @app.get("/api/v1/pharmacy/alerts")
 def get_pharmacy_alerts(db: Session = Depends(get_db)):
+    """取得社區藥局端即時異常警示清單（黃燈/紅燈且未結案）"""
     try:
         records = db.query(RPPGRecord)\
                     .filter(RPPGRecord.health_light.in_(["RED", "YELLOW"]))\
@@ -869,6 +923,7 @@ def get_pharmacy_alerts(db: Session = Depends(get_db)):
 
 @app.post("/api/v1/pharmacy/resolve/{record_id}")
 def resolve_pharmacy_alert(record_id: int, db: Session = Depends(get_db)):
+    """藥師端標註警示個案為已處置/已結案"""
     try:
         rec = db.query(RPPGRecord).filter(RPPGRecord.id == record_id).first()
         if not rec:
@@ -884,6 +939,7 @@ def resolve_pharmacy_alert(record_id: int, db: Session = Depends(get_db)):
 
 @app.get("/api/v1/pharmacy/patient/{user_line_id}/history")
 def get_patient_7day_history(user_line_id: str, db: Session = Depends(get_db)):
+    """供藥師端調閱民眾近 7 天生理趨勢歷史記錄"""
     try:
         seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
         records = db.query(RPPGRecord)\
