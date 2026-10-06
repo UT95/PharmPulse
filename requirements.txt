@@ -10,3 +10,4 @@ scipy
 python-dotenv
 google-genai
 google-generativeai
+openai
