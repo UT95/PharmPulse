@@ -1,520 +1,537 @@
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PharmPulse 生理量測</title>
-    <!-- LINE LIFF SDK -->
-    <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
-    <!-- MediaPipe Face Mesh SDK -->
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
-    <!-- QRCode.js CDN -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-    <!-- Chart.js CDN -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f8f9fa; color: #333; padding: 20px; text-align: center; }
-        .container { max-width: 480px; margin: 0 auto; background: #ffffff; border-radius: 16px; padding: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
-        h2 { color: #1DB446; margin-bottom: 8px; font-size: 22px; }
-        .user-info { font-size: 14px; color: #666; margin-bottom: 12px; background: #eef9f2; padding: 8px 12px; border-radius: 8px; display: inline-block; word-break: break-all; }
-        
-        .nav-actions { margin-bottom: 16px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
-        .btn-secondary { background-color: #ffffff; color: #1DB446; border: 1.5px solid #1DB446; padding: 8px 14px; border-radius: 20px; font-size: 14px; font-weight: bold; cursor: pointer; transition: all 0.2s; }
-        .btn-secondary:active { background-color: #eef9f2; transform: scale(0.98); }
-
-        /* QR Code 卡片樣式 */
-        .qrcode-card { display: none; background: #f0fdf4; border: 1.5px dashed #1DB446; border-radius: 12px; padding: 16px; margin-bottom: 16px; text-align: center; transition: all 0.3s ease; }
-        .qrcode-title { font-weight: bold; color: #166534; font-size: 15px; margin-bottom: 4px; }
-        .qrcode-sub { font-size: 12px; color: #666; margin-bottom: 10px; }
-        .qrcode-box { display: inline-flex; justify-content: center; align-items: center; margin: 10px 0; background: #ffffff; padding: 12px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
-        .qrcode-id { font-size: 12px; color: #333; background: #e2e8f0; padding: 4px 10px; border-radius: 6px; display: inline-block; font-family: monospace; font-weight: 600; }
-
-        /* 視訊與人臉綠光 ROI 區域 */
-        .camera-container { position: relative; width: 280px; height: 280px; margin: 0 auto 20px; border-radius: 50%; overflow: hidden; background-color: #000; border: 4px solid #1DB446; box-shadow: 0 8px 16px rgba(29, 180, 70, 0.2); }
-        video { display: none; }
-        canvas { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
-        .face-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 4px dashed rgba(255, 255, 255, 0.85); border-radius: 50%; pointer-events: none; box-sizing: border-box; animation: pulse 2s infinite; }
-        
-        @keyframes pulse {
-            0% { border-color: rgba(255, 255, 255, 0.6); box-shadow: inset 0 0 10px rgba(255, 255, 255, 0.3); }
-            50% { border-color: rgba(29, 180, 70, 1); box-shadow: inset 0 0 25px rgba(29, 180, 70, 0.6); }
-            100% { border-color: rgba(255, 255, 255, 0.6); box-shadow: inset 0 0 10px rgba(255, 255, 255, 0.3); }
-        }
-
-        .progress-bar-container { width: 100%; background-color: #e5e7eb; border-radius: 8px; height: 10px; margin-bottom: 15px; overflow: hidden; display: none; }
-        .progress-bar { width: 0%; height: 100%; background-color: #1DB446; transition: width 0.1s linear; }
-
-        .btn { width: 100%; padding: 14px; background-color: #1DB446; color: white; border: none; border-radius: 10px; font-size: 18px; font-weight: bold; cursor: pointer; transition: background-color 0.2s; }
-        .btn:active { background-color: #159338; }
-        .btn:disabled { background-color: #ccc; cursor: not-allowed; }
-        
-        .status { margin-top: 15px; font-size: 15px; color: #555; font-weight: 500; min-height: 22px; }
-
-        .report-card { display: none; margin-top: 20px; padding: 16px; border-radius: 12px; background: #f0fdf4; border: 1px solid #bbf7d0; text-align: left; }
-        .report-card.yellow { background: #fefce8; border-color: #fef08a; }
-        .report-card.red { background: #fef2f2; border-color: #fecaca; }
-        .report-title { font-weight: bold; font-size: 16px; margin-bottom: 8px; color: #166534; }
-        .report-metric { font-size: 15px; margin-bottom: 6px; }
-        .report-section { margin-top: 10px; font-size: 14px; line-height: 1.5; white-space: pre-line; }
-
-        /* 歷史紀錄彈窗 Modal CSS */
-        .modal { display: none; position: fixed; z-index: 100; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); }
-        .modal-content { background-color: #fff; margin: 10% auto; padding: 20px; border-radius: 16px; width: 90%; max-width: 440px; max-height: 80vh; overflow-y: auto; text-align: left; }
-        .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
-        .close-btn { font-size: 24px; font-weight: bold; cursor: pointer; color: #888; }
-        .history-item { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px; margin-bottom: 10px; }
-        .history-date { font-size: 12px; color: #888; margin-bottom: 4px; }
-        .history-body { font-size: 14px; font-weight: bold; color: #333; }
-        .chart-container { position: relative; height: 200px; width: 100%; margin-bottom: 15px; padding: 10px; background: #fafafa; border-radius: 10px; }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PharmPulse 藥局端健康關懷與調閱系統</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
-<body>
+<body class="bg-slate-50 min-h-screen text-slate-800 font-sans">
 
-    <div class="container">
-        <h2>PharmPulse 生理檢測</h2>
-        <div id="user-info" class="user-info">連線中...</div>
-        
-        <div class="nav-actions">
-            <button class="btn-secondary" onclick="toggleQrCode()">📱 出示藥局條碼</button>
-            <button class="btn-secondary" onclick="fetchAndShowHistory()">📊 查看歷史紀錄</button>
+  <!-- Header / Navbar -->
+  <header class="bg-emerald-700 text-white shadow-md sticky top-0 z-40">
+    <div class="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
+      <div class="flex items-center space-x-3">
+        <i class="fa-solid fa-notes-medical text-2xl text-emerald-200"></i>
+        <div>
+          <h1 class="text-xl font-bold tracking-wide">PharmPulse 藥局端關懷系統</h1>
+          <p class="text-xs text-emerald-100">社區藥局生理即時追蹤與照護平台</p>
+        </div>
+      </div>
+      <button onclick="fetchAlerts(); fetchRecentRecords()" class="bg-emerald-800 hover:bg-emerald-900 text-emerald-100 text-sm px-3 py-1.5 rounded-lg transition flex items-center gap-1.5">
+        <i class="fa-solid fa-rotate-right"></i> 重新整理
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="max-w-7xl mx-auto px-4 py-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+    <!-- Left Column: Pending Alerts (2 cols on large screen) -->
+    <section class="lg:col-span-2 space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-200 pb-3">
+        <div class="flex items-center gap-2">
+          <span class="w-3 h-3 rounded-full bg-red-500 animate-pulse"></span>
+          <h2 class="text-lg font-bold text-slate-800">待處置紅/黃燈警示個案</h2>
+        </div>
+        <span id="alert-count" class="bg-slate-200 text-slate-700 text-xs font-semibold px-2.5 py-0.5 rounded-full">載入中...</span>
+      </div>
+
+      <!-- Alert Cards Container -->
+      <div id="alerts-container" class="space-y-4">
+        <div class="text-center py-12 text-slate-400 bg-white rounded-xl shadow-sm border border-slate-100">
+          <i class="fa-solid fa-spinner fa-spin text-2xl mb-2 text-emerald-600"></i>
+          <p>正在載入緊急關懷卡片...</p>
+        </div>
+      </div>
+
+      <div class="pt-4">
+        <div class="flex items-center justify-between border-b border-slate-200 pb-3 mb-3">
+          <div class="flex items-center gap-2">
+            <i class="fa-solid fa-clock-rotate-left text-emerald-600"></i>
+            <h2 class="text-lg font-bold text-slate-800">最近居家量測紀錄</h2>
+          </div>
+          <span id="recent-count" class="bg-slate-200 text-slate-700 text-xs font-semibold px-2.5 py-0.5 rounded-full">載入中...</span>
+        </div>
+        <div id="recent-records-container" class="space-y-3">
+          <div class="text-center py-8 text-slate-400 bg-white rounded-xl shadow-sm border border-slate-100">
+            <i class="fa-solid fa-spinner fa-spin text-xl mb-2 text-emerald-600"></i>
+            <p>正在載入最近量測紀錄...</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Right Column: Patient Lookup Trigger -->
+    <section class="space-y-4">
+      <div class="border-b border-slate-200 pb-3">
+        <h2 class="text-lg font-bold text-slate-800 flex items-center gap-2">
+          <i class="fa-solid fa-qrcode text-emerald-600"></i> 掃碼 / 查詢民眾 7 天紀錄
+        </h2>
+      </div>
+
+      <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-200 space-y-4">
+        <div>
+          <label class="block text-xs font-semibold text-slate-600 mb-1">民眾 LINE User ID (或掃描 QR Code)</label>
+          <div class="flex gap-2">
+            <input type="text" id="lookup-line-id" placeholder="例如：U1234567890..." 
+                   class="flex-1 px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500">
+            <button id="search-btn" onclick="fetchPatientHistory()" class="bg-emerald-600 hover:bg-emerald-700 text-white text-sm px-4 py-2 rounded-lg font-medium transition flex items-center gap-1.5">
+              <i class="fa-solid fa-magnifying-glass"></i> 查詢
+            </button>
+          </div>
         </div>
 
-        <!-- 專屬 LINE ID QR Code 卡片 -->
-        <div id="qrcode-card" class="qrcode-card">
-            <div class="qrcode-title">🏥 社區藥局專屬關懷 QR Code</div>
-            <div class="qrcode-sub">前往藥局時，請出示此條碼供藥師掃描調閱紀錄</div>
-            <div class="qrcode-box">
-                <div id="qrcode-container"></div>
+        <div class="p-4 bg-emerald-50 border border-emerald-100 rounded-lg text-xs text-emerald-800 space-y-1">
+          <p class="font-bold flex items-center gap-1"><i class="fa-solid fa-circle-info"></i> 操作提示：</p>
+          <p>輸入或掃描民眾 ID 後，系統將會彈出<strong>專屬健康分析畫面</strong>，即時顯示 7 天心率與壓力變化趨勢圖。</p>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- 🎯 獨立大畫面彈窗 (Patient Detail Modal) -->
+  <div id="patient-detail-modal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4 transition-opacity">
+    <div class="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] flex flex-col overflow-hidden border border-slate-100">
+      
+      <!-- Modal Header -->
+      <div class="bg-emerald-700 text-white px-6 py-4 flex justify-between items-center">
+        <div>
+          <h3 class="text-lg font-bold flex items-center gap-2">
+            <i class="fa-solid fa-chart-line text-emerald-200"></i> 民眾近 7 天健康數據分析
+          </h3>
+          <p class="text-xs text-emerald-100 mt-0.5">個案 ID: <span id="modal-patient-id" class="font-mono font-bold">---</span></p>
+        </div>
+        <button onclick="closePatientModal()" class="text-emerald-100 hover:text-white hover:bg-emerald-800/50 w-8 h-8 rounded-full flex items-center justify-center transition">
+          <i class="fa-solid fa-xmark text-xl"></i>
+        </button>
+      </div>
+
+      <!-- Modal Body (可滾動區域) -->
+      <div class="p-6 overflow-y-auto space-y-6 flex-1 bg-slate-50/50">
+        
+        <!-- 上半部：7 天心率趨勢圖 -->
+        <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3">
+          <div class="flex justify-between items-center">
+            <h4 class="font-bold text-slate-800 text-sm flex items-center gap-2">
+              <i class="fa-solid fa-heart-pulse text-red-500"></i> 7 天心率趨勢變化 (BPM)
+            </h4>
+            <span id="modal-total-records" class="text-xs bg-emerald-100 text-emerald-800 font-semibold px-2.5 py-0.5 rounded-full">載入中...</span>
+          </div>
+          
+          <!-- Chart Container (高度固定 240px) -->
+          <div class="relative w-full h-60">
+            <canvas id="modalHeartRateChart"></canvas>
+          </div>
+        </div>
+
+        <!-- 下半部：詳細歷史紀錄明細 -->
+        <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3">
+          <h4 class="font-bold text-slate-800 text-sm flex items-center gap-2">
+            <i class="fa-solid fa-clock-rotate-left text-emerald-600"></i> 詳細檢測歷史紀錄
+          </h4>
+          <div id="modal-history-list" class="space-y-2.5">
+            <!-- 歷史紀錄項目將在此動態生成 -->
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Modal Footer -->
+      <div class="bg-slate-100 border-t border-slate-200 px-6 py-3 flex justify-end">
+        <button onclick="closePatientModal()" class="bg-slate-700 hover:bg-slate-800 text-white text-xs px-5 py-2 rounded-lg font-medium transition">
+          關閉視窗
+        </button>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = "/api/v1";
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+    let modalChartInstance = null; // 全域圖表實例
+
+    // 1. 載入待關懷警示卡片
+    async function fetchAlerts() {
+      const container = document.getElementById("alerts-container");
+      const countBadge = document.getElementById("alert-count");
+
+      try {
+        const res = await fetch(`${API_BASE}/pharmacy/alerts`);
+        const data = await res.json();
+
+        if (data.status !== "success" || !data.alerts || data.alerts.length === 0) {
+          container.innerHTML = `
+            <div class="bg-white p-8 rounded-xl shadow-sm border border-slate-200 text-center text-slate-500">
+              <i class="fa-solid fa-circle-check text-4xl text-emerald-500 mb-3"></i>
+              <p class="font-medium">目前無待處理的紅/黃燈個案</p>
+              <p class="text-xs text-slate-400 mt-1">社區居民生理狀況皆維持良好狀態</p>
+            </div>`;
+          countBadge.textContent = "0 筆待處理";
+          return;
+        }
+
+        countBadge.textContent = `${data.alerts.length} 筆待處理`;
+        container.innerHTML = data.alerts.map(item => buildAlertCard(item)).join("");
+
+      } catch (err) {
+        console.error("Fetch Alerts Error:", err);
+        container.innerHTML = `<div class="bg-red-50 p-4 rounded-xl text-red-600 text-sm">載入資料失敗，請確認後端服務是否正常運行。</div>`;
+      }
+    }
+
+
+    // 1A. 載入最近所有居家量測紀錄（GREEN/YELLOW/RED）
+    async function fetchRecentRecords() {
+      const container = document.getElementById("recent-records-container");
+      const badge = document.getElementById("recent-count");
+
+      try {
+        const res = await fetch(`${API_BASE}/pharmacy/recent?limit=30`);
+        const data = await res.json();
+        if (data.status !== "success") throw new Error(data.message || "載入失敗");
+
+        const records = Array.isArray(data.records) ? data.records : [];
+        badge.textContent = `${records.length} 筆`;
+
+        if (!records.length) {
+          container.innerHTML = `<div class="bg-white p-6 rounded-xl border border-slate-200 text-center text-slate-500 text-sm">目前尚無任何居家量測紀錄。</div>`;
+          return;
+        }
+
+        container.innerHTML = records.map(item => {
+          const light = item.health_light || "GREEN";
+          const meta = light === "RED"
+            ? ["🔴", "RED", "bg-red-50 border-red-200 text-red-700"]
+            : light === "YELLOW"
+              ? ["🟡", "YELLOW", "bg-amber-50 border-amber-200 text-amber-700"]
+              : ["🟢", "GREEN", "bg-emerald-50 border-emerald-200 text-emerald-700"];
+          const timeStr = item.created_at ? new Date(item.created_at).toLocaleString("zh-TW") : "未知時間";
+          const lineId = String(item.user_line_id || "");
+          return `
+            <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+              <div class="flex flex-wrap justify-between items-center gap-2 mb-2">
+                <div class="flex items-center gap-2">
+                  <span class="text-xs px-2 py-1 rounded-full border font-bold ${meta[2]}">${meta[0]} ${meta[1]}</span>
+                  <span class="font-mono text-xs text-slate-600">${escapeHtml(lineId)}</span>
+                </div>
+                <span class="text-xs text-slate-400">${timeStr}</span>
+              </div>
+              <div class="grid grid-cols-3 gap-2 bg-slate-50 p-3 rounded-lg text-sm">
+                <div><span class="text-xs text-slate-500">心率</span><p class="font-bold">${item.heart_rate ?? "--"} BPM</p></div>
+                <div><span class="text-xs text-slate-500">HRV</span><p class="font-bold">${item.hrv_sdnn ?? "--"} ms</p></div>
+                <div><span class="text-xs text-slate-500">壓力</span><p class="font-bold">${item.stress_score ?? "--"} / 100</p></div>
+              </div>
+              <p class="text-xs text-slate-500 mt-2">${escapeHtml(item.summary || "無摘要")}</p>
+              <div class="mt-3 flex justify-end">
+                <button onclick="quickLookup('${lineId.replace(/'/g, "\\'")}')" class="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs px-3 py-2 rounded-lg font-medium transition">
+                  <i class="fa-solid fa-chart-line"></i> 查看 7 天趨勢
+                </button>
+              </div>
+            </div>`;
+        }).join("");
+      } catch (err) {
+        console.error("Fetch Recent Records Error:", err);
+        container.innerHTML = `<div class="bg-red-50 p-4 rounded-xl text-red-600 text-sm">最近量測資料載入失敗：${escapeHtml(err.message || "未知錯誤")}</div>`;
+        badge.textContent = "載入失敗";
+      }
+    }
+
+    // 2. 建立卡片 HTML
+    function buildAlertCard(item) {
+      const isRed = item.health_light === "RED";
+      const badgeBg = isRed ? "bg-red-100 text-red-700 border-red-200" : "bg-amber-100 text-amber-700 border-amber-200";
+      const lightTitle = isRed ? "🔴 高度警示 (RED)" : "🟡 輕度風險 (YELLOW)";
+      const timeStr = item.created_at ? new Date(item.created_at).toLocaleString("zh-TW") : "剛剛";
+
+      return `
+        <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-200 space-y-3 relative hover:shadow-md transition">
+          <div class="flex justify-between items-start">
+            <div>
+              <span class="inline-block text-xs px-2.5 py-1 rounded-full border font-bold ${badgeBg}">
+                ${lightTitle}
+              </span>
+              <p class="text-xs text-slate-400 mt-1">個案 ID: <span class="font-mono text-slate-600">${item.user_line_id}</span></p>
+            </div>
+            <span class="text-xs text-slate-400">${timeStr}</span>
+          </div>
+
+          <!-- Metrics -->
+          <div class="grid grid-cols-2 gap-3 bg-slate-50 p-3 rounded-lg text-sm">
+            <div>
+              <span class="text-xs text-slate-500">心率 (Heart Rate)</span>
+              <p class="font-bold text-slate-800 text-lg">${item.heart_rate} <span class="text-xs font-normal">BPM</span></p>
             </div>
             <div>
-                <span id="display-line-id" class="qrcode-id">ID: 載入中...</span>
+              <span class="text-xs text-slate-500">壓力指數 (Stress)</span>
+              <p class="font-bold text-slate-800 text-lg">${item.stress_score} <span class="text-xs font-normal">/ 100</span></p>
             </div>
-        </div>
+          </div>
 
-        <div class="camera-container">
-            <video id="webcam" playsinline muted></video>
-            <canvas id="output-canvas" width="640" height="640"></canvas>
-            <div class="face-overlay"></div>
-        </div>
+          <!-- Summary & Advice -->
+          <div class="text-xs text-slate-600 space-y-1">
+            <p><strong class="text-slate-700">檢測摘要：</strong>${item.summary || '無摘要'}</p>
+            <p class="bg-amber-50 text-amber-900 p-2.5 rounded-lg border border-amber-100">
+              <strong class="text-amber-800">處置建議：</strong>${item.action_advice || '建議進行臨櫃詢問與衛教。'}
+            </p>
+          </div>
 
-        <div id="progress-container" class="progress-bar-container">
-            <div id="progress-bar" class="progress-bar"></div>
-        </div>
+          <!-- Action Button -->
+          <div class="pt-1 flex justify-end gap-2">
+            <button onclick="quickLookup('${item.user_line_id}')" class="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs px-3 py-2 rounded-lg font-medium transition flex items-center gap-1">
+              <i class="fa-solid fa-chart-line"></i> 查看 7 天趨勢
+            </button>
+            <button onclick="resolveAlert(${item.id})" class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs px-4 py-2 rounded-lg font-medium transition flex items-center gap-1.5 shadow-sm">
+              <i class="fa-solid fa-check"></i> 標示已關懷
+            </button>
+          </div>
+        </div>`;
+    }
 
-        <button id="start-btn" class="btn" onclick="startMeasurement()">開始真實生理量測</button>
-        <p id="status-text" class="status">請對準頭部並保持靜止，點擊按鈕開始量測</p>
+    // 3. 標示已關懷
+    async function resolveAlert(recordId) {
+      try {
+        const res = await fetch(`${API_BASE}/pharmacy/resolve/${recordId}`, { method: "POST" });
+        const data = await res.json();
+        if (data.status === "success") {
+          fetchAlerts();
+        } else {
+          alert("更新狀態失敗：" + data.message);
+        }
+      } catch (err) {
+        alert("請求發送失敗，請檢查後端連線");
+      }
+    }
 
-        <div id="report-card" class="report-card">
-            <div id="report-title" class="report-title">🟢 量測結果報告</div>
-            <div id="report-metrics" class="report-metric"></div>
-            <hr style="margin: 8px 0; border: none; border-top: 1px solid rgba(0,0,0,0.1);">
-            <div id="report-summary" class="report-section"></div>
-            <div id="report-advice" class="report-section" style="font-weight: 500;"></div>
-        </div>
-    </div>
+    // 4. 快速帶入 ID 並查詢
+    function quickLookup(lineId) {
+      document.getElementById("lookup-line-id").value = lineId;
+      fetchPatientHistory();
+    }
 
-    <!-- 歷史紀錄 Modal -->
-    <div id="history-modal" class="modal" onclick="handleModalOutsideClick(event)">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3>📊 歷史量測紀錄</h3>
-                <span class="close-btn" onclick="closeHistoryModal()">&times;</span>
-            </div>
+    // 5. 調閱 7 天歷史紀錄並開啟獨立彈窗畫面
+    async function fetchPatientHistory() {
+      const lineId = document.getElementById("lookup-line-id").value.trim();
+      const btn = document.getElementById("search-btn");
 
-            <!-- 📈 心率趨勢圖畫布容器 -->
-            <div class="chart-container">
-                <canvas id="heartRateChart"></canvas>
-            </div>
+      if (!lineId) {
+        alert("請輸入或掃描民眾的 LINE User ID");
+        return;
+      }
 
-            <div id="history-list">
-                <p style="text-align:center; color:#888;">讀取中...</p>
-            </div>
-        </div>
-    </div>
+      btn.disabled = true;
+      btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> 查詢中...`;
 
-    <script>
-        let currentUserId = "";
-        let historyChartInstance = null;
-        
-        const videoElement = document.getElementById('webcam');
-        const canvasElement = document.getElementById('output-canvas');
-        const canvasCtx = canvasElement.getContext('2d', { willReadFrequently: true });
-        
-        let faceMesh;
-        let cameraInstance = null;
-        let isMeasuring = false;
-        let collectedGreenSignals = [];
-        let collectedRedSignals = [];
-        let collectedTimestamps = [];
-        const TOTAL_FRAMES = 300;
-        const MIN_FRAMES = 150;
-        let measurementStartTime = 0;
-        let lastSampleTime = 0;
+      try {
+        const res = await fetch(`${API_BASE}/pharmacy/patient/${encodeURIComponent(lineId)}/history`);
+        const data = await res.json();
 
-        // 生成 LINE ID QR Code
-        function renderUserQRCode(userLineId) {
-            const container = document.getElementById("qrcode-container");
-            const displayId = document.getElementById("display-line-id");
+        const history = Array.isArray(data.history)
+          ? data.history
+          : (Array.isArray(data.records) ? data.records : []);
 
-            if (!container || !userLineId) return;
-
-            container.innerHTML = "";
-            if (displayId) {
-                displayId.textContent = `ID: ${userLineId}`;
-            }
-
-            new QRCode(container, {
-                text: userLineId,
-                width: 160,
-                height: 160,
-                colorDark: "#166534",
-                colorLight: "#ffffff",
-                correctLevel: QRCode.CorrectLevel.H
-            });
+        if (data.status !== "success" || history.length === 0) {
+          alert(data.message ? `查詢失敗：${data.message}` : "該民眾近 7 天無檢測紀錄。");
+          return;
         }
 
-        // 切換顯示/隱藏 QR Code 卡片
-        function toggleQrCode() {
-            const card = document.getElementById("qrcode-card");
-            card.style.display = (card.style.display === "none" || card.style.display === "") ? "block" : "none";
+        data.history = history;
+        data.total_records = data.total_records || history.length;
+        openPatientModal(lineId, data);
+
+      } catch (err) {
+        console.error("Fetch Patient History Error:", err);
+        alert("查詢失敗，請檢查系統與後端狀態。");
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = `<i class="fa-solid fa-magnifying-glass"></i> 查詢`;
+      }
+    }
+
+    // 6. 開啟彈窗與填充內容
+    function openPatientModal(lineId, data) {
+      document.getElementById("modal-patient-id").textContent = lineId;
+      document.getElementById("modal-total-records").textContent = `共 ${data.total_records || data.history.length} 筆紀錄`;
+
+      const historyListDiv = document.getElementById("modal-history-list");
+      historyListDiv.innerHTML = "";
+
+      // 填充歷史紀錄清單
+      data.history.forEach(r => {
+        const lightBg = r.health_light === "RED" ? "bg-red-50 border-red-200 text-red-800" : (r.health_light === "YELLOW" ? "bg-amber-50 border-amber-200 text-amber-800" : "bg-emerald-50 border-emerald-200 text-emerald-800");
+        const timeStr = r.created_at ? new Date(r.created_at).toLocaleString("zh-TW") : "未知時間";
+
+        const div = document.createElement("div");
+        div.className = `p-3 rounded-xl border text-xs space-y-1.5 ${lightBg}`;
+        div.innerHTML = `
+          <div class="flex justify-between items-center font-bold">
+            <span class="flex items-center gap-1.5">
+              <span class="w-2 h-2 rounded-full ${r.health_light === 'RED' ? 'bg-red-500' : (r.health_light === 'YELLOW' ? 'bg-amber-500' : 'bg-emerald-500')}"></span>
+              ${r.health_light} 燈號狀態
+            </span>
+            <span class="text-slate-400 font-normal">${timeStr}</span>
+          </div>
+          <div class="grid grid-cols-3 gap-2 pt-1 border-t border-slate-200/50 text-slate-700">
+            <div>心率: <strong class="text-slate-900">${r.heart_rate} BPM</strong></div>
+            <div>壓力指數: <strong class="text-slate-900">${r.stress_score} / 100</strong></div>
+            <div>HRV (SDNN): <strong class="text-slate-900">${r.hrv_sdnn || '--'} ms</strong></div>
+          </div>
+        `;
+        historyListDiv.appendChild(div);
+      });
+
+      // 顯示 Modal 彈窗
+      const modal = document.getElementById("patient-detail-modal");
+      modal.classList.remove("hidden");
+
+      // 繪製趨勢圖 (延遲一瞬間確保 Modal Canvas 已完全渲染)
+      setTimeout(() => {
+        renderModalChart(data.history);
+      }, 50);
+    }
+
+    // 7. 關閉彈窗
+    function closePatientModal() {
+      const modal = document.getElementById("patient-detail-modal");
+      modal.classList.add("hidden");
+    }
+
+    // 8. 繪製彈窗心率折線圖 (Chart.js)
+    // 8. 繪製彈窗心率折線圖 (Chart.js 視覺優化版)
+// 8. 繪製彈窗心率折線圖 (極簡無點平滑折線版)
+function renderModalChart(historyData) {
+  const canvas = document.getElementById('modalHeartRateChart');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+
+  // 時間舊 -> 新排序
+  const sortedData = [...historyData].reverse();
+
+  const labels = sortedData.map(item => {
+    if (!item.created_at) return '未知';
+    const d = new Date(item.created_at);
+    return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  });
+
+  const heartRates = sortedData.map(item => item.heart_rate || item.bpm || 0);
+
+  // 建立折線下方柔和漸層
+  const gradient = ctx.createLinearGradient(0, 0, 0, 240);
+  gradient.addColorStop(0, 'rgba(16, 185, 129, 0.2)');
+  gradient.addColorStop(1, 'rgba(16, 185, 129, 0.0)');
+
+  if (modalChartInstance) {
+    modalChartInstance.destroy();
+  }
+
+  modalChartInstance = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [{
+        label: '心率 (BPM)',
+        data: heartRates,
+        borderColor: '#059669',            // 綠色折線 (Emerald 600)
+        borderWidth: 3,                    // 線條加粗增強視覺質感
+        backgroundColor: gradient,
+        fill: true,
+        tension: 0.35,                     // 平滑曲線
+        // 🎯 隱藏常駐點點
+        pointRadius: 0,                    // 平時完全不顯示點點
+        pointHoverRadius: 7,               // 滑鼠靠近時才顯示亮點
+        pointHoverBackgroundColor: '#047857',
+        pointHoverBorderColor: '#ffffff',
+        pointHoverBorderWidth: 2,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: {
+        mode: 'index',
+        intersect: false,                  // 只要滑鼠移動到該 X 軸區間就會觸發懸浮顯示
+      },
+      scales: {
+        y: {
+          beginAtZero: false,
+          suggestedMin: 50,
+          suggestedMax: 130,
+          grid: {
+            color: (context) => {
+              // 標示正常心率範圍 (60 與 100 BPM) 的參考警示線
+              if (context.tick.value === 60 || context.tick.value === 100) {
+                return 'rgba(239, 68, 68, 0.25)';
+              }
+              return 'rgba(226, 232, 240, 0.6)';
+            },
+            lineWidth: (context) => (context.tick.value === 60 || context.tick.value === 100 ? 1.5 : 1)
+          },
+          ticks: {
+            font: { size: 11, weight: '500' },
+            color: '#64748b',
+            callback: (val) => `${val} BPM`
+          }
+        },
+        x: {
+          grid: { display: false },
+          ticks: {
+            maxRotation: 30,
+            font: { size: 10 },
+            color: '#64748b'
+          }
         }
-
-        // 1. 初始化 LIFF 並判斷 URL 參數
-        async function initLiff() {
-            try {
-                await liff.init({ liffId: '2011686844-4moxcFdy' }); 
-
-                if (!liff.isLoggedIn()) {
-                    liff.login();
-                    return;
-                }
-
-                const profile = await liff.getProfile();
-                currentUserId = profile.userId;
-                document.getElementById("user-info").innerText = "👤 已連線: " + profile.displayName;
-
-                renderUserQRCode(currentUserId);
-
-                const urlParams = new URLSearchParams(window.location.search);
-                if (urlParams.get('page') === 'history') {
-                    fetchAndShowHistory();
-                }
-
-            } catch (err) {
-                console.error("LIFF 初始化失敗:", err);
-                document.getElementById("user-info").innerText = "⚠️️ 請由 LINE App 內開啟此頁面";
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: 'rgba(15, 23, 42, 0.9)', // 暗色質感 Tooltip
+          titleFont: { size: 12, weight: 'bold' },
+          bodyFont: { size: 12 },
+          padding: 12,
+          cornerRadius: 8,
+          displayColors: false,
+          callbacks: {
+            title: (items) => `📅 時間：${items[0].label}`,
+            label: (context) => {
+              const rawItem = sortedData[context.dataIndex];
+              const lightEmoji = rawItem.health_light === 'RED' ? '🔴' : (rawItem.health_light === 'YELLOW' ? '🟡' : '🟢');
+              return [
+                `${lightEmoji} 燈號狀態：${rawItem.health_light || 'NORMAL'}`,
+                `❤ 心率數值：${rawItem.heart_rate} BPM`,
+                `⚡ 壓力指數：${rawItem.stress_score ?? '--'} / 100`
+              ];
             }
+          }
         }
+      }
+    }
+  });
+}
 
-        // 2. 初始化 MediaPipe Face Mesh
-        function initFaceMesh() {
-            faceMesh = new FaceMesh({
-                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
-            });
+    // 按下 ESC 鍵自動關閉彈窗
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closePatientModal();
+    });
 
-            faceMesh.setOptions({
-                maxNumFaces: 1,
-                refineLandmarks: true,
-                minDetectionConfidence: 0.5,
-                minTrackingConfidence: 0.5
-            });
-
-            faceMesh.onResults(onFaceMeshResults);
-
-            cameraInstance = new Camera(videoElement, {
-                onFrame: async () => {
-                    if (videoElement.readyState >= 2) {
-                        await faceMesh.send({ image: videoElement });
-                    }
-                },
-                width: 640,
-                height: 640
-            });
-            try {
-                cameraInstance.start();
-            } catch (err) {
-                console.error("相機啟動失敗:", err);
-                document.getElementById("status-text").innerText = "❌ 無法啟動相機，請確認已允許瀏覽器使用相機，並使用 HTTPS。";
-            }
-        }
-
-        // 3. 處理每影格人臉偵測與綠光擷取
-        function onFaceMeshResults(results) {
-            canvasCtx.save();
-            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-            
-            if (results.image) {
-                canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
-            }
-
-            if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
-                const landmarks = results.multiFaceLandmarks[0];
-                const foreheadPt = landmarks[10]; // 額頭特徵點
-                
-                const x = Math.floor(foreheadPt.x * canvasElement.width);
-                const y = Math.floor(foreheadPt.y * canvasElement.height);
-
-                canvasCtx.fillStyle = "#1DB446";
-                canvasCtx.beginPath();
-                canvasCtx.arc(x, y, 6, 0, 2 * Math.PI);
-                canvasCtx.fill();
-
-                // 防護：必須是啟動狀態且數量未滿
-                if (isMeasuring && collectedGreenSignals.length < TOTAL_FRAMES) {
-                    const now = performance.now();
-                    const roiSize = 20;
-                    const startX = Math.max(0, Math.min(canvasElement.width - roiSize, x - Math.floor(roiSize / 2)));
-                    const startY = Math.max(0, Math.min(canvasElement.height - roiSize, y - Math.floor(roiSize / 2)));
-
-                    const imgData = canvasCtx.getImageData(startX, startY, roiSize, roiSize);
-
-                    let sumG = 0, sumR = 0;
-                    const totalPixels = imgData.data.length / 4;
-
-                    for (let i = 0; i < imgData.data.length; i += 4) {
-                        sumR += imgData.data[i];    // Red
-                        sumG += imgData.data[i + 1]; // Green
-                    }
-
-                    collectedGreenSignals.push(sumG / totalPixels);
-                    collectedRedSignals.push(sumR / totalPixels);
-                    collectedTimestamps.push(now);
-                    lastSampleTime = now;
-
-                    const currentCount = collectedGreenSignals.length;
-                    const progress = (currentCount / TOTAL_FRAMES) * 100;
-                    document.getElementById("progress-bar").style.width = progress + "%";
-                    document.getElementById("status-text").innerText = `⏳ 正在即時擷取綠光訊號 (${currentCount}/${TOTAL_FRAMES})... 請保持靜止`;
-
-                    // 達到指定幀數時，立即設定開關為 false 並觸發後端分析
-                    if (currentCount >= TOTAL_FRAMES) {
-                        isMeasuring = false;
-                        processRppgAnalysis();
-                    }
-                }
-            } else if (isMeasuring) {
-                document.getElementById("status-text").innerText = "⚠️ 請面向螢幕並保持額頭未被遮擋！";
-            }
-            canvasCtx.restore();
-        }
-
-        window.onload = function() {
-            initLiff();
-            initFaceMesh();
-        };
-
-        // 4. 開始量測按鈕觸發
-        function startMeasurement() {
-            if (!currentUserId) {
-                alert("未檢測到 LINE 帳號身份！請由 LINE 聊天室開啟。");
-                if (liff.isLoggedIn()) {
-                    liff.getProfile().then(p => {
-                        currentUserId = p.userId;
-                        renderUserQRCode(currentUserId);
-                    });
-                } else {
-                    liff.login();
-                    return;
-                }
-            }
-
-            // 重置與鎖定介面狀態
-            isMeasuring = false;
-            document.getElementById("start-btn").disabled = true;
-            document.getElementById("report-card").style.display = "none";
-            document.getElementById("progress-container").style.display = "block";
-            document.getElementById("progress-bar").style.width = "0%";
-            document.getElementById("status-text").innerText = "⏳ 準備中，請對準視訊畫面並保持靜止...";
-
-            // 緩衝 300ms 確保之前的幀處理完畢後才清空陣列並開啟測量
-            setTimeout(() => {
-                collectedGreenSignals = [];
-                collectedRedSignals = [];
-                collectedTimestamps = [];
-                measurementStartTime = performance.now();
-                lastSampleTime = measurementStartTime;
-                isMeasuring = true;
-            }, 300);
-        }
-
-        // 5. 傳送真實擷取訊號至後端（已加入前端防呆檢查，避免因未收集滿而送出極少點數）
-        async function processRppgAnalysis() {
-            // 防呆檢查：至少 150 個有效臉部 ROI 取樣點，約 5 秒以上。
-            if (collectedGreenSignals.length < MIN_FRAMES) {
-                document.getElementById("status-text").innerText = `❌ 有效採樣不足（${collectedGreenSignals.length}/${MIN_FRAMES}），請保持臉部穩定並重新量測。`;
-                document.getElementById("progress-container").style.display = "none";
-                document.getElementById("start-btn").disabled = false;
-                isMeasuring = false;
-                return;
-            }
-
-            // 依照實際第一筆到最後一筆的時間估算取樣率，不再硬編碼 30 FPS。
-            const durationSec = collectedTimestamps.length >= 2
-                ? (collectedTimestamps[collectedTimestamps.length - 1] - collectedTimestamps[0]) / 1000
-                : 0;
-            const estimatedFps = durationSec > 0
-                ? Math.min(60, Math.max(10, (collectedTimestamps.length - 1) / durationSec))
-                : 30;
-
-            document.getElementById("status-text").innerText = `🔄 訊號擷取完成（${collectedGreenSignals.length} 點 / ${estimatedFps.toFixed(1)} FPS），正在進行演算法分析...`;
-            document.getElementById("progress-container").style.display = "none";
-
-            const payload = {
-                user_line_id: currentUserId,
-                rgb_signals: [collectedRedSignals, collectedGreenSignals],
-                fps: Number(estimatedFps.toFixed(2))
-            };
-
-            try {
-                const response = await fetch("/api/v1/analyze-rppg", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(payload)
-                });
-
-                const result = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
-                if (response.ok && result.status === "success" && result.data) {
-                    const data = result.data;
-                    document.getElementById("status-text").innerText = "✅ 真實生理量測完成！報告已發送至 LINE。";
-
-                    const reportCard = document.getElementById("report-card");
-                    reportCard.className = "report-card " + (data.health_light === "RED" ? "red" : (data.health_light === "YELLOW" ? "yellow" : ""));
-                    document.getElementById("report-title").innerText = (data.health_light === "RED" ? "🔴" : (data.health_light === "YELLOW" ? "🟡" : "🟢")) + " 生理量測結果";
-                    document.getElementById("report-metrics").innerText = `❤️ 心率：${data.heart_rate} BPM | 📊 壓力指數：${data.stress_score} / 100`;
-                    document.getElementById("report-summary").innerText = "📝 檢測摘要：\n" + data.summary;
-                    document.getElementById("report-advice").innerText = "💡 處置建議：\n" + data.action_advice;
-                    reportCard.style.display = "block";
-                } else {
-                    document.getElementById("status-text").innerText = "❌ 分析失敗: " + (result.detail || result.message || JSON.stringify(result));
-                }
-            } catch (err) {
-                console.error("API 請求錯誤:", err);
-                document.getElementById("status-text").innerText = "⚠️ 網路傳送失敗，請重試。";
-            } finally {
-                document.getElementById("start-btn").disabled = false;
-            }
-        }
-
-        // 跨瀏覽器相容日期格式化解析
-        function parseDateString(dateStr) {
-            if (!dateStr) return "未知";
-            const formattedStr = dateStr.replace(/-/g, "/").replace("T", " ");
-            const d = new Date(formattedStr);
-            if (isNaN(d.getTime())) return "未知";
-            const month = d.getMonth() + 1;
-            const date = d.getDate();
-            const hours = String(d.getHours()).padStart(2, '0');
-            const minutes = String(d.getMinutes()).padStart(2, '0');
-            return `${month}/${date} ${hours}:${minutes}`;
-        }
-
-        // 6. 繪製心率歷史趨勢圖 (相容 Chart.js v4)
-        function renderHeartRateChart(historyData) {
-            const ctx = document.getElementById('heartRateChart').getContext('2d');
-            
-            const sortedData = [...historyData].reverse();
-            const labels = sortedData.map(item => parseDateString(item.created_at));
-            const heartRates = sortedData.map(item => item.heart_rate);
-
-            if (historyChartInstance) {
-                historyChartInstance.destroy();
-            }
-
-            historyChartInstance = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: labels,
-                    datasets: [{
-                        label: '心率 (BPM)',
-                        data: heartRates,
-                        borderColor: '#1DB446',
-                        backgroundColor: 'rgba(29, 180, 70, 0.1)',
-                        borderWidth: 2,
-                        pointRadius: 4,
-                        pointBackgroundColor: '#166534',
-                        fill: true,
-                        tension: 0.3
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    scales: {
-                        y: {
-                            min: 40,
-                            max: 140,
-                            title: { display: true, text: 'BPM' }
-                        },
-                        x: {
-                            ticks: { maxRotation: 45, font: { size: 10 } }
-                        }
-                    },
-                    plugins: {
-                        legend: { display: false }
-                    }
-                }
-            });
-        }
-
-        // 7. 載入並顯示歷史紀錄
-        async function fetchAndShowHistory() {
-            const modal = document.getElementById("history-modal");
-            const historyList = document.getElementById("history-list");
-            modal.style.display = "block";
-            historyList.innerHTML = "<p style='text-align:center; color:#888;'>載入歷史紀錄中...</p>";
-
-            if (!currentUserId) {
-                historyList.innerHTML = "<p style='text-align:center; color:#e11d48;'>尚未取得使用者身份，請重新從 LINE 開啟。</p>";
-                return;
-            }
-
-            try {
-                const res = await fetch(`/api/v1/user/history/${currentUserId}`);
-                const data = await res.json();
-
-                if (data.status === "success" && data.history && data.history.length > 0) {
-                    renderHeartRateChart(data.history);
-
-                    historyList.innerHTML = "";
-                    data.history.forEach(item => {
-                        const lightIcon = item.health_light === "RED" ? "🔴" : (item.health_light === "YELLOW" ? "🟡" : "🟢");
-                        const dateStr = parseDateString(item.created_at);
-                        
-                        const div = document.createElement("div");
-                        div.className = "history-item";
-                        div.innerHTML = `
-                            <div class="history-date">📅 ${dateStr}</div>
-                            <div class="history-body">
-                                ${lightIcon} 心率: ${item.heart_rate} BPM | 壓力: ${item.stress_score} / 100
-                            </div>
-                            <div style="font-size:12px; color:#555; margin-top:4px;">${item.summary || ''}</div>
-                        `;
-                        historyList.appendChild(div);
-                    });
-                } else {
-                    historyList.innerHTML = "<p style='text-align:center; color:#888;'>尚無歷史量測紀錄。</p>";
-                    if (historyChartInstance) {
-                        historyChartInstance.destroy();
-                    }
-                }
-            } catch (err) {
-                console.error("取得歷史紀錄失敗:", err);
-                historyList.innerHTML = "<p style='text-align:center; color:#e11d48;'>讀取歷史紀錄失敗，請檢查網路連線。</p>";
-            }
-        }
-
-        function closeHistoryModal() {
-            document.getElementById("history-modal").style.display = "none";
-        }
-
-        function handleModalOutsideClick(event) {
-            if (event.target.id === "history-modal") {
-                closeHistoryModal();
-            }
-        }
-    </script>
+    // 初始化載入
+    window.onload = () => {
+      fetchAlerts();
+      fetchRecentRecords();
+    };
+  </script>
 </body>
 </html>

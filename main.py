@@ -352,103 +352,33 @@ def butter_bandpass_filter(data, lowcut=0.75, highcut=2.5, fs=30.0, order=2):
     b, a = butter(order, [low, high], btype='band')
     return filtfilt(b, a, data)
 
-def extract_green_signal(rgb_signals: Any) -> List[float]:
-    """
-    將前端傳入的 RGB 訊號統一轉成一維 Green channel。
-
-    支援以下常見格式：
-      [R, G]             -> [2, N]，取第 2 列 G
-      [R, G, B]          -> [3, N]，取第 2 列 G
-      [[R,G], ...]       -> [N, 2]，取第 2 欄 G
-      [[R,G,B], ...]     -> [N, 3]，取第 2 欄 G
-      [G, G, G, ...]     -> [N]，直接使用
-    """
-    try:
-        raw = np.asarray(rgb_signals, dtype=np.float64)
-    except Exception as exc:
-        raise ValueError(f"rgb_signals 無法轉換成數值陣列：{exc}")
-
-    raw = np.squeeze(raw)
-
-    if raw.size == 0:
-        raise ValueError("rgb_signals 為空")
-
-    if raw.ndim == 1:
-        green = raw
-    elif raw.ndim == 2:
-        rows, cols = raw.shape
-
-        # 前端目前使用 [redArray, greenArray] / [red, green, blue]
-        # 這類格式是 [channel, frame]，必須優先判斷，否則 [2,N]
-        # 會被誤判成 [N,2]，最後只剩 2 個數值。
-        if rows in (2, 3) and cols >= 5:
-            green = raw[1, :]
-        # [frame, channel]，例如 [[R,G], [R,G], ...]
-        elif cols in (2, 3) and rows >= 5:
-            green = raw[:, 1]
-        else:
-            raise ValueError(
-                f"不支援的 rgb_signals 二維格式 shape={raw.shape}；"
-                "請使用 [R,G]、[R,G,B] 或逐幀 [[R,G], ...] 格式"
-            )
-    else:
-        raise ValueError(f"不支援的 rgb_signals 維度：ndim={raw.ndim}, shape={raw.shape}")
-
-    green = np.asarray(green, dtype=np.float64)
-    green = green[np.isfinite(green)]
-
-    if green.size < 5:
-        raise ValueError(f"有效 Green 訊號只有 {green.size} 點")
-
-    return green.tolist()
-
-def calculate_rppg_metrics(green_signal: List[float], fps: float = 30.0):
-    """計算 rPPG 心率與估計 SDNN。此結果僅供健康管理原型使用。"""
-    fps = float(np.clip(fps, 10.0, 60.0))
-    signal_arr = np.asarray(green_signal, dtype=float)
-    signal_arr = signal_arr[np.isfinite(signal_arr)]
-
-    if len(signal_arr) < 30:
-        raise ValueError("有效 rPPG 訊號不足，至少需要 30 個取樣點")
-
+def calculate_rppg_metrics(green_signal: List[float], fps: int = 30):
+    signal_arr = np.array(green_signal, dtype=float)
     detrended = signal_arr - np.mean(signal_arr)
 
     try:
         filtered = butter_bandpass_filter(detrended, lowcut=0.75, highcut=2.5, fs=fps)
-    except Exception as exc:
-        print(f"[rPPG Filter Warning] band-pass filter 失敗，改用去平均訊號：{exc}")
+    except Exception:
         filtered = detrended
 
-    # Zero-padding 只增加 FFT 頻率網格密度，不改變實際訊號時間尺度。
-    n_fft = max(1024, 2 ** int(math.ceil(math.log2(max(len(filtered), 1)))))
-    fft_vals = np.abs(np.fft.rfft(filtered, n=n_fft))
-    freqs = np.fft.rfftfreq(n_fft, 1.0 / fps)
+    fft_vals = np.abs(np.fft.rfft(filtered))
+    freqs = np.fft.rfftfreq(len(filtered), 1.0 / fps)
     valid_idx = np.where((freqs >= 0.75) & (freqs <= 2.5))[0]
-
+    
     if len(valid_idx) > 0:
         fft_hr = int(round(freqs[valid_idx[np.argmax(fft_vals[valid_idx])]] * 60))
-        fft_hr = int(np.clip(fft_hr, 45, 160))
     else:
         fft_hr = 75
 
-    signal_std = float(np.std(filtered))
-    prominence = max(signal_std * 0.3, 1e-8)
     min_dist = max(int(fps * 60 / 160), 1)
-    peaks, _ = find_peaks(filtered, distance=min_dist, prominence=prominence)
+    peaks, _ = find_peaks(filtered, distance=min_dist, prominence=np.std(filtered) * 0.3)
 
     if len(peaks) >= 3:
         rr_intervals = np.diff(peaks) / fps * 1000.0
-        # 排除明顯不合理的 RR 間隔，避免單一誤偵測嚴重扭曲 SDNN。
-        rr_intervals = rr_intervals[(rr_intervals >= 375.0) & (rr_intervals <= 1333.0)]
-
-        if len(rr_intervals) >= 2:
-            sdnn = float(np.std(rr_intervals))
-            mean_rr = float(np.mean(rr_intervals))
-            peak_hr = int(round(60000.0 / mean_rr)) if mean_rr > 0 else fft_hr
-            hr = int(np.clip(peak_hr, 45, 160))
-        else:
-            hr = fft_hr
-            sdnn = 38.5
+        sdnn = float(np.std(rr_intervals))
+        mean_rr = np.mean(rr_intervals)
+        peak_hr = int(round(60000.0 / mean_rr)) if mean_rr > 0 else fft_hr
+        hr = int(np.clip(peak_hr, 45, 160))
     else:
         hr = fft_hr
         sdnn = 38.5
@@ -683,7 +613,7 @@ class AnalyzeRequest(BaseModel):
     user_line_id: str
     id_token: Optional[str] = None
     rgb_signals: Any  # 使用 Any 提升對前端陣列格式變化的相容度
-    fps: float = Field(default=30.0, ge=10.0, le=60.0)
+    fps: int = 30
 
 class ConsentRequest(BaseModel):
     user_line_id: str
@@ -780,30 +710,45 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
 
         if not is_mock:
             # 1. 解析與提取 Green Channel 訊號
-            try:
-                green_signal = extract_green_signal(req.rgb_signals)
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc))
+            raw_signal = np.array(req.rgb_signals, dtype=float)
 
-            print(
-                f"[rPPG Debug] 收到來自 {req.user_line_id} 的 Green 訊號點數: "
-                f"{len(green_signal)}, frontend FPS={req.fps:.2f}"
-            )
+            # 多層嵌套降維處理（應對 [[[r,g,b]...]] 結構）
+            while raw_signal.ndim > 2 and raw_signal.shape[0] == 1:
+                raw_signal = raw_signal[0]
 
-            if len(green_signal) < 90:
+            if raw_signal.size == 0:
+                raise HTTPException(status_code=400, detail="傳入的生理訊號數據為空，請重新進行量測")
+
+            if raw_signal.ndim == 2:
+                if raw_signal.shape[0] == 3 and raw_signal.shape[1] > 3:
+                    green_signal = raw_signal[1].tolist()  # [3, N] 格式：取第 1 列為 G
+                elif raw_signal.shape[1] >= 2:
+                    green_signal = raw_signal[:, 1].tolist()  # [N, 3] 格式：取第 2 欄為 G
+                else:
+                    green_signal = raw_signal[:, 0].tolist()
+            elif raw_signal.ndim == 1:
+                green_signal = raw_signal.tolist()
+            else:
+                green_signal = raw_signal.flatten().tolist()
+
+            # 記錄 Debug Log 於 Server 終端機
+            print(f"[rPPG Debug] 收到來自 {req.user_line_id} 的 Green 訊號點數: {len(green_signal)}")
+
+            # 極短保護判定（若少於 5 個數據點，代表鏡頭未順利捕捉波形）
+            if len(green_signal) < 5:
                 raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"鏡頭有效採樣數據不足（僅收到 {len(green_signal)} 點），"
-                        "請讓相機保持對準臉部至少 5 秒並保持靜止後重新量測。"
-                    )
+                    status_code=400, 
+                    detail=f"鏡頭採樣數據不足（僅收到 {len(green_signal)} 幀數據），請讓相機保持對準臉部 3~5 秒後重新試試！"
                 )
 
-            # 2. 使用前端依據實際取樣時間估算的 FPS。
-            # 不再將 5~90 點人工插值到 150 點，避免扭曲時間尺度。
-            target_fps = float(np.clip(req.fps, 10.0, 60.0))
+            # 2. 自動重採樣與插值擴展：當點數介於 5~90 時，插值擴展至 150 點以確保頻域分析精確度
+            target_fps = max(req.fps, 10)
+            if len(green_signal) < 90:
+                x_orig = np.linspace(0, 1, len(green_signal))
+                x_interp = np.linspace(0, 1, 150)
+                green_signal = np.interp(x_interp, x_orig, green_signal).tolist()
 
-            # 3. 呼叫 rPPG 演算法計算動態心率 (BPM) 與估計 HRV (SDNN)
+            # 3. 呼叫物理演算法計算動態心率 (BPM) 與 HRV (SDNN)
             hr, sdnn = calculate_rppg_metrics(green_signal, fps=target_fps)
 
             # 4. 根據真實 SDNN 與 HR 動態換算壓力指數
@@ -987,6 +932,36 @@ def get_pharmacy_alerts(db: Session = Depends(get_db)):
     except Exception as e:
         return {"status": "error", "alerts": [], "message": str(e)}
 
+
+@app.get("/api/v1/pharmacy/recent")
+def get_pharmacy_recent_records(limit: int = 30, db: Session = Depends(get_db)):
+    """藥師端查看最近量測紀錄（包含 GREEN/YELLOW/RED）。"""
+    try:
+        limit = max(1, min(limit, 100))
+        records = (
+            db.query(RPPGRecord)
+            .order_by(RPPGRecord.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+        result = []
+        for r in records:
+            result.append({
+                "id": r.id,
+                "user_line_id": r.user_line_id or r.user_uuid,
+                "heart_rate": r.heart_rate,
+                "hrv_sdnn": r.hrv_sdnn,
+                "stress_score": r.stress_score,
+                "health_light": r.health_light,
+                "summary": r.summary,
+                "action_advice": r.action_advice,
+                "is_resolved": bool(r.is_resolved),
+                "created_at": r.created_at.isoformat() if r.created_at else None
+            })
+        return {"status": "success", "records": result, "total_records": len(result)}
+    except Exception as e:
+        return {"status": "error", "records": [], "total_records": 0, "message": str(e)}
+
 @app.post("/api/v1/pharmacy/resolve/{record_id}")
 def resolve_pharmacy_alert(record_id: int, db: Session = Depends(get_db)):
     """藥師端標註警示個案為已處置/已結案"""
@@ -1034,10 +1009,17 @@ def get_patient_7day_history(user_line_id: str, db: Session = Depends(get_db)):
         return {
             "status": "success",
             "user_line_id": user_line_id,
+            "total_records": len(result),
+            "history": result,
             "records": result
         }
     except Exception as e:
-        return {"status": "error", "records": [], "message": str(e)}
+        return {
+            "status": "error",
+            "history": [],
+            "records": [],
+            "message": str(e)
+        }
 
 # ----------------------------------------------------
 # 15. 本地直接執行進入點
