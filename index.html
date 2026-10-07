@@ -148,7 +148,11 @@
         let isMeasuring = false;
         let collectedGreenSignals = [];
         let collectedRedSignals = [];
+        let collectedTimestamps = [];
         const TOTAL_FRAMES = 300;
+        const MIN_FRAMES = 150;
+        let measurementStartTime = 0;
+        let lastSampleTime = 0;
 
         // 生成 LINE ID QR Code
         function renderUserQRCode(userLineId) {
@@ -229,7 +233,12 @@
                 width: 640,
                 height: 640
             });
-            cameraInstance.start();
+            try {
+                cameraInstance.start();
+            } catch (err) {
+                console.error("相機啟動失敗:", err);
+                document.getElementById("status-text").innerText = "❌ 無法啟動相機，請確認已允許瀏覽器使用相機，並使用 HTTPS。";
+            }
         }
 
         // 3. 處理每影格人臉偵測與綠光擷取
@@ -255,6 +264,7 @@
 
                 // 防護：必須是啟動狀態且數量未滿
                 if (isMeasuring && collectedGreenSignals.length < TOTAL_FRAMES) {
+                    const now = performance.now();
                     const roiSize = 20;
                     const startX = Math.max(0, Math.min(canvasElement.width - roiSize, x - Math.floor(roiSize / 2)));
                     const startY = Math.max(0, Math.min(canvasElement.height - roiSize, y - Math.floor(roiSize / 2)));
@@ -271,6 +281,8 @@
 
                     collectedGreenSignals.push(sumG / totalPixels);
                     collectedRedSignals.push(sumR / totalPixels);
+                    collectedTimestamps.push(now);
+                    lastSampleTime = now;
 
                     const currentCount = collectedGreenSignals.length;
                     const progress = (currentCount / TOTAL_FRAMES) * 100;
@@ -321,28 +333,39 @@
             setTimeout(() => {
                 collectedGreenSignals = [];
                 collectedRedSignals = [];
+                collectedTimestamps = [];
+                measurementStartTime = performance.now();
+                lastSampleTime = measurementStartTime;
                 isMeasuring = true;
             }, 300);
         }
 
         // 5. 傳送真實擷取訊號至後端（已加入前端防呆檢查，避免因未收集滿而送出極少點數）
         async function processRppgAnalysis() {
-            // 防呆檢查：若綠光點數小於 90 點，強制拒絕發送並解鎖按鈕
-            if (collectedGreenSignals.length < 90) {
-                document.getElementById("status-text").innerText = "❌ 採樣點數不足（畫面中斷或時間太短），請重新量測。";
+            // 防呆檢查：至少 150 個有效臉部 ROI 取樣點，約 5 秒以上。
+            if (collectedGreenSignals.length < MIN_FRAMES) {
+                document.getElementById("status-text").innerText = `❌ 有效採樣不足（${collectedGreenSignals.length}/${MIN_FRAMES}），請保持臉部穩定並重新量測。`;
                 document.getElementById("progress-container").style.display = "none";
                 document.getElementById("start-btn").disabled = false;
                 isMeasuring = false;
                 return;
             }
 
-            document.getElementById("status-text").innerText = "🔄 訊號擷取完成，正在進行演算法分析...";
+            // 依照實際第一筆到最後一筆的時間估算取樣率，不再硬編碼 30 FPS。
+            const durationSec = collectedTimestamps.length >= 2
+                ? (collectedTimestamps[collectedTimestamps.length - 1] - collectedTimestamps[0]) / 1000
+                : 0;
+            const estimatedFps = durationSec > 0
+                ? Math.min(60, Math.max(10, (collectedTimestamps.length - 1) / durationSec))
+                : 30;
+
+            document.getElementById("status-text").innerText = `🔄 訊號擷取完成（${collectedGreenSignals.length} 點 / ${estimatedFps.toFixed(1)} FPS），正在進行演算法分析...`;
             document.getElementById("progress-container").style.display = "none";
 
             const payload = {
                 user_line_id: currentUserId,
                 rgb_signals: [collectedRedSignals, collectedGreenSignals],
-                fps: 30
+                fps: Number(estimatedFps.toFixed(2))
             };
 
             try {
@@ -352,7 +375,7 @@
                     body: JSON.stringify(payload)
                 });
 
-                const result = await response.json();
+                const result = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
                 if (response.ok && result.status === "success" && result.data) {
                     const data = result.data;
                     document.getElementById("status-text").innerText = "✅ 真實生理量測完成！報告已發送至 LINE。";
