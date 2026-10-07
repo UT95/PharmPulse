@@ -22,116 +22,84 @@
           <p class="text-xs text-emerald-100">社區藥局生理即時追蹤與照護平台</p>
         </div>
       </div>
-      <button onclick="fetchAlerts()" class="bg-emerald-800 hover:bg-emerald-900 text-emerald-100 text-sm px-3 py-1.5 rounded-lg transition flex items-center gap-1.5">
+      <button onclick="fetchAlerts(); fetchRecentRecords()" class="bg-emerald-800 hover:bg-emerald-900 text-emerald-100 text-sm px-3 py-1.5 rounded-lg transition flex items-center gap-1.5">
         <i class="fa-solid fa-rotate-right"></i> 重新整理
       </button>
     </div>
   </header>
 
-  <main class="max-w-7xl mx-auto px-4 py-6 space-y-6">
+  <!-- Main Container -->
+  <main class="max-w-7xl mx-auto px-4 py-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
 
-    <!-- Dashboard KPI -->
-    <section class="grid grid-cols-2 lg:grid-cols-4 gap-3">
-      <div class="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
-        <p class="text-xs text-slate-500">待處理警示</p>
-        <p id="kpi-pending" class="text-2xl font-bold text-slate-800 mt-1">--</p>
-        <p class="text-[11px] text-slate-400 mt-1">RED + YELLOW</p>
+    <!-- Left Column: Pending Alerts (2 cols on large screen) -->
+    <section class="lg:col-span-2 space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-200 pb-3">
+        <div class="flex items-center gap-2">
+          <span class="w-3 h-3 rounded-full bg-red-500 animate-pulse"></span>
+          <h2 class="text-lg font-bold text-slate-800">待處置紅/黃燈警示個案</h2>
+        </div>
+        <span id="alert-count" class="bg-slate-200 text-slate-700 text-xs font-semibold px-2.5 py-0.5 rounded-full">載入中...</span>
       </div>
-      <div class="bg-white rounded-xl border border-red-100 p-4 shadow-sm">
-        <p class="text-xs text-slate-500">RED 高度警示</p>
-        <p id="kpi-red" class="text-2xl font-bold text-red-600 mt-1">--</p>
-        <p class="text-[11px] text-slate-400 mt-1">需優先關懷</p>
+
+      <!-- Alert Cards Container -->
+      <div id="alerts-container" class="space-y-4">
+        <div class="text-center py-12 text-slate-400 bg-white rounded-xl shadow-sm border border-slate-100">
+          <i class="fa-solid fa-spinner fa-spin text-2xl mb-2 text-emerald-600"></i>
+          <p>正在載入緊急關懷卡片...</p>
+        </div>
       </div>
-      <div class="bg-white rounded-xl border border-amber-100 p-4 shadow-sm">
-        <p class="text-xs text-slate-500">YELLOW 輕度風險</p>
-        <p id="kpi-yellow" class="text-2xl font-bold text-amber-600 mt-1">--</p>
-        <p class="text-[11px] text-slate-400 mt-1">建議持續追蹤</p>
-      </div>
-      <div class="bg-white rounded-xl border border-emerald-100 p-4 shadow-sm">
-        <p class="text-xs text-slate-500">本頁已處置</p>
-        <p id="kpi-resolved" class="text-2xl font-bold text-emerald-600 mt-1">--</p>
-        <p class="text-[11px] text-slate-400 mt-1">本次頁面操作</p>
+
+      <div class="pt-4">
+        <div class="flex items-center justify-between border-b border-slate-200 pb-3 mb-3">
+          <div class="flex items-center gap-2">
+            <i class="fa-solid fa-clock-rotate-left text-emerald-600"></i>
+            <h2 class="text-lg font-bold text-slate-800">最近居家量測紀錄</h2>
+          </div>
+          <span id="recent-count" class="bg-slate-200 text-slate-700 text-xs font-semibold px-2.5 py-0.5 rounded-full">載入中...</span>
+        </div>
+        <div id="recent-records-container" class="space-y-3">
+          <div class="text-center py-8 text-slate-400 bg-white rounded-xl shadow-sm border border-slate-100">
+            <i class="fa-solid fa-spinner fa-spin text-xl mb-2 text-emerald-600"></i>
+            <p>正在載入最近量測紀錄...</p>
+          </div>
+        </div>
       </div>
     </section>
 
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <!-- Right Column: Patient Lookup Trigger -->
+    <section class="space-y-4">
+      <div class="border-b border-slate-200 pb-3">
+        <h2 class="text-lg font-bold text-slate-800 flex items-center gap-2">
+          <i class="fa-solid fa-qrcode text-emerald-600"></i> 掃碼 / 查詢民眾 7 天紀錄
+        </h2>
+      </div>
 
-      <!-- Left Column -->
-      <section class="lg:col-span-2 space-y-4">
-        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-3">
-          <div class="flex items-center gap-2">
-            <span class="w-3 h-3 rounded-full bg-red-500 animate-pulse"></span>
-            <h2 class="text-lg font-bold text-slate-800">待處置紅/黃燈警示個案</h2>
-            <span id="alert-count" class="bg-slate-200 text-slate-700 text-xs font-semibold px-2.5 py-0.5 rounded-full">載入中...</span>
-          </div>
-          <div class="flex items-center gap-2">
-            <button onclick="setAlertFilter('ALL')" data-filter="ALL" class="filter-btn bg-slate-800 text-white text-xs px-3 py-1.5 rounded-lg">全部</button>
-            <button onclick="setAlertFilter('RED')" data-filter="RED" class="filter-btn bg-white border border-slate-200 text-slate-600 text-xs px-3 py-1.5 rounded-lg">RED</button>
-            <button onclick="setAlertFilter('YELLOW')" data-filter="YELLOW" class="filter-btn bg-white border border-slate-200 text-slate-600 text-xs px-3 py-1.5 rounded-lg">YELLOW</button>
-          </div>
-        </div>
-
-        <div class="bg-white border border-slate-200 rounded-xl p-3 shadow-sm">
-          <div class="relative">
-            <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i>
-            <input id="alert-search" oninput="renderAlerts()" type="text"
-                   placeholder="搜尋 LINE User ID / 摘要 / 建議..."
-                   class="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500">
+      <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-200 space-y-4">
+        <div>
+          <label class="block text-xs font-semibold text-slate-600 mb-1">民眾 LINE User ID (或掃描 QR Code)</label>
+          <div class="flex gap-2">
+            <input type="text" id="lookup-line-id" placeholder="例如：U1234567890..." 
+                   class="flex-1 px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500">
+            <button id="search-btn" onclick="fetchPatientHistory()" class="bg-emerald-600 hover:bg-emerald-700 text-white text-sm px-4 py-2 rounded-lg font-medium transition flex items-center gap-1.5">
+              <i class="fa-solid fa-magnifying-glass"></i> 查詢
+            </button>
           </div>
         </div>
 
-        <div id="alerts-container" class="space-y-4">
-          <div class="text-center py-12 text-slate-400 bg-white rounded-xl shadow-sm border border-slate-100">
-            <i class="fa-solid fa-spinner fa-spin text-2xl mb-2 text-emerald-600"></i>
-            <p>正在載入緊急關懷卡片...</p>
-          </div>
+        <div class="p-4 bg-emerald-50 border border-emerald-100 rounded-lg text-xs text-emerald-800 space-y-1">
+          <p class="font-bold flex items-center gap-1"><i class="fa-solid fa-circle-info"></i> 操作提示：</p>
+          <p>輸入或掃描民眾 ID 後，系統將會彈出<strong>專屬健康分析畫面</strong>，即時顯示 7 天心率與壓力變化趨勢圖。</p>
         </div>
-      </section>
+      </div>
+    </section>
 
-      <!-- Right Column -->
-      <section class="space-y-4">
-        <div class="border-b border-slate-200 pb-3">
-          <h2 class="text-lg font-bold text-slate-800 flex items-center gap-2">
-            <i class="fa-solid fa-qrcode text-emerald-600"></i> 掃碼 / 查詢民眾紀錄
-          </h2>
-        </div>
-
-        <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-200 space-y-4">
-          <div>
-            <label class="block text-xs font-semibold text-slate-600 mb-1">民眾 LINE User ID</label>
-            <div class="flex gap-2">
-              <input type="text" id="lookup-line-id" placeholder="例如：U1234567890..."
-                     class="flex-1 px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500">
-              <button id="search-btn" onclick="fetchPatientHistory()" class="bg-emerald-600 hover:bg-emerald-700 text-white text-sm px-4 py-2 rounded-lg font-medium transition flex items-center gap-1.5">
-                <i class="fa-solid fa-magnifying-glass"></i> 查詢
-              </button>
-            </div>
-          </div>
-
-          <div class="p-4 bg-emerald-50 border border-emerald-100 rounded-lg text-xs text-emerald-800 space-y-1">
-            <p class="font-bold flex items-center gap-1"><i class="fa-solid fa-circle-info"></i> 操作提示</p>
-            <p>查詢後可查看 7 天心率、HRV、壓力趨勢，以及異常次數與最近一次藥師關懷紀錄。</p>
-          </div>
-        </div>
-
-        <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
-          <h3 class="font-bold text-sm text-slate-800 mb-3 flex items-center gap-2">
-            <i class="fa-solid fa-clipboard-check text-emerald-600"></i> 藥師關懷工作流程
-          </h3>
-          <ol class="text-xs text-slate-600 space-y-2">
-            <li><span class="inline-flex w-5 h-5 rounded-full bg-red-100 text-red-700 items-center justify-center mr-2 font-bold">1</span>查看 RED / YELLOW 警示</li>
-            <li><span class="inline-flex w-5 h-5 rounded-full bg-amber-100 text-amber-700 items-center justify-center mr-2 font-bold">2</span>查看 7 天趨勢與異常次數</li>
-            <li><span class="inline-flex w-5 h-5 rounded-full bg-blue-100 text-blue-700 items-center justify-center mr-2 font-bold">3</span>量測血壓並記錄</li>
-            <li><span class="inline-flex w-5 h-5 rounded-full bg-emerald-100 text-emerald-700 items-center justify-center mr-2 font-bold">4</span>完成藥師關懷與後續追蹤</li>
-          </ol>
-        </div>
-      </section>
-    </div>
   </main>
 
-  <!-- Patient Detail Modal -->
-  <div id="patient-detail-modal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
-    <div class="bg-white rounded-2xl shadow-2xl max-w-5xl w-full max-h-[92vh] flex flex-col overflow-hidden border border-slate-100">
+  <!-- 🎯 獨立大畫面彈窗 (Patient Detail Modal) -->
+  <div id="patient-detail-modal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4 transition-opacity">
+    <div class="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] flex flex-col overflow-hidden border border-slate-100">
+      
+      <!-- Modal Header -->
       <div class="bg-emerald-700 text-white px-6 py-4 flex justify-between items-center">
         <div>
           <h3 class="text-lg font-bold flex items-center gap-2">
@@ -139,154 +107,55 @@
           </h3>
           <p class="text-xs text-emerald-100 mt-0.5">個案 ID: <span id="modal-patient-id" class="font-mono font-bold">---</span></p>
         </div>
-        <button onclick="closePatientModal()" class="text-emerald-100 hover:text-white hover:bg-emerald-800/50 w-8 h-8 rounded-full flex items-center justify-center">
+        <button onclick="closePatientModal()" class="text-emerald-100 hover:text-white hover:bg-emerald-800/50 w-8 h-8 rounded-full flex items-center justify-center transition">
           <i class="fa-solid fa-xmark text-xl"></i>
         </button>
       </div>
 
-      <div class="p-6 overflow-y-auto space-y-5 flex-1 bg-slate-50/50">
-
-        <!-- Summary cards -->
-        <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <div class="bg-white border border-slate-200 rounded-xl p-3">
-            <p class="text-[11px] text-slate-500">7 天紀錄</p>
-            <p id="patient-record-count" class="text-xl font-bold mt-1">--</p>
-          </div>
-          <div class="bg-white border border-red-100 rounded-xl p-3">
-            <p class="text-[11px] text-slate-500">RED 次數</p>
-            <p id="patient-red-count" class="text-xl font-bold text-red-600 mt-1">--</p>
-          </div>
-          <div class="bg-white border border-amber-100 rounded-xl p-3">
-            <p class="text-[11px] text-slate-500">YELLOW 次數</p>
-            <p id="patient-yellow-count" class="text-xl font-bold text-amber-600 mt-1">--</p>
-          </div>
-          <div class="bg-white border border-slate-200 rounded-xl p-3">
-            <p class="text-[11px] text-slate-500">最近一次</p>
-            <p id="patient-latest-status" class="text-xl font-bold mt-1">--</p>
-          </div>
-        </div>
-
-        <!-- Metric tabs -->
-        <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-          <div class="flex flex-wrap gap-2 mb-4">
-            <button onclick="setMetric('heart_rate')" data-metric="heart_rate" class="metric-btn bg-emerald-600 text-white px-3 py-1.5 rounded-lg text-xs font-semibold">心率 HR</button>
-            <button onclick="setMetric('hrv_sdnn')" data-metric="hrv_sdnn" class="metric-btn bg-slate-100 text-slate-600 px-3 py-1.5 rounded-lg text-xs font-semibold">HRV SDNN</button>
-            <button onclick="setMetric('stress_score')" data-metric="stress_score" class="metric-btn bg-slate-100 text-slate-600 px-3 py-1.5 rounded-lg text-xs font-semibold">壓力 Stress</button>
-          </div>
-          <div class="flex justify-between items-center mb-2">
-            <h4 id="chart-title" class="font-bold text-sm text-slate-800">7 天心率趨勢 (BPM)</h4>
+      <!-- Modal Body (可滾動區域) -->
+      <div class="p-6 overflow-y-auto space-y-6 flex-1 bg-slate-50/50">
+        
+        <!-- 上半部：7 天心率趨勢圖 -->
+        <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3">
+          <div class="flex justify-between items-center">
+            <h4 class="font-bold text-slate-800 text-sm flex items-center gap-2">
+              <i class="fa-solid fa-heart-pulse text-red-500"></i> 7 天心率趨勢變化 (BPM)
+            </h4>
             <span id="modal-total-records" class="text-xs bg-emerald-100 text-emerald-800 font-semibold px-2.5 py-0.5 rounded-full">載入中...</span>
           </div>
-          <div class="relative w-full h-64">
-            <canvas id="modalTrendChart"></canvas>
+          
+          <!-- Chart Container (高度固定 240px) -->
+          <div class="relative w-full h-60">
+            <canvas id="modalHeartRateChart"></canvas>
           </div>
         </div>
 
-        <!-- Intervention summary -->
-        <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
-          <div class="flex justify-between items-center mb-3">
-            <h4 class="font-bold text-sm flex items-center gap-2">
-              <i class="fa-solid fa-user-doctor text-emerald-600"></i> 最近藥師關懷紀錄
-            </h4>
-            <button id="modal-intervention-btn" onclick="openInterventionModal()" class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs px-3 py-2 rounded-lg">
-              <i class="fa-solid fa-clipboard-check"></i> 新增關懷紀錄
-            </button>
-          </div>
-          <div id="latest-intervention" class="text-xs text-slate-500 bg-slate-50 rounded-lg p-3">
-            尚無本瀏覽器儲存的關懷紀錄。
-          </div>
-        </div>
-
-        <!-- Detailed history -->
+        <!-- 下半部：詳細歷史紀錄明細 -->
         <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3">
           <h4 class="font-bold text-slate-800 text-sm flex items-center gap-2">
             <i class="fa-solid fa-clock-rotate-left text-emerald-600"></i> 詳細檢測歷史紀錄
           </h4>
-          <div id="modal-history-list" class="space-y-2.5"></div>
+          <div id="modal-history-list" class="space-y-2.5">
+            <!-- 歷史紀錄項目將在此動態生成 -->
+          </div>
         </div>
+
       </div>
 
+      <!-- Modal Footer -->
       <div class="bg-slate-100 border-t border-slate-200 px-6 py-3 flex justify-end">
-        <button onclick="closePatientModal()" class="bg-slate-700 hover:bg-slate-800 text-white text-xs px-5 py-2 rounded-lg font-medium">關閉視窗</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Pharmacist Intervention Modal -->
-  <div id="intervention-modal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[60] hidden items-center justify-center p-4">
-    <div class="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[92vh] overflow-y-auto">
-      <div class="bg-emerald-700 text-white px-6 py-4 flex justify-between items-center">
-        <div>
-          <h3 class="font-bold flex items-center gap-2"><i class="fa-solid fa-clipboard-check"></i> 藥師關懷紀錄</h3>
-          <p id="intervention-patient-label" class="text-xs text-emerald-100 mt-1">---</p>
-        </div>
-        <button onclick="closeInterventionModal()" class="w-8 h-8 rounded-full hover:bg-emerald-800 flex items-center justify-center">
-          <i class="fa-solid fa-xmark"></i>
+        <button onclick="closePatientModal()" class="bg-slate-700 hover:bg-slate-800 text-white text-xs px-5 py-2 rounded-lg font-medium transition">
+          關閉視窗
         </button>
       </div>
 
-      <form id="intervention-form" onsubmit="saveIntervention(event)" class="p-6 space-y-5">
-        <div>
-          <p class="text-xs font-bold text-slate-700 mb-2">本次處置項目</p>
-          <div class="grid grid-cols-2 gap-2 text-xs">
-            <label class="border rounded-lg p-3 flex gap-2 items-center"><input type="checkbox" name="actions" value="血壓量測"> 血壓量測</label>
-            <label class="border rounded-lg p-3 flex gap-2 items-center"><input type="checkbox" name="actions" value="用藥諮詢"> 用藥諮詢</label>
-            <label class="border rounded-lg p-3 flex gap-2 items-center"><input type="checkbox" name="actions" value="生活衛教"> 生活衛教</label>
-            <label class="border rounded-lg p-3 flex gap-2 items-center"><input type="checkbox" name="actions" value="持續觀察"> 持續觀察</label>
-            <label class="border rounded-lg p-3 flex gap-2 items-center"><input type="checkbox" name="actions" value="轉介就醫"> 轉介就醫</label>
-            <label class="border rounded-lg p-3 flex gap-2 items-center"><input type="checkbox" name="actions" value="聯絡追蹤"> 聯絡追蹤</label>
-          </div>
-        </div>
-
-        <div>
-          <p class="text-xs font-bold text-slate-700 mb-2">實測血壓（若有量測）</p>
-          <div class="grid grid-cols-3 gap-2">
-            <input id="bp-sys" type="number" min="50" max="300" placeholder="收縮壓 mmHg" class="px-3 py-2 text-sm border rounded-lg">
-            <input id="bp-dia" type="number" min="30" max="200" placeholder="舒張壓 mmHg" class="px-3 py-2 text-sm border rounded-lg">
-            <input id="bp-pulse" type="number" min="20" max="250" placeholder="脈搏 BPM" class="px-3 py-2 text-sm border rounded-lg">
-          </div>
-          <p class="text-[11px] text-slate-400 mt-1">此版本會先保存在目前瀏覽器；若要寫入資料庫，需搭配 main.py 新增 API。</p>
-        </div>
-
-        <div>
-          <label class="block text-xs font-bold text-slate-700 mb-2">藥師備註</label>
-          <textarea id="intervention-note" rows="4" placeholder="例如：已詢問近期睡眠、咖啡因與用藥情形，建議 3 天內再次量測..."
-                    class="w-full px-3 py-2 text-sm border rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-emerald-500"></textarea>
-        </div>
-
-        <div>
-          <label class="block text-xs font-bold text-slate-700 mb-2">下次追蹤日期</label>
-          <input id="followup-date" type="date" class="px-3 py-2 text-sm border rounded-lg">
-        </div>
-
-        <div class="flex justify-end gap-2 pt-2">
-          <button type="button" onclick="closeInterventionModal()" class="px-4 py-2 text-xs bg-slate-100 hover:bg-slate-200 rounded-lg">取消</button>
-          <button type="submit" class="px-5 py-2 text-xs bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-semibold">
-            儲存並標示已關懷
-          </button>
-        </div>
-      </form>
     </div>
   </div>
 
   <script>
     const API_BASE = "/api/v1";
-    let modalChartInstance = null;
-    let currentHistory = [];
-    let currentPatientId = "";
-    let currentRecordId = null;
-    let currentMetric = "heart_rate";
-    let alertData = [];
-    let alertFilter = "ALL";
-    let resolvedThisSession = 0;
 
-    const metricConfig = {
-      heart_rate: { title: "7 天心率趨勢 (BPM)", label: "心率", unit: "BPM", color: "#059669" },
-      hrv_sdnn: { title: "7 天 HRV（SDNN）趨勢 (ms)", label: "HRV SDNN", unit: "ms", color: "#2563eb" },
-      stress_score: { title: "7 天壓力指數趨勢", label: "壓力指數", unit: "/ 100", color: "#d97706" }
-    };
-
-    function escapeHTML(value) {
+    function escapeHtml(value) {
       return String(value ?? "")
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
@@ -294,92 +163,95 @@
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#039;");
     }
+    let modalChartInstance = null; // 全域圖表實例
 
-    function maskLineId(id) {
-      const s = String(id || "");
-      if (s.length <= 8) return s;
-      return s.slice(0, 4) + "••••" + s.slice(-4);
-    }
-
-    function getLocalInterventions() {
-      try { return JSON.parse(localStorage.getItem("pharmpulse_interventions") || "{}"); }
-      catch { return {}; }
-    }
-
-    function setLocalInterventions(data) {
-      localStorage.setItem("pharmpulse_interventions", JSON.stringify(data));
-    }
-
-    function getPatientInterventions(lineId) {
-      const all = getLocalInterventions();
-      return all[lineId] || [];
-    }
-
-    function updateKPI() {
-      const red = alertData.filter(x => x.health_light === "RED").length;
-      const yellow = alertData.filter(x => x.health_light === "YELLOW").length;
-      document.getElementById("kpi-pending").textContent = alertData.length;
-      document.getElementById("kpi-red").textContent = red;
-      document.getElementById("kpi-yellow").textContent = yellow;
-      document.getElementById("kpi-resolved").textContent = resolvedThisSession;
-    }
-
+    // 1. 載入待關懷警示卡片
     async function fetchAlerts() {
       const container = document.getElementById("alerts-container");
       const countBadge = document.getElementById("alert-count");
+
       try {
         const res = await fetch(`${API_BASE}/pharmacy/alerts`);
         const data = await res.json();
 
-        if (data.status !== "success") throw new Error(data.message || "載入失敗");
+        if (data.status !== "success" || !data.alerts || data.alerts.length === 0) {
+          container.innerHTML = `
+            <div class="bg-white p-8 rounded-xl shadow-sm border border-slate-200 text-center text-slate-500">
+              <i class="fa-solid fa-circle-check text-4xl text-emerald-500 mb-3"></i>
+              <p class="font-medium">目前無待處理的紅/黃燈個案</p>
+              <p class="text-xs text-slate-400 mt-1">社區居民生理狀況皆維持良好狀態</p>
+            </div>`;
+          countBadge.textContent = "0 筆待處理";
+          return;
+        }
 
-        alertData = Array.isArray(data.alerts) ? data.alerts : [];
-        countBadge.textContent = `${alertData.length} 筆待處理`;
-        updateKPI();
-        renderAlerts();
+        countBadge.textContent = `${data.alerts.length} 筆待處理`;
+        container.innerHTML = data.alerts.map(item => buildAlertCard(item)).join("");
+
       } catch (err) {
         console.error("Fetch Alerts Error:", err);
         container.innerHTML = `<div class="bg-red-50 p-4 rounded-xl text-red-600 text-sm">載入資料失敗，請確認後端服務是否正常運行。</div>`;
-        document.getElementById("alert-count").textContent = "載入失敗";
       }
     }
 
-    function setAlertFilter(filter) {
-      alertFilter = filter;
-      document.querySelectorAll(".filter-btn").forEach(btn => {
-        const active = btn.dataset.filter === filter;
-        btn.className = active
-          ? "filter-btn bg-slate-800 text-white text-xs px-3 py-1.5 rounded-lg"
-          : "filter-btn bg-white border border-slate-200 text-slate-600 text-xs px-3 py-1.5 rounded-lg";
-      });
-      renderAlerts();
-    }
 
-    function renderAlerts() {
-      const container = document.getElementById("alerts-container");
-      const search = document.getElementById("alert-search").value.trim().toLowerCase();
+    // 1A. 載入最近所有居家量測紀錄（GREEN/YELLOW/RED）
+    async function fetchRecentRecords() {
+      const container = document.getElementById("recent-records-container");
+      const badge = document.getElementById("recent-count");
 
-      const filtered = alertData.filter(item => {
-        const matchesFilter = alertFilter === "ALL" || item.health_light === alertFilter;
-        const haystack = [
-          item.user_line_id, item.summary, item.action_advice,
-          item.health_light, item.heart_rate, item.stress_score
-        ].join(" ").toLowerCase();
-        return matchesFilter && (!search || haystack.includes(search));
-      });
+      try {
+        const res = await fetch(`${API_BASE}/pharmacy/recent?limit=30`);
+        const data = await res.json();
+        if (data.status !== "success") throw new Error(data.message || "載入失敗");
 
-      if (!filtered.length) {
-        container.innerHTML = `
-          <div class="bg-white p-8 rounded-xl shadow-sm border border-slate-200 text-center text-slate-500">
-            <i class="fa-solid fa-circle-check text-4xl text-emerald-500 mb-3"></i>
-            <p class="font-medium">目前沒有符合篩選條件的警示個案</p>
-          </div>`;
-        return;
+        const records = Array.isArray(data.records) ? data.records : [];
+        badge.textContent = `${records.length} 筆`;
+
+        if (!records.length) {
+          container.innerHTML = `<div class="bg-white p-6 rounded-xl border border-slate-200 text-center text-slate-500 text-sm">目前尚無任何居家量測紀錄。</div>`;
+          return;
+        }
+
+        container.innerHTML = records.map(item => {
+          const light = item.health_light || "GREEN";
+          const meta = light === "RED"
+            ? ["🔴", "RED", "bg-red-50 border-red-200 text-red-700"]
+            : light === "YELLOW"
+              ? ["🟡", "YELLOW", "bg-amber-50 border-amber-200 text-amber-700"]
+              : ["🟢", "GREEN", "bg-emerald-50 border-emerald-200 text-emerald-700"];
+          const timeStr = item.created_at ? new Date(item.created_at).toLocaleString("zh-TW") : "未知時間";
+          const lineId = String(item.user_line_id || "");
+          return `
+            <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+              <div class="flex flex-wrap justify-between items-center gap-2 mb-2">
+                <div class="flex items-center gap-2">
+                  <span class="text-xs px-2 py-1 rounded-full border font-bold ${meta[2]}">${meta[0]} ${meta[1]}</span>
+                  <span class="font-mono text-xs text-slate-600">${escapeHtml(lineId)}</span>
+                </div>
+                <span class="text-xs text-slate-400">${timeStr}</span>
+              </div>
+              <div class="grid grid-cols-3 gap-2 bg-slate-50 p-3 rounded-lg text-sm">
+                <div><span class="text-xs text-slate-500">心率</span><p class="font-bold">${item.heart_rate ?? "--"} BPM</p></div>
+                <div><span class="text-xs text-slate-500">HRV</span><p class="font-bold">${item.hrv_sdnn ?? "--"} ms</p></div>
+                <div><span class="text-xs text-slate-500">壓力</span><p class="font-bold">${item.stress_score ?? "--"} / 100</p></div>
+              </div>
+              <p class="text-xs text-slate-500 mt-2">${escapeHtml(item.summary || "無摘要")}</p>
+              <div class="mt-3 flex justify-end">
+                <button onclick="quickLookup('${lineId.replace(/'/g, "\\'")}')" class="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs px-3 py-2 rounded-lg font-medium transition">
+                  <i class="fa-solid fa-chart-line"></i> 查看 7 天趨勢
+                </button>
+              </div>
+            </div>`;
+        }).join("");
+      } catch (err) {
+        console.error("Fetch Recent Records Error:", err);
+        container.innerHTML = `<div class="bg-red-50 p-4 rounded-xl text-red-600 text-sm">最近量測資料載入失敗：${escapeHtml(err.message || "未知錯誤")}</div>`;
+        badge.textContent = "載入失敗";
       }
-
-      container.innerHTML = filtered.map(buildAlertCard).join("");
     }
 
+    // 2. 建立卡片 HTML
     function buildAlertCard(item) {
       const isRed = item.health_light === "RED";
       const badgeBg = isRed ? "bg-red-100 text-red-700 border-red-200" : "bg-amber-100 text-amber-700 border-amber-200";
@@ -387,58 +259,77 @@
       const timeStr = item.created_at ? new Date(item.created_at).toLocaleString("zh-TW") : "剛剛";
 
       return `
-        <div class="bg-white p-5 rounded-xl shadow-sm border ${isRed ? "border-red-200" : "border-amber-200"} space-y-3 relative hover:shadow-md transition">
-          <div class="flex justify-between items-start gap-3">
+        <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-200 space-y-3 relative hover:shadow-md transition">
+          <div class="flex justify-between items-start">
             <div>
-              <span class="inline-block text-xs px-2.5 py-1 rounded-full border font-bold ${badgeBg}">${lightTitle}</span>
-              <p class="text-xs text-slate-400 mt-1">個案 ID:
-                <span class="font-mono text-slate-600" title="${escapeHTML(item.user_line_id)}">${escapeHTML(maskLineId(item.user_line_id))}</span>
-              </p>
+              <span class="inline-block text-xs px-2.5 py-1 rounded-full border font-bold ${badgeBg}">
+                ${lightTitle}
+              </span>
+              <p class="text-xs text-slate-400 mt-1">個案 ID: <span class="font-mono text-slate-600">${item.user_line_id}</span></p>
             </div>
-            <span class="text-xs text-slate-400 whitespace-nowrap">${escapeHTML(timeStr)}</span>
+            <span class="text-xs text-slate-400">${timeStr}</span>
           </div>
 
+          <!-- Metrics -->
           <div class="grid grid-cols-2 gap-3 bg-slate-50 p-3 rounded-lg text-sm">
             <div>
               <span class="text-xs text-slate-500">心率 (Heart Rate)</span>
-              <p class="font-bold text-slate-800 text-lg">${escapeHTML(item.heart_rate ?? "--")} <span class="text-xs font-normal">BPM</span></p>
+              <p class="font-bold text-slate-800 text-lg">${item.heart_rate} <span class="text-xs font-normal">BPM</span></p>
             </div>
             <div>
               <span class="text-xs text-slate-500">壓力指數 (Stress)</span>
-              <p class="font-bold text-slate-800 text-lg">${escapeHTML(item.stress_score ?? "--")} <span class="text-xs font-normal">/ 100</span></p>
+              <p class="font-bold text-slate-800 text-lg">${item.stress_score} <span class="text-xs font-normal">/ 100</span></p>
             </div>
           </div>
 
+          <!-- Summary & Advice -->
           <div class="text-xs text-slate-600 space-y-1">
-            <p><strong class="text-slate-700">檢測摘要：</strong>${escapeHTML(item.summary || "無摘要")}</p>
+            <p><strong class="text-slate-700">檢測摘要：</strong>${item.summary || '無摘要'}</p>
             <p class="bg-amber-50 text-amber-900 p-2.5 rounded-lg border border-amber-100">
-              <strong class="text-amber-800">處置建議：</strong>${escapeHTML(item.action_advice || "建議進行臨櫃詢問與衛教。")}
+              <strong class="text-amber-800">處置建議：</strong>${item.action_advice || '建議進行臨櫃詢問與衛教。'}
             </p>
           </div>
 
-          <div class="pt-1 flex flex-wrap justify-end gap-2">
-            <button onclick="quickLookup('${escapeHTML(item.user_line_id)}', ${Number(item.id) || "null"})"
-              class="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs px-3 py-2 rounded-lg font-medium transition flex items-center gap-1">
+          <!-- Action Button -->
+          <div class="pt-1 flex justify-end gap-2">
+            <button onclick="quickLookup('${item.user_line_id}')" class="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs px-3 py-2 rounded-lg font-medium transition flex items-center gap-1">
               <i class="fa-solid fa-chart-line"></i> 查看 7 天趨勢
             </button>
-            <button onclick="startIntervention('${escapeHTML(item.user_line_id)}', ${Number(item.id) || "null"})"
-              class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs px-4 py-2 rounded-lg font-medium transition flex items-center gap-1.5 shadow-sm">
-              <i class="fa-solid fa-clipboard-check"></i> 關懷 / 量血壓
+            <button onclick="resolveAlert(${item.id})" class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs px-4 py-2 rounded-lg font-medium transition flex items-center gap-1.5 shadow-sm">
+              <i class="fa-solid fa-check"></i> 標示已關懷
             </button>
           </div>
         </div>`;
     }
 
-    function quickLookup(lineId, recordId = null) {
-      document.getElementById("lookup-line-id").value = lineId;
-      fetchPatientHistory(recordId);
+    // 3. 標示已關懷
+    async function resolveAlert(recordId) {
+      try {
+        const res = await fetch(`${API_BASE}/pharmacy/resolve/${recordId}`, { method: "POST" });
+        const data = await res.json();
+        if (data.status === "success") {
+          fetchAlerts();
+        } else {
+          alert("更新狀態失敗：" + data.message);
+        }
+      } catch (err) {
+        alert("請求發送失敗，請檢查後端連線");
+      }
     }
 
-    async function fetchPatientHistory(recordId = null) {
+    // 4. 快速帶入 ID 並查詢
+    function quickLookup(lineId) {
+      document.getElementById("lookup-line-id").value = lineId;
+      fetchPatientHistory();
+    }
+
+    // 5. 調閱 7 天歷史紀錄並開啟獨立彈窗畫面
+    async function fetchPatientHistory() {
       const lineId = document.getElementById("lookup-line-id").value.trim();
       const btn = document.getElementById("search-btn");
+
       if (!lineId) {
-        alert("請輸入民眾的 LINE User ID");
+        alert("請輸入或掃描民眾的 LINE User ID");
         return;
       }
 
@@ -449,12 +340,19 @@
         const res = await fetch(`${API_BASE}/pharmacy/patient/${encodeURIComponent(lineId)}/history`);
         const data = await res.json();
 
-        if (data.status !== "success" || !data.history || data.history.length === 0) {
-          alert("該民眾近 7 天無檢測紀錄。");
+        const history = Array.isArray(data.history)
+          ? data.history
+          : (Array.isArray(data.records) ? data.records : []);
+
+        if (data.status !== "success" || history.length === 0) {
+          alert(data.message ? `查詢失敗：${data.message}` : "該民眾近 7 天無檢測紀錄。");
           return;
         }
-        currentRecordId = recordId;
+
+        data.history = history;
+        data.total_records = data.total_records || history.length;
         openPatientModal(lineId, data);
+
       } catch (err) {
         console.error("Fetch Patient History Error:", err);
         alert("查詢失敗，請檢查系統與後端狀態。");
@@ -464,39 +362,17 @@
       }
     }
 
+    // 6. 開啟彈窗與填充內容
     function openPatientModal(lineId, data) {
-      currentPatientId = lineId;
-      currentHistory = Array.isArray(data.history) ? data.history : [];
-      document.getElementById("modal-patient-id").textContent = maskLineId(lineId);
-      document.getElementById("modal-total-records").textContent = `共 ${currentHistory.length} 筆紀錄`;
+      document.getElementById("modal-patient-id").textContent = lineId;
+      document.getElementById("modal-total-records").textContent = `共 ${data.total_records || data.history.length} 筆紀錄`;
 
-      const red = currentHistory.filter(r => r.health_light === "RED").length;
-      const yellow = currentHistory.filter(r => r.health_light === "YELLOW").length;
-      const latest = currentHistory[0] || currentHistory[currentHistory.length - 1];
-
-      document.getElementById("patient-record-count").textContent = currentHistory.length;
-      document.getElementById("patient-red-count").textContent = red;
-      document.getElementById("patient-yellow-count").textContent = yellow;
-      document.getElementById("patient-latest-status").textContent = latest?.health_light || "--";
-
-      renderHistoryList();
-      renderLatestIntervention();
-      setMetric("heart_rate");
-
-      const modal = document.getElementById("patient-detail-modal");
-      modal.classList.remove("hidden");
-      modal.classList.add("flex");
-    }
-
-    function renderHistoryList() {
       const historyListDiv = document.getElementById("modal-history-list");
       historyListDiv.innerHTML = "";
 
-      currentHistory.forEach(r => {
-        const isRed = r.health_light === "RED";
-        const isYellow = r.health_light === "YELLOW";
-        const lightBg = isRed ? "bg-red-50 border-red-200" : (isYellow ? "bg-amber-50 border-amber-200" : "bg-emerald-50 border-emerald-200");
-        const dot = isRed ? "bg-red-500" : (isYellow ? "bg-amber-500" : "bg-emerald-500");
+      // 填充歷史紀錄清單
+      data.history.forEach(r => {
+        const lightBg = r.health_light === "RED" ? "bg-red-50 border-red-200 text-red-800" : (r.health_light === "YELLOW" ? "bg-amber-50 border-amber-200 text-amber-800" : "bg-emerald-50 border-emerald-200 text-emerald-800");
         const timeStr = r.created_at ? new Date(r.created_at).toLocaleString("zh-TW") : "未知時間";
 
         const div = document.createElement("div");
@@ -504,225 +380,158 @@
         div.innerHTML = `
           <div class="flex justify-between items-center font-bold">
             <span class="flex items-center gap-1.5">
-              <span class="w-2 h-2 rounded-full ${dot}"></span>
-              ${escapeHTML(r.health_light || "NORMAL")} 燈號狀態
+              <span class="w-2 h-2 rounded-full ${r.health_light === 'RED' ? 'bg-red-500' : (r.health_light === 'YELLOW' ? 'bg-amber-500' : 'bg-emerald-500')}"></span>
+              ${r.health_light} 燈號狀態
             </span>
-            <span class="text-slate-400 font-normal">${escapeHTML(timeStr)}</span>
+            <span class="text-slate-400 font-normal">${timeStr}</span>
           </div>
-          <div class="grid grid-cols-2 lg:grid-cols-4 gap-2 pt-1 border-t border-slate-200/50 text-slate-700">
-            <div>心率: <strong class="text-slate-900">${escapeHTML(r.heart_rate ?? "--")} BPM</strong></div>
-            <div>壓力: <strong class="text-slate-900">${escapeHTML(r.stress_score ?? "--")} / 100</strong></div>
-            <div>HRV: <strong class="text-slate-900">${escapeHTML(r.hrv_sdnn ?? "--")} ms</strong></div>
-            <div>狀態: <strong class="text-slate-900">${escapeHTML(r.health_light ?? "--")}</strong></div>
-          </div>`;
+          <div class="grid grid-cols-3 gap-2 pt-1 border-t border-slate-200/50 text-slate-700">
+            <div>心率: <strong class="text-slate-900">${r.heart_rate} BPM</strong></div>
+            <div>壓力指數: <strong class="text-slate-900">${r.stress_score} / 100</strong></div>
+            <div>HRV (SDNN): <strong class="text-slate-900">${r.hrv_sdnn || '--'} ms</strong></div>
+          </div>
+        `;
         historyListDiv.appendChild(div);
       });
-    }
 
-    function setMetric(metric) {
-      currentMetric = metric;
-      document.querySelectorAll(".metric-btn").forEach(btn => {
-        const active = btn.dataset.metric === metric;
-        btn.className = active
-          ? "metric-btn bg-emerald-600 text-white px-3 py-1.5 rounded-lg text-xs font-semibold"
-          : "metric-btn bg-slate-100 text-slate-600 px-3 py-1.5 rounded-lg text-xs font-semibold";
-      });
-      renderTrendChart();
-    }
-
-    function renderTrendChart() {
-      const canvas = document.getElementById("modalTrendChart");
-      if (!canvas || !currentHistory.length) return;
-
-      const cfg = metricConfig[currentMetric];
-      const sortedData = [...currentHistory].sort((a, b) => new Date(a.created_at || 0) - new Date(b.created_at || 0));
-      const labels = sortedData.map(item => {
-        if (!item.created_at) return "未知";
-        const d = new Date(item.created_at);
-        return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-      });
-      const values = sortedData.map(item => {
-        const v = item[currentMetric];
-        return v === null || v === undefined || v === "" ? null : Number(v);
-      });
-
-      document.getElementById("chart-title").textContent = cfg.title;
-
-      if (modalChartInstance) modalChartInstance.destroy();
-
-      const ctx = canvas.getContext("2d");
-      const gradient = ctx.createLinearGradient(0, 0, 0, 260);
-      const alphaColor = cfg.color === "#2563eb"
-        ? "rgba(37,99,235,0.18)"
-        : (cfg.color === "#d97706" ? "rgba(217,119,6,0.18)" : "rgba(5,150,105,0.18)");
-      gradient.addColorStop(0, alphaColor);
-      gradient.addColorStop(1, "rgba(255,255,255,0)");
-
-      modalChartInstance = new Chart(ctx, {
-        type: "line",
-        data: {
-          labels,
-          datasets: [{
-            label: cfg.label,
-            data: values,
-            borderColor: cfg.color,
-            backgroundColor: gradient,
-            borderWidth: 3,
-            fill: true,
-            tension: 0.35,
-            pointRadius: 0,
-            pointHoverRadius: 7,
-            spanGaps: true
-          }]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          interaction: { mode: "index", intersect: false },
-          scales: {
-            y: {
-              beginAtZero: false,
-              suggestedMin: currentMetric === "stress_score" ? 0 : undefined,
-              suggestedMax: currentMetric === "stress_score" ? 100 : undefined,
-              ticks: {
-                font: { size: 11 },
-                color: "#64748b",
-                callback: value => `${value} ${cfg.unit}`
-              },
-              grid: { color: "rgba(226,232,240,.65)" }
-            },
-            x: {
-              grid: { display: false },
-              ticks: { maxRotation: 30, font: { size: 10 }, color: "#64748b" }
-            }
-          },
-          plugins: {
-            legend: { display: false },
-            tooltip: {
-              displayColors: false,
-              callbacks: {
-                title: items => `📅 ${items[0].label}`,
-                label: context => {
-                  const raw = sortedData[context.dataIndex];
-                  return [
-                    `${cfg.label}：${raw[currentMetric] ?? "--"} ${cfg.unit}`,
-                    `燈號：${raw.health_light || "NORMAL"}`
-                  ];
-                }
-              }
-            }
-          }
-        }
-      });
-    }
-
-    function renderLatestIntervention() {
-      const box = document.getElementById("latest-intervention");
-      const records = getPatientInterventions(currentPatientId);
-      if (!records.length) {
-        box.textContent = "尚無本瀏覽器儲存的關懷紀錄。";
-        return;
-      }
-
-      const r = records[0];
-      box.innerHTML = `
-        <div class="space-y-1.5">
-          <p><strong>時間：</strong>${escapeHTML(new Date(r.created_at).toLocaleString("zh-TW"))}</p>
-          <p><strong>處置：</strong>${escapeHTML((r.actions || []).join("、") || "未勾選")}</p>
-          <p><strong>血壓：</strong>${escapeHTML(r.bp?.sys ?? "--")} / ${escapeHTML(r.bp?.dia ?? "--")} mmHg
-            　<strong>脈搏：</strong>${escapeHTML(r.bp?.pulse ?? "--")} BPM</p>
-          <p><strong>備註：</strong>${escapeHTML(r.note || "無")}</p>
-          <p><strong>下次追蹤：</strong>${escapeHTML(r.followup_date || "未設定")}</p>
-        </div>`;
-    }
-
-    function startIntervention(lineId, recordId) {
-      currentPatientId = lineId;
-      currentRecordId = recordId;
-      document.getElementById("intervention-patient-label").textContent = `個案 ID：${maskLineId(lineId)}`;
-      document.getElementById("intervention-form").reset();
-      const modal = document.getElementById("intervention-modal");
+      // 顯示 Modal 彈窗
+      const modal = document.getElementById("patient-detail-modal");
       modal.classList.remove("hidden");
-      modal.classList.add("flex");
+
+      // 繪製趨勢圖 (延遲一瞬間確保 Modal Canvas 已完全渲染)
+      setTimeout(() => {
+        renderModalChart(data.history);
+      }, 50);
     }
 
-    function openInterventionModal() {
-      if (!currentPatientId) return;
-      startIntervention(currentPatientId, currentRecordId);
-    }
-
-    function closeInterventionModal() {
-      const modal = document.getElementById("intervention-modal");
-      modal.classList.add("hidden");
-      modal.classList.remove("flex");
-    }
-
+    // 7. 關閉彈窗
     function closePatientModal() {
       const modal = document.getElementById("patient-detail-modal");
       modal.classList.add("hidden");
-      modal.classList.remove("flex");
-      if (modalChartInstance) {
-        modalChartInstance.destroy();
-        modalChartInstance = null;
-      }
     }
 
-    async function saveIntervention(event) {
-      event.preventDefault();
+    // 8. 繪製彈窗心率折線圖 (Chart.js)
+    // 8. 繪製彈窗心率折線圖 (Chart.js 視覺優化版)
+// 8. 繪製彈窗心率折線圖 (極簡無點平滑折線版)
+function renderModalChart(historyData) {
+  const canvas = document.getElementById('modalHeartRateChart');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
 
-      const actions = [...document.querySelectorAll('input[name="actions"]:checked')].map(x => x.value);
-      const sys = document.getElementById("bp-sys").value;
-      const dia = document.getElementById("bp-dia").value;
-      const pulse = document.getElementById("bp-pulse").value;
-      const note = document.getElementById("intervention-note").value.trim();
-      const followup = document.getElementById("followup-date").value;
+  // 時間舊 -> 新排序
+  const sortedData = [...historyData].reverse();
 
-      if (!actions.length && !sys && !dia && !pulse && !note) {
-        alert("請至少填寫一項關懷處置、血壓或備註。");
-        return;
-      }
+  const labels = sortedData.map(item => {
+    if (!item.created_at) return '未知';
+    const d = new Date(item.created_at);
+    return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  });
 
-      const all = getLocalInterventions();
-      if (!all[currentPatientId]) all[currentPatientId] = [];
+  const heartRates = sortedData.map(item => item.heart_rate || item.bpm || 0);
 
-      all[currentPatientId].unshift({
-        record_id: currentRecordId,
-        created_at: new Date().toISOString(),
-        actions,
-        bp: { sys: sys || null, dia: dia || null, pulse: pulse || null },
-        note,
-        followup_date: followup || null
-      });
+  // 建立折線下方柔和漸層
+  const gradient = ctx.createLinearGradient(0, 0, 0, 240);
+  gradient.addColorStop(0, 'rgba(16, 185, 129, 0.2)');
+  gradient.addColorStop(1, 'rgba(16, 185, 129, 0.0)');
 
-      setLocalInterventions(all);
-      resolvedThisSession += 1;
-      updateKPI();
+  if (modalChartInstance) {
+    modalChartInstance.destroy();
+  }
 
-      // Preserve the existing backend workflow: mark the alert resolved.
-      if (currentRecordId) {
-        try {
-          const res = await fetch(`${API_BASE}/pharmacy/resolve/${currentRecordId}`, { method: "POST" });
-          const data = await res.json();
-          if (data.status !== "success") console.warn("Resolve API:", data);
-        } catch (err) {
-          console.warn("Resolve API unavailable:", err);
+  modalChartInstance = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [{
+        label: '心率 (BPM)',
+        data: heartRates,
+        borderColor: '#059669',            // 綠色折線 (Emerald 600)
+        borderWidth: 3,                    // 線條加粗增強視覺質感
+        backgroundColor: gradient,
+        fill: true,
+        tension: 0.35,                     // 平滑曲線
+        // 🎯 隱藏常駐點點
+        pointRadius: 0,                    // 平時完全不顯示點點
+        pointHoverRadius: 7,               // 滑鼠靠近時才顯示亮點
+        pointHoverBackgroundColor: '#047857',
+        pointHoverBorderColor: '#ffffff',
+        pointHoverBorderWidth: 2,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: {
+        mode: 'index',
+        intersect: false,                  // 只要滑鼠移動到該 X 軸區間就會觸發懸浮顯示
+      },
+      scales: {
+        y: {
+          beginAtZero: false,
+          suggestedMin: 50,
+          suggestedMax: 130,
+          grid: {
+            color: (context) => {
+              // 標示正常心率範圍 (60 與 100 BPM) 的參考警示線
+              if (context.tick.value === 60 || context.tick.value === 100) {
+                return 'rgba(239, 68, 68, 0.25)';
+              }
+              return 'rgba(226, 232, 240, 0.6)';
+            },
+            lineWidth: (context) => (context.tick.value === 60 || context.tick.value === 100 ? 1.5 : 1)
+          },
+          ticks: {
+            font: { size: 11, weight: '500' },
+            color: '#64748b',
+            callback: (val) => `${val} BPM`
+          }
+        },
+        x: {
+          grid: { display: false },
+          ticks: {
+            maxRotation: 30,
+            font: { size: 10 },
+            color: '#64748b'
+          }
+        }
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: 'rgba(15, 23, 42, 0.9)', // 暗色質感 Tooltip
+          titleFont: { size: 12, weight: 'bold' },
+          bodyFont: { size: 12 },
+          padding: 12,
+          cornerRadius: 8,
+          displayColors: false,
+          callbacks: {
+            title: (items) => `📅 時間：${items[0].label}`,
+            label: (context) => {
+              const rawItem = sortedData[context.dataIndex];
+              const lightEmoji = rawItem.health_light === 'RED' ? '🔴' : (rawItem.health_light === 'YELLOW' ? '🟡' : '🟢');
+              return [
+                `${lightEmoji} 燈號狀態：${rawItem.health_light || 'NORMAL'}`,
+                `❤ 心率數值：${rawItem.heart_rate} BPM`,
+                `⚡ 壓力指數：${rawItem.stress_score ?? '--'} / 100`
+              ];
+            }
+          }
         }
       }
-
-      closeInterventionModal();
-      renderLatestIntervention();
-      await fetchAlerts();
-      alert("關懷紀錄已保存。血壓與關懷明細目前保存於此瀏覽器；若要同步資料庫，請在 main.py 增加對應 API。");
     }
+  });
+}
 
-    document.addEventListener("keydown", e => {
-      if (e.key === "Escape") {
-        closeInterventionModal();
-        closePatientModal();
-      }
+    // 按下 ESC 鍵自動關閉彈窗
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closePatientModal();
     });
 
-    window.onload = fetchAlerts;
+    // 初始化載入
+    window.onload = () => {
+      fetchAlerts();
+      fetchRecentRecords();
+    };
   </script>
 </body>
 </html>
