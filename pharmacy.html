@@ -449,7 +449,7 @@
         const res = await fetch(`${API_BASE}/pharmacy/patient/${encodeURIComponent(lineId)}/history`);
         const data = await res.json();
 
-        if (data.status !== "success" || !data.history || data.history.length === 0) {
+        if (data.status !== "success" || !data.records || data.records.length === 0) {
           alert("該民眾近 7 天無檢測紀錄。");
           return;
         }
@@ -466,13 +466,13 @@
 
     function openPatientModal(lineId, data) {
       currentPatientId = lineId;
-      currentHistory = Array.isArray(data.history) ? data.history : [];
+      currentHistory = Array.isArray(data.records) ? data.records : [];
       document.getElementById("modal-patient-id").textContent = maskLineId(lineId);
       document.getElementById("modal-total-records").textContent = `共 ${currentHistory.length} 筆紀錄`;
 
       const red = currentHistory.filter(r => r.health_light === "RED").length;
       const yellow = currentHistory.filter(r => r.health_light === "YELLOW").length;
-      const latest = currentHistory[0] || currentHistory[currentHistory.length - 1];
+      const latest = currentHistory[currentHistory.length - 1];
 
       document.getElementById("patient-record-count").textContent = currentHistory.length;
       document.getElementById("patient-red-count").textContent = red;
