@@ -49,6 +49,15 @@ GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash").strip()
 handler = WebhookHandler(LINE_CHANNEL_SECRET) if LINE_CHANNEL_SECRET else None
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN) if (LineBotApi and LINE_CHANNEL_ACCESS_TOKEN) else None
 
+def utc_iso(dt):
+    if not dt:
+        return None
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    return dt.astimezone(timezone.utc).isoformat()
+
 # ✅ 1. 初始化主要模型：OpenAI Client
 openai_client = None
 if OPENAI_API_KEY:
@@ -1016,7 +1025,7 @@ def get_patient_7day_history(user_line_id: str, db: Session = Depends(get_db)):
                         )
                     )\
                     .filter(RPPGRecord.created_at >= seven_days_ago)\
-                    .order_by(RPPGRecord.created_at.asc())\
+                    .order_by(RPPGRecord.created_at.desc())\
                     .all()
         
         result = []
@@ -1029,7 +1038,7 @@ def get_patient_7day_history(user_line_id: str, db: Session = Depends(get_db)):
                 "health_light": r.health_light,
                 "summary": r.summary,
                 "action_advice": r.action_advice,
-                "created_at": r.created_at.isoformat() if r.created_at else None
+                "created_at": utc_iso(r.created_at)
             })
         return {
             "status": "success",
