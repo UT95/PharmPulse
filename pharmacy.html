@@ -227,31 +227,45 @@
 
       <form id="intervention-form" onsubmit="saveIntervention(event)" class="p-6 space-y-5">
         <div>
-          <p class="text-xs font-bold text-slate-700 mb-2">本次處置項目</p>
+          <p class="text-xs font-bold text-slate-700 mb-2">關懷方式</p>
           <div class="grid grid-cols-2 gap-2 text-xs">
-            <label class="border rounded-lg p-3 flex gap-2 items-center"><input type="checkbox" name="actions" value="血壓量測"> 血壓量測</label>
-            <label class="border rounded-lg p-3 flex gap-2 items-center"><input type="checkbox" name="actions" value="用藥諮詢"> 用藥諮詢</label>
-            <label class="border rounded-lg p-3 flex gap-2 items-center"><input type="checkbox" name="actions" value="生活衛教"> 生活衛教</label>
-            <label class="border rounded-lg p-3 flex gap-2 items-center"><input type="checkbox" name="actions" value="持續觀察"> 持續觀察</label>
-            <label class="border rounded-lg p-3 flex gap-2 items-center"><input type="checkbox" name="actions" value="轉介就醫"> 轉介就醫</label>
-            <label class="border rounded-lg p-3 flex gap-2 items-center"><input type="checkbox" name="actions" value="聯絡追蹤"> 聯絡追蹤</label>
+            <label class="border rounded-lg p-3 flex gap-2 items-center"><input type="radio" name="care_method" value="LINE" required> LINE 線上關懷</label>
+            <label class="border rounded-lg p-3 flex gap-2 items-center"><input type="radio" name="care_method" value="PHONE"> 電話關懷</label>
+            <label class="border rounded-lg p-3 flex gap-2 items-center"><input type="radio" name="care_method" value="IN_STORE"> 到藥局複測</label>
+            <label class="border rounded-lg p-3 flex gap-2 items-center"><input type="radio" name="care_method" value="MEDICAL"> 建議就醫</label>
           </div>
         </div>
 
         <div>
-          <p class="text-xs font-bold text-slate-700 mb-2">實測血壓（若有量測）</p>
+          <label class="block text-xs font-bold text-slate-700 mb-2">民眾目前狀況 / 症狀</label>
+          <textarea id="intervention-symptoms" rows="3" placeholder="例如：昨晚睡眠不足，目前無胸痛、呼吸困難或頭暈..."
+                    class="w-full px-3 py-2 text-sm border rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-emerald-500"></textarea>
+        </div>
+
+        <div>
+          <p class="text-xs font-bold text-slate-700 mb-2">實測血壓（到藥局複測時填寫）</p>
           <div class="grid grid-cols-3 gap-2">
             <input id="bp-sys" type="number" min="50" max="300" placeholder="收縮壓 mmHg" class="px-3 py-2 text-sm border rounded-lg">
             <input id="bp-dia" type="number" min="30" max="200" placeholder="舒張壓 mmHg" class="px-3 py-2 text-sm border rounded-lg">
             <input id="bp-pulse" type="number" min="20" max="250" placeholder="脈搏 BPM" class="px-3 py-2 text-sm border rounded-lg">
           </div>
-          <p class="text-[11px] text-slate-400 mt-1">此版本會先保存在目前瀏覽器；若要寫入資料庫，需搭配 main.py 新增 API。</p>
+          <p class="text-[11px] text-slate-400 mt-1">僅在民眾到藥局實際複測時填寫；線上或電話關懷可留白。</p>
         </div>
 
         <div>
           <label class="block text-xs font-bold text-slate-700 mb-2">藥師備註</label>
-          <textarea id="intervention-note" rows="4" placeholder="例如：已詢問近期睡眠、咖啡因與用藥情形，建議 3 天內再次量測..."
+          <textarea id="intervention-note" rows="4" placeholder="例如：已詢問近期睡眠、咖啡因與用藥情形，建議休息後重新量測..."
                     class="w-full px-3 py-2 text-sm border rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-emerald-500"></textarea>
+        </div>
+
+        <div>
+          <label class="block text-xs font-bold text-slate-700 mb-2">本次處理結果</label>
+          <select id="action-result" class="w-full px-3 py-2 text-sm border rounded-lg">
+            <option value="OBSERVE">持續觀察</option>
+            <option value="RETEST">請民眾重新量測</option>
+            <option value="FOLLOW_UP">安排後續追蹤</option>
+            <option value="REFER">轉介醫療院所</option>
+          </select>
         </div>
 
         <div>
@@ -312,20 +326,6 @@
       const s = String(id || "");
       if (s.length <= 8) return s;
       return s.slice(0, 4) + "••••" + s.slice(-4);
-    }
-
-    function getLocalInterventions() {
-      try { return JSON.parse(localStorage.getItem("pharmpulse_interventions") || "{}"); }
-      catch { return {}; }
-    }
-
-    function setLocalInterventions(data) {
-      localStorage.setItem("pharmpulse_interventions", JSON.stringify(data));
-    }
-
-    function getPatientInterventions(lineId) {
-      const all = getLocalInterventions();
-      return all[lineId] || [];
     }
 
     function updateKPI() {
@@ -485,7 +485,7 @@
 
       const red = currentHistory.filter(r => r.health_light === "RED").length;
       const yellow = currentHistory.filter(r => r.health_light === "YELLOW").length;
-      const latest = currentHistory[currentHistory.length - 1];
+      const latest = currentHistory[0];
 
       document.getElementById("patient-record-count").textContent = currentHistory.length;
       document.getElementById("patient-red-count").textContent = red;
@@ -636,24 +636,52 @@
       });
     }
 
-    function renderLatestIntervention() {
+    async function renderLatestIntervention() {
       const box = document.getElementById("latest-intervention");
-      const records = getPatientInterventions(currentPatientId);
-      if (!records.length) {
-        box.textContent = "尚無本瀏覽器儲存的關懷紀錄。";
+      if (!currentPatientId) {
+        box.textContent = "尚無關懷紀錄。";
         return;
       }
 
-      const r = records[0];
-      box.innerHTML = `
-        <div class="space-y-1.5">
-          <p><strong>時間：</strong>${escapeHTML(formatTaiwanTime(r.created_at))}</p>
-          <p><strong>處置：</strong>${escapeHTML((r.actions || []).join("、") || "未勾選")}</p>
-          <p><strong>血壓：</strong>${escapeHTML(r.bp?.sys ?? "--")} / ${escapeHTML(r.bp?.dia ?? "--")} mmHg
-            　<strong>脈搏：</strong>${escapeHTML(r.bp?.pulse ?? "--")} BPM</p>
-          <p><strong>備註：</strong>${escapeHTML(r.note || "無")}</p>
-          <p><strong>下次追蹤：</strong>${escapeHTML(r.followup_date || "未設定")}</p>
-        </div>`;
+      try {
+        const res = await fetch(`${API_BASE}/pharmacy/patient/${encodeURIComponent(currentPatientId)}/interventions`);
+        const data = await res.json();
+        const records = Array.isArray(data.records) ? data.records : [];
+
+        if (!records.length) {
+          box.textContent = "目前尚無藥師關懷紀錄。";
+          return;
+        }
+
+        const r = records[0];
+        const methodMap = {
+          LINE: "LINE 線上關懷",
+          PHONE: "電話關懷",
+          IN_STORE: "到藥局複測",
+          MEDICAL: "建議就醫"
+        };
+        const actionMap = {
+          OBSERVE: "持續觀察",
+          RETEST: "重新量測",
+          FOLLOW_UP: "安排追蹤",
+          REFER: "轉介醫療院所"
+        };
+
+        box.innerHTML = `
+          <div class="space-y-1.5">
+            <p><strong>時間：</strong>${escapeHTML(formatTaiwanTime(r.created_at))}</p>
+            <p><strong>關懷方式：</strong>${escapeHTML(methodMap[r.care_method] || r.care_method || "--")}</p>
+            <p><strong>民眾狀況：</strong>${escapeHTML(r.symptoms || "未記錄")}</p>
+            <p><strong>血壓：</strong>${escapeHTML(r.systolic_bp ?? "--")} / ${escapeHTML(r.diastolic_bp ?? "--")} mmHg
+              　<strong>脈搏：</strong>${escapeHTML(r.pulse ?? "--")} BPM</p>
+            <p><strong>處理結果：</strong>${escapeHTML(actionMap[r.action_result] || "--")}</p>
+            <p><strong>藥師備註：</strong>${escapeHTML(r.pharmacist_note || "無")}</p>
+            <p><strong>下次追蹤：</strong>${escapeHTML(r.followup_date || "未設定")}</p>
+          </div>`;
+      } catch (err) {
+        console.error("Fetch Intervention Error:", err);
+        box.textContent = "關懷紀錄讀取失敗。";
+      }
     }
 
     function startIntervention(lineId, recordId) {
@@ -690,49 +718,76 @@
     async function saveIntervention(event) {
       event.preventDefault();
 
-      const actions = [...document.querySelectorAll('input[name="actions"]:checked')].map(x => x.value);
+      const careMethod = document.querySelector('input[name="care_method"]:checked')?.value;
+      const symptoms = document.getElementById("intervention-symptoms").value.trim();
       const sys = document.getElementById("bp-sys").value;
       const dia = document.getElementById("bp-dia").value;
       const pulse = document.getElementById("bp-pulse").value;
       const note = document.getElementById("intervention-note").value.trim();
+      const actionResult = document.getElementById("action-result").value;
       const followup = document.getElementById("followup-date").value;
 
-      if (!actions.length && !sys && !dia && !pulse && !note) {
-        alert("請至少填寫一項關懷處置、血壓或備註。");
+      if (!careMethod) {
+        alert("請選擇關懷方式。");
         return;
       }
 
-      const all = getLocalInterventions();
-      if (!all[currentPatientId]) all[currentPatientId] = [];
-
-      all[currentPatientId].unshift({
-        record_id: currentRecordId,
-        created_at: new Date().toISOString(),
-        actions,
-        bp: { sys: sys || null, dia: dia || null, pulse: pulse || null },
-        note,
-        followup_date: followup || null
-      });
-
-      setLocalInterventions(all);
-      resolvedThisSession += 1;
-      updateKPI();
-
-      // Preserve the existing backend workflow: mark the alert resolved.
-      if (currentRecordId) {
-        try {
-          const res = await fetch(`${API_BASE}/pharmacy/resolve/${currentRecordId}`, { method: "POST" });
-          const data = await res.json();
-          if (data.status !== "success") console.warn("Resolve API:", data);
-        } catch (err) {
-          console.warn("Resolve API unavailable:", err);
-        }
+      if (careMethod === "IN_STORE" && (!sys || !dia)) {
+        alert("到藥局複測時，請填寫收縮壓與舒張壓。");
+        return;
       }
 
-      closeInterventionModal();
-      renderLatestIntervention();
-      await fetchAlerts();
-      alert("關懷紀錄已保存。血壓與關懷明細目前保存於此瀏覽器；若要同步資料庫，請在 main.py 增加對應 API。");
+      const payload = {
+        user_line_id: currentPatientId,
+        rppg_record_id: currentRecordId,
+        care_method: careMethod,
+        symptoms: symptoms || null,
+        systolic_bp: sys ? Number(sys) : null,
+        diastolic_bp: dia ? Number(dia) : null,
+        pulse: pulse ? Number(pulse) : null,
+        pharmacist_note: note || null,
+        action_result: actionResult,
+        followup_date: followup || null
+      };
+
+      try {
+        const res = await fetch(`${API_BASE}/pharmacy/interventions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+
+        const data = await res.json();
+        if (!res.ok || data.status !== "success") {
+          throw new Error(data.detail || data.message || "儲存失敗");
+        }
+
+        // 儲存關懷紀錄成功後，將本次警示標示為已處置。
+        if (currentRecordId) {
+          try {
+            const resolveRes = await fetch(`${API_BASE}/pharmacy/resolve/${currentRecordId}`, { method: "POST" });
+            const resolveData = await resolveRes.json();
+            if (resolveData.status !== "success") console.warn("Resolve API:", resolveData);
+          } catch (err) {
+            console.warn("Resolve API unavailable:", err);
+          }
+        }
+
+        resolvedThisSession += 1;
+        updateKPI();
+        closeInterventionModal();
+        await renderLatestIntervention();
+        await fetchAlerts();
+
+        if (data.referral_status === "REFERRED") {
+          alert("關懷紀錄已儲存，並已標記為轉介醫療院所。");
+        } else {
+          alert("藥師關懷紀錄已成功儲存到資料庫。");
+        }
+      } catch (err) {
+        console.error("Save Intervention Error:", err);
+        alert("關懷紀錄儲存失敗：" + err.message);
+      }
     }
 
     document.addEventListener("keydown", e => {

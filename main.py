@@ -128,6 +128,36 @@ class RPPGRecord(Base):
     action_advice = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
+class PharmacyIntervention(Base):
+    __tablename__ = "pharmacy_interventions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_line_id = Column(String(255), index=True, nullable=False)
+    rppg_record_id = Column(Integer, nullable=True)
+
+    # LINE / PHONE / IN_STORE / MEDICAL
+    care_method = Column(String(50), nullable=False)
+    symptoms = Column(Text, nullable=True)
+
+    # 到藥局複測時才填
+    systolic_bp = Column(Integer, nullable=True)
+    diastolic_bp = Column(Integer, nullable=True)
+    pulse = Column(Integer, nullable=True)
+
+    pharmacist_note = Column(Text, nullable=True)
+
+    # OBSERVE / RETEST / FOLLOW_UP / REFER
+    action_result = Column(String(50), nullable=True)
+    followup_date = Column(DateTime(timezone=True), nullable=True)
+
+    # NONE / REFERRED
+    referral_status = Column(String(50), default="NONE")
+
+    created_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc)
+    )
+
 Base.metadata.create_all(bind=engine)
 
 # ----------------------------------------------------
@@ -705,6 +735,18 @@ class AIChatRequest(BaseModel):
     question: str
     record_id: Optional[int] = None
 
+class PharmacyInterventionRequest(BaseModel):
+    user_line_id: str
+    rppg_record_id: Optional[int] = None
+    care_method: str
+    symptoms: Optional[str] = None
+    systolic_bp: Optional[int] = None
+    diastolic_bp: Optional[int] = None
+    pulse: Optional[int] = None
+    pharmacist_note: Optional[str] = None
+    action_result: Optional[str] = None
+    followup_date: Optional[str] = None
+
 # ----------------------------------------------------
 # 11. 使用者同意與生理分析 API
 # ----------------------------------------------------
@@ -1047,6 +1089,101 @@ def get_patient_7day_history(user_line_id: str, db: Session = Depends(get_db)):
         }
     except Exception as e:
         return {"status": "error", "records": [], "message": str(e)}
+
+@app.post("/api/v1/pharmacy/interventions")
+def create_pharmacy_intervention(
+    req: PharmacyInterventionRequest,
+    db: Session = Depends(get_db)
+):
+    """儲存藥師的線上/電話/到店/就醫關懷紀錄。"""
+    allowed_methods = {"LINE", "PHONE", "IN_STORE", "MEDICAL"}
+    allowed_results = {"OBSERVE", "RETEST", "FOLLOW_UP", "REFER"}
+
+    if req.care_method not in allowed_methods:
+        raise HTTPException(status_code=400, detail="Invalid care_method")
+
+    if req.action_result and req.action_result not in allowed_results:
+        raise HTTPException(status_code=400, detail="Invalid action_result")
+
+    if req.care_method == "IN_STORE" and (req.systolic_bp is None or req.diastolic_bp is None):
+        raise HTTPException(status_code=400, detail="到藥局複測時請填寫收縮壓與舒張壓")
+
+    followup_dt = None
+    if req.followup_date:
+        try:
+            followup_dt = datetime.strptime(req.followup_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="followup_date 格式必須為 YYYY-MM-DD")
+
+    referral_status = "REFERRED" if req.action_result == "REFER" else "NONE"
+
+    try:
+        intervention = PharmacyIntervention(
+            user_line_id=req.user_line_id,
+            rppg_record_id=req.rppg_record_id,
+            care_method=req.care_method,
+            symptoms=req.symptoms,
+            systolic_bp=req.systolic_bp,
+            diastolic_bp=req.diastolic_bp,
+            pulse=req.pulse,
+            pharmacist_note=req.pharmacist_note,
+            action_result=req.action_result,
+            followup_date=followup_dt,
+            referral_status=referral_status
+        )
+        db.add(intervention)
+        db.commit()
+        db.refresh(intervention)
+
+        return {
+            "status": "success",
+            "message": "藥師關懷紀錄已儲存",
+            "id": intervention.id,
+            "referral_status": intervention.referral_status
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"儲存藥師關懷紀錄失敗: {str(e)}")
+
+
+@app.get("/api/v1/pharmacy/patient/{user_line_id}/interventions")
+def get_pharmacy_interventions(user_line_id: str, db: Session = Depends(get_db)):
+    """取得指定民眾的藥師關懷歷史，最新一筆排在最前面。"""
+    try:
+        records = (
+            db.query(PharmacyIntervention)
+            .filter(PharmacyIntervention.user_line_id == user_line_id)
+            .order_by(PharmacyIntervention.created_at.desc())
+            .all()
+        )
+
+        result = []
+        for r in records:
+            result.append({
+                "id": r.id,
+                "rppg_record_id": r.rppg_record_id,
+                "care_method": r.care_method,
+                "symptoms": r.symptoms,
+                "systolic_bp": r.systolic_bp,
+                "diastolic_bp": r.diastolic_bp,
+                "pulse": r.pulse,
+                "pharmacist_note": r.pharmacist_note,
+                "action_result": r.action_result,
+                "followup_date": r.followup_date.strftime("%Y-%m-%d") if r.followup_date else None,
+                "referral_status": r.referral_status,
+                "created_at": utc_iso(r.created_at)
+            })
+
+        return {
+            "status": "success",
+            "user_line_id": user_line_id,
+            "records": result
+        }
+    except Exception as e:
+        return {"status": "error", "user_line_id": user_line_id, "records": [], "message": str(e)}
+
 
 # ----------------------------------------------------
 # 15. 本地直接執行進入點
