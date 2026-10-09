@@ -94,6 +94,16 @@
             </div>
         </div>
 
+        <div id="profile-card" style="margin:12px 0 12px; padding:14px; border:1px solid #e2e8f0; background:#ffffff; border-radius:12px; text-align:left;">
+            <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;">
+                <div>
+                    <div style="font-size:13px;font-weight:700;color:#0f172a;">👤 個人慢性病監測檔案</div>
+                    <div id="profile-summary" style="font-size:12px;color:#64748b;margin-top:4px;">尚未建立，建立後會自動套用監測模式。</div>
+                </div>
+                <button type="button" onclick="openProfileEditor()" style="border:none;background:#0f766e;color:#fff;border-radius:8px;padding:8px 10px;font-size:12px;font-weight:700;cursor:pointer;">設定</button>
+            </div>
+        </div>
+
         <div style="margin:12px 0 16px; padding:14px; border:1px solid #d1fae5; background:#f0fdf4; border-radius:12px; text-align:left;">
             <label for="monitoring-mode" style="display:block;font-size:13px;font-weight:700;color:#166534;margin-bottom:6px;">🩺 慢性病監測模式</label>
             <select id="monitoring-mode" onchange="updateMonitoringModeHint()" style="width:100%;padding:10px;border-radius:9px;border:1px solid #bbf7d0;background:#fff;font-size:14px;color:#334155;">
@@ -126,6 +136,42 @@
         </div>
     </div>
 
+    <div id="profile-modal" class="modal" onclick="handleProfileModalOutsideClick(event)">
+        <div class="modal-content" style="max-width:520px;">
+            <div class="modal-header">
+                <h3>👤 個人慢性病監測檔案</h3>
+                <span class="close-btn" onclick="closeProfileEditor()">&times;</span>
+            </div>
+
+            <div style="text-align:left;display:grid;gap:12px;">
+                <div>
+                    <label style="font-size:12px;font-weight:700;color:#475569;">主要監測類型</label>
+                    <select id="profile-monitoring-mode" style="width:100%;margin-top:6px;padding:10px;border:1px solid #cbd5e1;border-radius:8px;">
+                        <option value="GENERAL">一般健康監測</option>
+                        <option value="CARDIO">高血壓 / 心血管監測</option>
+                        <option value="RESPIRATORY">COPD / 呼吸慢病監測</option>
+                    </select>
+                </div>
+                <div>
+                    <label style="font-size:12px;font-weight:700;color:#475569;">慢性病 / 健康狀況（自行填寫）</label>
+                    <textarea id="profile-conditions" rows="3" placeholder="例如：高血壓、COPD；沒有可留白" style="width:100%;margin-top:6px;padding:10px;border:1px solid #cbd5e1;border-radius:8px;resize:vertical;"></textarea>
+                </div>
+                <div>
+                    <label style="font-size:12px;font-weight:700;color:#475569;">目前用藥備註（選填）</label>
+                    <textarea id="profile-medication" rows="2" placeholder="例如：固定服用降壓藥；不需輸入完整處方也可" style="width:100%;margin-top:6px;padding:10px;border:1px solid #cbd5e1;border-radius:8px;resize:vertical;"></textarea>
+                </div>
+                <div>
+                    <label style="font-size:12px;font-weight:700;color:#475569;">照護備註（選填）</label>
+                    <textarea id="profile-care-note" rows="2" placeholder="例如：希望藥師優先以 LINE 關懷" style="width:100%;margin-top:6px;padding:10px;border:1px solid #cbd5e1;border-radius:8px;resize:vertical;"></textarea>
+                </div>
+                <div style="font-size:11px;color:#64748b;line-height:1.5;background:#f8fafc;border-radius:8px;padding:10px;">
+                    此檔案為使用者自述與監測分流用途，不代表醫療診斷。高血壓仍需以合格血壓計確認；SpO₂ 為實驗性估值。
+                </div>
+                <button type="button" onclick="saveChronicProfile()" class="btn">儲存個人檔案</button>
+            </div>
+        </div>
+    </div>
+
     <!-- 歷史紀錄 Modal -->
     <div id="history-modal" class="modal" onclick="handleModalOutsideClick(event)">
         <div class="modal-content">
@@ -154,6 +200,95 @@
             RESPIRATORY: { label: "COPD / 呼吸慢病監測", hint: "著重呼吸頻率與心肺負荷；SpO₂ 為實驗性估值，不作醫療判斷。" }
         };
 
+        let chronicProfile = null;
+
+        async function loadChronicProfile() {
+            if (!currentUserId) return;
+            try {
+                const res = await fetch(`/api/v1/user/chronic-profile/${encodeURIComponent(currentUserId)}`);
+                const data = await res.json();
+                if (data.status !== "success" || !data.profile) return;
+
+                chronicProfile = data.profile;
+                const mode = chronicProfile.monitoring_mode || "GENERAL";
+                const select = document.getElementById("monitoring-mode");
+                if (select && monitoringModeInfo[mode]) {
+                    select.value = mode;
+                    select.disabled = !!data.exists;
+                    select.style.opacity = data.exists ? "0.75" : "1";
+                    select.title = data.exists ? "已由個人慢性病檔案自動套用；請至個人檔案修改。" : "";
+                }
+
+                const summary = document.getElementById("profile-summary");
+                if (summary) {
+                    if (data.exists) {
+                        const conditions = chronicProfile.chronic_conditions ? `｜${chronicProfile.chronic_conditions}` : "";
+                        summary.textContent = `${chronicProfile.monitoring_mode_label || monitoringModeInfo[mode].label}${conditions}`;
+                    } else {
+                        summary.textContent = "尚未建立，建立後會自動套用監測模式。";
+                    }
+                }
+                updateMonitoringModeHint();
+            } catch (err) {
+                console.error("Load chronic profile error:", err);
+            }
+        }
+
+        function openProfileEditor() {
+            const modal = document.getElementById("profile-modal");
+            if (!modal) return;
+            const mode = chronicProfile?.monitoring_mode || getMonitoringMode();
+            document.getElementById("profile-monitoring-mode").value = mode;
+            document.getElementById("profile-conditions").value = chronicProfile?.chronic_conditions || "";
+            document.getElementById("profile-medication").value = chronicProfile?.medication_note || "";
+            document.getElementById("profile-care-note").value = chronicProfile?.care_note || "";
+            modal.style.display = "flex";
+        }
+
+        function closeProfileEditor() {
+            const modal = document.getElementById("profile-modal");
+            if (modal) modal.style.display = "none";
+        }
+
+        function handleProfileModalOutsideClick(event) {
+            if (event.target?.id === "profile-modal") closeProfileEditor();
+        }
+
+        async function saveChronicProfile() {
+            if (!currentUserId) {
+                alert("尚未取得 LINE 使用者資訊。");
+                return;
+            }
+
+            const payload = {
+                user_line_id: currentUserId,
+                id_token: (typeof liff !== "undefined" && liff.isLoggedIn()) ? liff.getIDToken() : null,
+                display_name: null,
+                monitoring_mode: document.getElementById("profile-monitoring-mode").value,
+                chronic_conditions: document.getElementById("profile-conditions").value.trim() || null,
+                medication_note: document.getElementById("profile-medication").value.trim() || null,
+                care_note: document.getElementById("profile-care-note").value.trim() || null
+            };
+
+            try {
+                const res = await fetch("/api/v1/user/chronic-profile", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (!res.ok || data.status !== "success") {
+                    throw new Error(data.detail || data.message || "儲存失敗");
+                }
+                closeProfileEditor();
+                await loadChronicProfile();
+                alert("個人慢性病監測檔案已儲存。");
+            } catch (err) {
+                console.error(err);
+                alert(`儲存失敗：${err.message}`);
+            }
+        }
+
         function getMonitoringMode() {
             return document.getElementById("monitoring-mode")?.value || "GENERAL";
         }
@@ -163,7 +298,9 @@
             const info = monitoringModeInfo[mode] || monitoringModeInfo.GENERAL;
             const hint = document.getElementById("monitoring-mode-hint");
             if (hint) hint.textContent = info.hint;
-            localStorage.setItem("pharmpulse_monitoring_mode", mode);
+            if (!chronicProfile) {
+                localStorage.setItem("pharmpulse_monitoring_mode", mode);
+            }
         }
 
         window.addEventListener("DOMContentLoaded", () => {

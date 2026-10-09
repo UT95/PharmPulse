@@ -71,11 +71,19 @@
           </div>
         </div>
 
+        <div class="flex flex-wrap items-center gap-2 -mt-1">
+          <span class="text-xs font-semibold text-slate-500 mr-1">監測分類：</span>
+          <button onclick="setModeFilter('ALL')" data-mode-filter="ALL" class="mode-filter-btn bg-emerald-700 text-white text-xs px-3 py-1.5 rounded-lg">全部</button>
+          <button onclick="setModeFilter('GENERAL')" data-mode-filter="GENERAL" class="mode-filter-btn bg-white border border-slate-200 text-slate-600 text-xs px-3 py-1.5 rounded-lg">一般監測</button>
+          <button onclick="setModeFilter('CARDIO')" data-mode-filter="CARDIO" class="mode-filter-btn bg-white border border-slate-200 text-slate-600 text-xs px-3 py-1.5 rounded-lg">高血壓 / 心血管</button>
+          <button onclick="setModeFilter('RESPIRATORY')" data-mode-filter="RESPIRATORY" class="mode-filter-btn bg-white border border-slate-200 text-slate-600 text-xs px-3 py-1.5 rounded-lg">COPD / 呼吸</button>
+        </div>
+
         <div class="bg-white border border-slate-200 rounded-xl p-3 shadow-sm">
           <div class="relative">
             <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i>
             <input id="alert-search" oninput="renderAlerts()" type="text"
-                   placeholder="搜尋 LINE User ID / 摘要 / 建議..."
+                   placeholder="搜尋 LINE User ID / 慢性病 / 摘要 / 建議..."
                    class="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500">
           </div>
         </div>
@@ -330,6 +338,7 @@
     let currentMetric = "heart_rate";
     let alertData = [];
     let alertFilter = "ALL";
+    let modeFilter = "ALL";
     let resolvedThisSession = 0;
 
     const metricConfig = {
@@ -398,12 +407,27 @@
       renderAlerts();
     }
 
+    function setModeFilter(mode) {
+      modeFilter = mode;
+
+      document.querySelectorAll(".mode-filter-btn").forEach(btn => {
+        const active = btn.dataset.modeFilter === mode;
+        btn.className = active
+          ? "mode-filter-btn bg-emerald-700 text-white text-xs px-3 py-1.5 rounded-lg"
+          : "mode-filter-btn bg-white border border-slate-200 text-slate-600 text-xs px-3 py-1.5 rounded-lg";
+      });
+
+      renderAlerts();
+    }
+
     function renderAlerts() {
       const container = document.getElementById("alerts-container");
       const search = document.getElementById("alert-search").value.trim().toLowerCase();
 
       const filtered = alertData.filter(item => {
         const matchesFilter = alertFilter === "ALL" || item.health_light === alertFilter;
+        const itemMode = item.profile_monitoring_mode || item.monitoring_mode || "GENERAL";
+        const matchesMode = modeFilter === "ALL" || itemMode === modeFilter;
         const haystack = [
           item.user_line_id, item.summary, item.action_advice,
           item.health_light, item.heart_rate, item.stress_score
@@ -453,7 +477,7 @@
           </div>
 
           <div class="text-xs text-slate-600 space-y-1">
-            <p><strong class="text-emerald-700">監測模式：</strong>${escapeHTML(item.monitoring_mode_label || "一般健康監測")}</p>
+            <p><strong class="text-emerald-700">監測模式：</strong>${escapeHTML(item.profile_monitoring_mode_label || item.monitoring_mode_label || "一般健康監測")}</p>
             <p><strong class="text-slate-700">模式提示：</strong>${escapeHTML(item.mode_alert_reasons || "目前未出現模式特定警示")}</p>
             <p><strong class="text-slate-700">檢測摘要：</strong>${escapeHTML(item.summary || "無摘要")}</p>
             <p class="bg-amber-50 text-amber-900 p-2.5 rounded-lg border border-amber-100">

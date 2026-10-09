@@ -167,6 +167,33 @@ class PharmacyIntervention(Base):
         default=lambda: datetime.now(timezone.utc)
     )
 
+
+class PatientChronicProfile(Base):
+    __tablename__ = "patient_chronic_profiles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_line_id = Column(String(255), unique=True, index=True, nullable=False)
+    display_name = Column(String(120), nullable=True)
+
+    # GENERAL / CARDIO / RESPIRATORY
+    monitoring_mode = Column(String(30), nullable=False, default="GENERAL")
+
+    # 使用者自述，不作疾病診斷
+    chronic_conditions = Column(Text, nullable=True)
+    medication_note = Column(Text, nullable=True)
+    care_note = Column(Text, nullable=True)
+
+    created_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc)
+    )
+
+
 Base.metadata.create_all(bind=engine)
 
 # ----------------------------------------------------
@@ -1040,6 +1067,15 @@ class AIChatRequest(BaseModel):
     question: str
     record_id: Optional[int] = None
 
+class PatientChronicProfileRequest(BaseModel):
+    user_line_id: str
+    id_token: Optional[str] = None
+    display_name: Optional[str] = None
+    monitoring_mode: str = "GENERAL"
+    chronic_conditions: Optional[str] = None
+    medication_note: Optional[str] = None
+    care_note: Optional[str] = None
+
 class PharmacyInterventionRequest(BaseModel):
     user_line_id: str
     rppg_record_id: Optional[int] = None
@@ -1055,6 +1091,99 @@ class PharmacyInterventionRequest(BaseModel):
 # ----------------------------------------------------
 # 11. 使用者同意與生理分析 API
 # ----------------------------------------------------
+
+@app.get("/api/v1/user/chronic-profile/{user_line_id}")
+def get_chronic_profile(user_line_id: str, db: Session = Depends(get_db)):
+    """取得使用者自述的慢性病監測檔案。"""
+    try:
+        profile = db.query(PatientChronicProfile).filter(
+            PatientChronicProfile.user_line_id == user_line_id
+        ).first()
+
+        if not profile:
+            return {
+                "status": "success",
+                "exists": False,
+                "profile": {
+                    "user_line_id": user_line_id,
+                    "display_name": None,
+                    "monitoring_mode": "GENERAL",
+                    "monitoring_mode_label": MONITORING_MODES["GENERAL"]["label"],
+                    "chronic_conditions": None,
+                    "medication_note": None,
+                    "care_note": None
+                }
+            }
+
+        mode = normalize_monitoring_mode(profile.monitoring_mode)
+        return {
+            "status": "success",
+            "exists": True,
+            "profile": {
+                "user_line_id": profile.user_line_id,
+                "display_name": profile.display_name,
+                "monitoring_mode": mode,
+                "monitoring_mode_label": MONITORING_MODES[mode]["label"],
+                "chronic_conditions": profile.chronic_conditions,
+                "medication_note": profile.medication_note,
+                "care_note": profile.care_note,
+                "updated_at": utc_iso(profile.updated_at)
+            }
+        }
+    except Exception as e:
+        return {"status": "error", "exists": False, "profile": None, "message": str(e)}
+
+
+@app.post("/api/v1/user/chronic-profile")
+def save_chronic_profile(req: PatientChronicProfileRequest, db: Session = Depends(get_db)):
+    """新增或更新使用者自述慢性病監測檔案。"""
+    if req.id_token and not verify_line_id_token(req.id_token, req.user_line_id):
+        raise HTTPException(status_code=401, detail="Invalid LINE id_token verification failed")
+
+    try:
+        mode = normalize_monitoring_mode(req.monitoring_mode)
+        profile = db.query(PatientChronicProfile).filter(
+            PatientChronicProfile.user_line_id == req.user_line_id
+        ).first()
+
+        if not profile:
+            profile = PatientChronicProfile(
+                user_line_id=req.user_line_id,
+                display_name=req.display_name,
+                monitoring_mode=mode,
+                chronic_conditions=req.chronic_conditions,
+                medication_note=req.medication_note,
+                care_note=req.care_note
+            )
+            db.add(profile)
+        else:
+            profile.display_name = req.display_name
+            profile.monitoring_mode = mode
+            profile.chronic_conditions = req.chronic_conditions
+            profile.medication_note = req.medication_note
+            profile.care_note = req.care_note
+            profile.updated_at = datetime.now(timezone.utc)
+
+        db.commit()
+        db.refresh(profile)
+
+        return {
+            "status": "success",
+            "message": "個人慢性病監測檔案已儲存",
+            "profile": {
+                "monitoring_mode": mode,
+                "monitoring_mode_label": MONITORING_MODES[mode]["label"],
+                "chronic_conditions": profile.chronic_conditions,
+                "medication_note": profile.medication_note,
+                "care_note": profile.care_note,
+                "updated_at": utc_iso(profile.updated_at)
+            }
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/v1/user/consent-status/{user_line_id}")
 def check_consent(user_line_id: str, db: Session = Depends(get_db)):
     """查詢使用者個人隱私與條款同意狀態"""
@@ -1193,8 +1322,19 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
 
         # 依使用者選擇的監測模式做風險提示；不是疾病診斷。
         # 實驗性 SpO₂ 不參與紅黃綠燈判斷。
+        # 若使用者已有個人慢性病檔案，優先使用檔案中的監測模式；
+        # 沒有檔案時才使用前端本次選擇。
+        saved_profile = db.query(PatientChronicProfile).filter(
+            PatientChronicProfile.user_line_id == req.user_line_id
+        ).first()
+        selected_mode = (
+            saved_profile.monitoring_mode
+            if saved_profile and saved_profile.monitoring_mode
+            else req.monitoring_mode
+        )
+
         mode_eval = evaluate_monitoring_mode(
-            req.monitoring_mode,
+            selected_mode,
             heart_rate=hr,
             stress_score=stress,
             metrics=advanced_metrics
@@ -1392,8 +1532,15 @@ def get_pharmacy_alerts(db: Session = Depends(get_db)):
                     .limit(30)\
                     .all()
         
+        user_ids = [r.user_line_id or r.user_uuid for r in records if (r.user_line_id or r.user_uuid)]
+        profiles = db.query(PatientChronicProfile).filter(
+            PatientChronicProfile.user_line_id.in_(user_ids)
+        ).all() if user_ids else []
+        profile_map = {p.user_line_id: p for p in profiles}
+
         result = []
         for r in records:
+            profile = profile_map.get(r.user_line_id or r.user_uuid)
             result.append({
                 "id": r.id,
                 "user_line_id": r.user_line_id or r.user_uuid,
@@ -1407,6 +1554,9 @@ def get_pharmacy_alerts(db: Session = Depends(get_db)):
                 "spo2_experimental": r.spo2_experimental,
                 "monitoring_mode": r.monitoring_mode or "GENERAL",
                 "monitoring_mode_label": r.monitoring_mode_label or MONITORING_MODES["GENERAL"]["label"],
+                "profile_monitoring_mode": normalize_monitoring_mode(profile.monitoring_mode) if profile else (r.monitoring_mode or "GENERAL"),
+                "profile_monitoring_mode_label": MONITORING_MODES[normalize_monitoring_mode(profile.monitoring_mode)]["label"] if profile else (r.monitoring_mode_label or MONITORING_MODES["GENERAL"]["label"]),
+                "chronic_conditions": profile.chronic_conditions if profile else None,
                 "mode_alert_reasons": r.mode_alert_reasons,
                 "stress_score": r.stress_score,
                 "health_light": r.health_light,
