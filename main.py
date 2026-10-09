@@ -309,6 +309,12 @@ def verify_line_id_token(id_token: str, expected_user_id: str) -> bool:
         print("[Auth Warning] 未提供 id_token，跳過嚴格驗證（本地開發模式）")
         return True
 
+    # LINE 的 id_token verify 需要 client_id（LINE Login Channel ID）。
+    # 若 Render 尚未設定 LINE_CHANNEL_ID，不因前端開始傳 token 就把量測全部擋成 401。
+    if not LINE_CHANNEL_ID:
+        print("[Auth Warning] 未設定 LINE_CHANNEL_ID，暫時跳過 id_token 嚴格驗證")
+        return True
+
     try:
         data = {"id_token": id_token}
         if LINE_CHANNEL_ID:
@@ -1790,7 +1796,9 @@ def get_pharmacy_dashboard(db: Session = Depends(get_db)):
             if item.user_line_id and item.user_line_id not in latest_intervention:
                 latest_intervention[item.user_line_id] = item
 
-        today = datetime.now(timezone.utc).date()
+        # 追蹤日期是藥師以台灣日期輸入，KPI 也應以 Asia/Taipei（UTC+8）的「今天」判斷。
+        taipei_tz = timezone(timedelta(hours=8))
+        today = datetime.now(taipei_tz).date()
         followups = []
         for user_id, item in latest_intervention.items():
             if not item.followup_date or item.action_result == "REFER":

@@ -34,9 +34,11 @@
 
         /* 視訊與人臉綠光 ROI 區域 */
         .camera-container { position: relative; width: 280px; height: 280px; margin: 0 auto 20px; border-radius: 50%; overflow: hidden; background-color: #000; border: 4px solid #1DB446; box-shadow: 0 8px 16px rgba(29, 180, 70, 0.2); }
-        video { display: none; }
-        canvas { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
-        .face-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 4px dashed rgba(255, 255, 255, 0.85); border-radius: 50%; pointer-events: none; box-sizing: border-box; animation: pulse 2s infinite; }
+        /* 讓原始相機預覽永遠在底層可見：即使 MediaPipe 尚未回傳，使用者也不會只看到黑畫面。 */
+        #webcam, #output-canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+        #webcam { display: block; z-index: 1; background: #000; }
+        #output-canvas { z-index: 2; background: transparent; }
+        .face-overlay { position: absolute; z-index: 3; top: 0; left: 0; width: 100%; height: 100%; border: 4px dashed rgba(255, 255, 255, 0.85); border-radius: 50%; pointer-events: none; box-sizing: border-box; animation: pulse 2s infinite; }
         
         @keyframes pulse {
             0% { border-color: rgba(255, 255, 255, 0.6); box-shadow: inset 0 0 10px rgba(255, 255, 255, 0.3); }
@@ -316,7 +318,10 @@
         const canvasCtx = canvasElement.getContext('2d', { willReadFrequently: true });
         
         let faceMesh;
-        let cameraInstance = null;
+        let cameraInstance = null; // 保留名稱相容舊程式；新版改用原生 MediaDevices
+        let cameraStream = null;
+        let cameraLoopRunning = false;
+        let faceMeshBusy = false;
         let isMeasuring = false;
         let collectedGreenSignals = [];
         let collectedRedSignals = [];
@@ -374,6 +379,7 @@
                 document.getElementById("user-info").innerText = "👤 已連線: " + profile.displayName;
 
                 renderUserQRCode(currentUserId);
+                await loadChronicProfile();
 
                 const urlParams = new URLSearchParams(window.location.search);
                 if (urlParams.get('page') === 'history') {
@@ -386,35 +392,116 @@
             }
         }
 
-        // 2. 初始化 MediaPipe Face Mesh
-        function initFaceMesh() {
-            faceMesh = new FaceMesh({
-                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+        // 2. 初始化相機與 MediaPipe Face Mesh
+        // 不再完全依賴 camera_utils：先用瀏覽器原生 getUserMedia 顯示預覽，
+        // 再把 video 幀送進 FaceMesh。這樣 MediaPipe 載入較慢時也不會黑畫面。
+        async function startNativeCamera() {
+            if (cameraStream && cameraStream.getVideoTracks().some(t => t.readyState === "live")) {
+                return true;
+            }
+
+            if (!window.isSecureContext) {
+                throw new Error("相機需要 HTTPS 安全連線");
+            }
+
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                throw new Error("目前瀏覽器不支援相機存取");
+            }
+
+            cameraStream = await navigator.mediaDevices.getUserMedia({
+                audio: false,
+                video: {
+                    facingMode: "user",
+                    width: { ideal: 640 },
+                    height: { ideal: 640 },
+                    frameRate: { ideal: 30, max: 30 }
+                }
             });
 
-            faceMesh.setOptions({
-                maxNumFaces: 1,
-                refineLandmarks: true,
-                minDetectionConfidence: 0.5,
-                minTrackingConfidence: 0.5
-            });
+            videoElement.srcObject = cameraStream;
+            videoElement.muted = true;
+            videoElement.setAttribute("playsinline", "");
+            await videoElement.play();
 
-            faceMesh.onResults(onFaceMeshResults);
+            document.getElementById("status-text").innerText =
+                "✅ 相機已啟動，請將臉部置於圓框中央。";
 
-            cameraInstance = new Camera(videoElement, {
-                onFrame: async () => {
-                    if (videoElement.readyState >= 2) {
+            return true;
+        }
+
+        function startFaceMeshLoop() {
+            if (cameraLoopRunning) return;
+            cameraLoopRunning = true;
+
+            const loop = async () => {
+                if (!cameraLoopRunning) return;
+
+                if (
+                    faceMesh &&
+                    videoElement.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+                    !faceMeshBusy
+                ) {
+                    faceMeshBusy = true;
+                    try {
                         await faceMesh.send({ image: videoElement });
+                    } catch (err) {
+                        console.error("FaceMesh frame error:", err);
+                    } finally {
+                        faceMeshBusy = false;
                     }
-                },
-                width: 640,
-                height: 640
-            });
+                }
+
+                requestAnimationFrame(loop);
+            };
+
+            requestAnimationFrame(loop);
+        }
+
+        async function initFaceMesh() {
+            // 先開相機，確保即使 FaceMesh CDN 暫時失敗也仍有即時預覽。
             try {
-                cameraInstance.start();
+                await startNativeCamera();
             } catch (err) {
                 console.error("相機啟動失敗:", err);
-                document.getElementById("status-text").innerText = "❌ 無法啟動相機，請確認已允許瀏覽器使用相機，並使用 HTTPS。";
+
+                let msg = "❌ 無法啟動相機。";
+                if (err?.name === "NotAllowedError") {
+                    msg += " 請允許瀏覽器 / LINE 使用相機權限後重新整理。";
+                } else if (err?.name === "NotFoundError") {
+                    msg += " 找不到可用的前鏡頭。";
+                } else if (err?.name === "NotReadableError") {
+                    msg += " 相機可能正被其他 App 使用，請關閉其他相機程式後重試。";
+                } else {
+                    msg += ` ${err?.message || "請確認使用 HTTPS 與相機權限。"}`;
+                }
+
+                document.getElementById("status-text").innerText = msg;
+                return;
+            }
+
+            try {
+                if (typeof FaceMesh === "undefined") {
+                    throw new Error("MediaPipe FaceMesh SDK 載入失敗");
+                }
+
+                faceMesh = new FaceMesh({
+                    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+                });
+
+                faceMesh.setOptions({
+                    maxNumFaces: 1,
+                    refineLandmarks: true,
+                    minDetectionConfidence: 0.5,
+                    minTrackingConfidence: 0.5
+                });
+
+                faceMesh.onResults(onFaceMeshResults);
+                startFaceMeshLoop();
+
+            } catch (err) {
+                console.error("MediaPipe 初始化失敗:", err);
+                document.getElementById("status-text").innerText =
+                    "⚠️ 相機已啟動，但臉部分析模組載入失敗。請檢查網路後重新整理。";
             }
         }
 
@@ -522,13 +609,38 @@
             canvasCtx.restore();
         }
 
-        window.onload = function() {
-            initLiff();
-            initFaceMesh();
+        window.onload = async function() {
+            // LIFF 與相機彼此獨立初始化；其中一個失敗不應讓另一個完全停止。
+            initLiff().catch(err => console.error("LIFF startup error:", err));
+            await initFaceMesh();
         };
 
+        // LINE WebView 切到背景再回來時，部分手機會暫停 camera track；回到頁面時自動恢復。
+        document.addEventListener("visibilitychange", () => {
+            if (!document.hidden) {
+                startNativeCamera().catch(err => console.error("Resume camera error:", err));
+            }
+        });
+
+        window.addEventListener("pageshow", () => {
+            startNativeCamera().catch(err => console.error("pageshow camera error:", err));
+        });
+
         // 4. 開始量測按鈕觸發
-        function startMeasurement() {
+        async function startMeasurement() {
+            // 若頁面初次載入時相機權限被延遲，按開始量測時再嘗試一次。
+            try {
+                await startNativeCamera();
+            } catch (err) {
+                alert(`相機尚未啟動：${err?.message || err}`);
+                return;
+            }
+
+            if (!faceMesh) {
+                alert("臉部分析模組尚未準備完成，請確認網路後重新整理頁面。");
+                return;
+            }
+
             if (!currentUserId) {
                 alert("未檢測到 LINE 帳號身份！請由 LINE 聊天室開啟。");
                 if (liff.isLoggedIn()) {
@@ -589,6 +701,7 @@
 
             const payload = {
                 user_line_id: currentUserId,
+                id_token: (typeof liff !== "undefined" && liff.isLoggedIn()) ? liff.getIDToken() : null,
                 rgb_signals: [collectedRedSignals, collectedGreenSignals, collectedBlueSignals],
                 fps: Number(estimatedFps.toFixed(2)),
                 monitoring_mode: getMonitoringMode()
