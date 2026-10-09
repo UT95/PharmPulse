@@ -127,6 +127,9 @@ class RPPGRecord(Base):
     signal_quality = Column(Integer, nullable=True)
     signal_quality_label = Column(String(20), nullable=True)
     spo2_experimental = Column(Float, nullable=True)
+    monitoring_mode = Column(String(30), nullable=False, default="GENERAL")
+    monitoring_mode_label = Column(String(80), nullable=True)
+    mode_alert_reasons = Column(Text, nullable=True)
     stress_score = Column(Integer, nullable=False)
     health_light = Column(String(20), nullable=False)
     is_resolved = Column(Boolean, default=False)
@@ -185,7 +188,10 @@ def auto_migrate_db():
                     ("irregular_pulse_score", "INTEGER"),
                     ("signal_quality", "INTEGER"),
                     ("signal_quality_label", "VARCHAR(20)"),
-                    ("spo2_experimental", "DOUBLE PRECISION")
+                    ("spo2_experimental", "DOUBLE PRECISION"),
+                    ("monitoring_mode", "VARCHAR(30) DEFAULT 'GENERAL'"),
+                    ("monitoring_mode_label", "VARCHAR(80)"),
+                    ("mode_alert_reasons", "TEXT")
                 ]
                 for col_name, col_type in columns_to_add:
                     try:
@@ -205,6 +211,9 @@ def auto_migrate_db():
                     "signal_quality": "INTEGER",
                     "signal_quality_label": "VARCHAR(20)",
                     "spo2_experimental": "FLOAT",
+                    "monitoring_mode": "VARCHAR(30) DEFAULT 'GENERAL'",
+                    "monitoring_mode_label": "VARCHAR(80)",
+                    "mode_alert_reasons": "TEXT",
                 }
                 for col_name, col_type in sqlite_columns.items():
                     if col_name not in existing:
@@ -339,7 +348,77 @@ def call_llm_with_fallback(prompt: str, is_json: bool = False) -> Optional[str]:
     print("[AI Error] ❌ 所有 AI 模型 (OpenAI 與 Gemini) 均無法連線。")
     return None
 
-def generate_gemini_health_advice(heart_rate: int, sdnn: float, stress_score: int, health_light: str) -> Optional[dict]:
+MONITORING_MODES = {
+    "GENERAL": {
+        "label": "一般健康監測",
+        "note": "日常追蹤心率、HRV、呼吸與壓力趨勢。"
+    },
+    "CARDIO": {
+        "label": "高血壓 / 心血管監測",
+        "note": "著重心率、脈搏規律與 HRV 趨勢；高血壓仍需搭配合格血壓計確認。"
+    },
+    "RESPIRATORY": {
+        "label": "COPD / 呼吸慢病監測",
+        "note": "著重呼吸頻率與心肺負荷；SpO₂ 為實驗性估值，不作醫療判斷。"
+    }
+}
+
+def normalize_monitoring_mode(value: Optional[str]) -> str:
+    mode = (value or "GENERAL").strip().upper()
+    return mode if mode in MONITORING_MODES else "GENERAL"
+
+def evaluate_monitoring_mode(mode: str, heart_rate: int, stress_score: int, metrics: dict):
+    """依監測模式提供保守的風險提示，不作疾病診斷。"""
+    mode = normalize_monitoring_mode(mode)
+    quality = metrics.get("signal_quality")
+    rr = metrics.get("respiratory_rate")
+    irregular = metrics.get("irregular_pulse_score")
+
+    light = "GREEN"
+    reasons = []
+
+    # 所有模式共用的基礎安全條件
+    if heart_rate > 110 or heart_rate < 45 or stress_score > 80:
+        light = "RED"
+        if heart_rate > 110: reasons.append("心率明顯偏高")
+        if heart_rate < 45: reasons.append("心率明顯偏低")
+        if stress_score > 80: reasons.append("生理壓力指數偏高")
+    elif heart_rate >= 90 or heart_rate < 55 or stress_score > 55:
+        light = "YELLOW"
+        if heart_rate >= 90: reasons.append("心率偏高")
+        if heart_rate < 55: reasons.append("心率偏低")
+        if stress_score > 55: reasons.append("生理壓力上升")
+
+    # 心血管模式：只有訊號品質足夠時才參考脈搏規律性
+    if mode == "CARDIO" and quality is not None and quality >= 60 and irregular is not None:
+        if irregular >= 70:
+            if light == "GREEN": light = "YELLOW"
+            reasons.append("脈搏規律性需重新確認")
+        elif irregular >= 45 and light == "GREEN":
+            light = "YELLOW"
+            reasons.append("脈搏規律性略有波動")
+
+    # 呼吸模式：只有訊號品質足夠時才參考呼吸頻率
+    if mode == "RESPIRATORY" and quality is not None and quality >= 60 and rr is not None:
+        if rr >= 25 or rr < 8:
+            light = "RED"
+            reasons.append("呼吸頻率明顯偏離常見靜息範圍")
+        elif rr >= 21 or rr < 10:
+            if light == "GREEN": light = "YELLOW"
+            reasons.append("呼吸頻率需持續追蹤")
+
+    if not reasons:
+        reasons.append("目前未出現模式特定警示")
+
+    return {
+        "mode": mode,
+        "label": MONITORING_MODES[mode]["label"],
+        "note": MONITORING_MODES[mode]["note"],
+        "light": light,
+        "reasons": reasons
+    }
+
+def generate_gemini_health_advice(heart_rate: int, sdnn: float, stress_score: int, health_light: str, monitoring_mode: str = "GENERAL", respiratory_rate=None, irregular_pulse_score=None) -> Optional[dict]:
     """根據生理數據產生專業且溫暖的藥局衛教摘要與建議"""
     prompt = f"""
 你是一位 PharmPulse 社區智慧藥局系統的「AI 臨床衛教藥師」。
@@ -349,7 +428,10 @@ def generate_gemini_health_advice(heart_rate: int, sdnn: float, stress_score: in
 - 心率 (Heart Rate): {heart_rate} BPM
 - 心率變異度 (HRV SDNN): {sdnn} ms
 - 壓力指數 (Stress Score): {stress_score} / 100
-- 健康狀態燈號 (Health Light): {health_light} (GREEN: 良好穩定, YELLOW: 輕度疲勞/壓力上升, RED: 顯著異常/負擔過重)
+- 健康狀態燈號 (Health Light): {health_light}（僅作風險提示）
+- 慢性病監測模式: {MONITORING_MODES.get(normalize_monitoring_mode(monitoring_mode), MONITORING_MODES["GENERAL"])["label"]}
+- 呼吸頻率: {respiratory_rate if respiratory_rate is not None else "未取得"} 次/分
+- 脈搏不規則風險分數: {irregular_pulse_score if irregular_pulse_score is not None else "未取得"} / 100
 
 【輸出要求】
 請務必以繁體中文 (台灣醫療衛教用語) 並且回傳「標準 JSON 格式」，包含以下兩個欄位：
@@ -945,6 +1027,7 @@ class AnalyzeRequest(BaseModel):
     id_token: Optional[str] = None
     rgb_signals: Any  # 使用 Any 提升對前端陣列格式變化的相容度
     fps: float = Field(default=30.0, ge=10.0, le=60.0)
+    monitoring_mode: str = "GENERAL"
 
 class ConsentRequest(BaseModel):
     user_line_id: str
@@ -1108,16 +1191,27 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
         if 'advanced_metrics' not in locals():
             advanced_metrics = {"hrv_rmssd": None, "respiratory_rate": None, "irregular_pulse_score": None, "signal_quality": None, "signal_quality_label": None, "spo2_experimental": None}
 
-        # 健康燈號評估（目前不讓實驗性 SpO₂ / 不規則分數直接影響分流）
-        if stress > 75 or hr > 100 or hr < 50:
-            light = "RED"
-        elif stress > 50 or hr >= 85:
-            light = "YELLOW"
-        else:
-            light = "GREEN"
+        # 依使用者選擇的監測模式做風險提示；不是疾病診斷。
+        # 實驗性 SpO₂ 不參與紅黃綠燈判斷。
+        mode_eval = evaluate_monitoring_mode(
+            req.monitoring_mode,
+            heart_rate=hr,
+            stress_score=stress,
+            metrics=advanced_metrics
+        )
+        monitoring_mode = mode_eval["mode"]
+        monitoring_mode_label = mode_eval["label"]
+        monitoring_mode_note = mode_eval["note"]
+        mode_alert_reasons = mode_eval["reasons"]
+        light = mode_eval["light"]
 
         # AI 生成衛教分析 (優先使用 LLM 模組，失敗自動轉為範本保底)
-        ai_res = generate_gemini_health_advice(heart_rate=hr, sdnn=sdnn, stress_score=stress, health_light=light)
+        ai_res = generate_gemini_health_advice(
+            heart_rate=hr, sdnn=sdnn, stress_score=stress, health_light=light,
+            monitoring_mode=monitoring_mode,
+            respiratory_rate=advanced_metrics.get("respiratory_rate"),
+            irregular_pulse_score=advanced_metrics.get("irregular_pulse_score")
+        )
 
         if ai_res:
             summary = ai_res.get("summary", "")
@@ -1159,6 +1253,9 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
             signal_quality=advanced_metrics.get("signal_quality"),
             signal_quality_label=advanced_metrics.get("signal_quality_label"),
             spo2_experimental=advanced_metrics.get("spo2_experimental"),
+            monitoring_mode=monitoring_mode,
+            monitoring_mode_label=monitoring_mode_label,
+            mode_alert_reasons="；".join(mode_alert_reasons),
             stress_score=stress,
             health_light=light,
             is_resolved=False,
@@ -1198,6 +1295,10 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
                 "signal_quality": advanced_metrics.get("signal_quality"),
                 "signal_quality_label": advanced_metrics.get("signal_quality_label"),
                 "spo2_experimental": advanced_metrics.get("spo2_experimental"),
+                "monitoring_mode": monitoring_mode,
+                "monitoring_mode_label": monitoring_mode_label,
+                "monitoring_mode_note": monitoring_mode_note,
+                "mode_alert_reasons": mode_alert_reasons,
                 "stress_score": stress,
                 "health_light": light,
                 "summary": summary,
@@ -1264,6 +1365,9 @@ def get_user_history(user_line_id: str, limit: int = 10, db: Session = Depends(g
                 "signal_quality": r.signal_quality,
                 "signal_quality_label": r.signal_quality_label,
                 "spo2_experimental": r.spo2_experimental,
+                "monitoring_mode": r.monitoring_mode or "GENERAL",
+                "monitoring_mode_label": r.monitoring_mode_label or MONITORING_MODES["GENERAL"]["label"],
+                "mode_alert_reasons": r.mode_alert_reasons,
                 "stress_score": r.stress_score,
                 "health_light": r.health_light,
                 "summary": r.summary,
@@ -1301,6 +1405,9 @@ def get_pharmacy_alerts(db: Session = Depends(get_db)):
                 "signal_quality": r.signal_quality,
                 "signal_quality_label": r.signal_quality_label,
                 "spo2_experimental": r.spo2_experimental,
+                "monitoring_mode": r.monitoring_mode or "GENERAL",
+                "monitoring_mode_label": r.monitoring_mode_label or MONITORING_MODES["GENERAL"]["label"],
+                "mode_alert_reasons": r.mode_alert_reasons,
                 "stress_score": r.stress_score,
                 "health_light": r.health_light,
                 "summary": r.summary,
@@ -1355,6 +1462,9 @@ def get_patient_7day_history(user_line_id: str, db: Session = Depends(get_db)):
                 "signal_quality": r.signal_quality,
                 "signal_quality_label": r.signal_quality_label,
                 "spo2_experimental": r.spo2_experimental,
+                "monitoring_mode": r.monitoring_mode or "GENERAL",
+                "monitoring_mode_label": r.monitoring_mode_label or MONITORING_MODES["GENERAL"]["label"],
+                "mode_alert_reasons": r.mode_alert_reasons,
                 "stress_score": r.stress_score,
                 "health_light": r.health_light,
                 "summary": r.summary,

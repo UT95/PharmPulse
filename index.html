@@ -94,6 +94,16 @@
             </div>
         </div>
 
+        <div style="margin:12px 0 16px; padding:14px; border:1px solid #d1fae5; background:#f0fdf4; border-radius:12px; text-align:left;">
+            <label for="monitoring-mode" style="display:block;font-size:13px;font-weight:700;color:#166534;margin-bottom:6px;">🩺 慢性病監測模式</label>
+            <select id="monitoring-mode" onchange="updateMonitoringModeHint()" style="width:100%;padding:10px;border-radius:9px;border:1px solid #bbf7d0;background:#fff;font-size:14px;color:#334155;">
+                <option value="GENERAL">一般健康監測</option>
+                <option value="CARDIO">高血壓 / 心血管監測</option>
+                <option value="RESPIRATORY">COPD / 呼吸慢病監測</option>
+            </select>
+            <div id="monitoring-mode-hint" style="margin-top:7px;font-size:12px;line-height:1.45;color:#64748b;">日常追蹤心率、HRV、呼吸與壓力趨勢。</div>
+        </div>
+
         <div class="camera-container">
             <video id="webcam" playsinline muted></video>
             <canvas id="output-canvas" width="640" height="640"></canvas>
@@ -137,6 +147,31 @@
 
     <script>
         let currentUserId = "";
+
+        const monitoringModeInfo = {
+            GENERAL: { label: "一般健康監測", hint: "日常追蹤心率、HRV、呼吸與壓力趨勢。" },
+            CARDIO: { label: "高血壓 / 心血管監測", hint: "著重心率、脈搏規律與 HRV 趨勢；高血壓仍需搭配合格血壓計確認。" },
+            RESPIRATORY: { label: "COPD / 呼吸慢病監測", hint: "著重呼吸頻率與心肺負荷；SpO₂ 為實驗性估值，不作醫療判斷。" }
+        };
+
+        function getMonitoringMode() {
+            return document.getElementById("monitoring-mode")?.value || "GENERAL";
+        }
+
+        function updateMonitoringModeHint() {
+            const mode = getMonitoringMode();
+            const info = monitoringModeInfo[mode] || monitoringModeInfo.GENERAL;
+            const hint = document.getElementById("monitoring-mode-hint");
+            if (hint) hint.textContent = info.hint;
+            localStorage.setItem("pharmpulse_monitoring_mode", mode);
+        }
+
+        window.addEventListener("DOMContentLoaded", () => {
+            const saved = localStorage.getItem("pharmpulse_monitoring_mode");
+            const select = document.getElementById("monitoring-mode");
+            if (saved && monitoringModeInfo[saved] && select) select.value = saved;
+            updateMonitoringModeHint();
+        });
         let historyChartInstance = null;
         
         const videoElement = document.getElementById('webcam');
@@ -418,7 +453,8 @@
             const payload = {
                 user_line_id: currentUserId,
                 rgb_signals: [collectedRedSignals, collectedGreenSignals, collectedBlueSignals],
-                fps: Number(estimatedFps.toFixed(2))
+                fps: Number(estimatedFps.toFixed(2)),
+                monitoring_mode: getMonitoringMode()
             };
 
             try {
@@ -437,7 +473,12 @@
                     reportCard.className = "report-card " + (data.health_light === "RED" ? "red" : (data.health_light === "YELLOW" ? "yellow" : ""));
                     document.getElementById("report-title").innerText = (data.health_light === "RED" ? "🔴" : (data.health_light === "YELLOW" ? "🟡" : "🟢")) + " 生理量測結果";
                     const qLabel = data.signal_quality_label === "GOOD" ? "良好" : (data.signal_quality_label === "FAIR" ? "普通" : "需重測");
+                    const modeReasons = Array.isArray(data.mode_alert_reasons)
+                        ? data.mode_alert_reasons.join("、")
+                        : (data.mode_alert_reasons || "目前無模式特定警示");
                     document.getElementById("report-metrics").innerText =
+                        `🩺 模式：${data.monitoring_mode_label || monitoringModeInfo[getMonitoringMode()].label}\n` +
+                        `🎯 模式提示：${modeReasons}\n` +
                         `❤️ 心率：${data.heart_rate} BPM\n` +
                         `💓 HRV：SDNN ${data.hrv_sdnn ?? "--"} ms｜RMSSD ${data.hrv_rmssd ?? "--"} ms\n` +
                         `🫁 呼吸頻率：${data.respiratory_rate ?? "需較佳訊號"} 次/分\n` +
