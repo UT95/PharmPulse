@@ -172,6 +172,11 @@
             <button onclick="setMetric('heart_rate')" data-metric="heart_rate" class="metric-btn bg-emerald-600 text-white px-3 py-1.5 rounded-lg text-xs font-semibold">心率 HR</button>
             <button onclick="setMetric('hrv_sdnn')" data-metric="hrv_sdnn" class="metric-btn bg-slate-100 text-slate-600 px-3 py-1.5 rounded-lg text-xs font-semibold">HRV SDNN</button>
             <button onclick="setMetric('stress_score')" data-metric="stress_score" class="metric-btn bg-slate-100 text-slate-600 px-3 py-1.5 rounded-lg text-xs font-semibold">壓力 Stress</button>
+            <button onclick="setMetric('hrv_rmssd')" data-metric="hrv_rmssd" class="metric-btn bg-slate-100 text-slate-600 px-3 py-1.5 rounded-lg text-xs font-semibold">RMSSD</button>
+            <button onclick="setMetric('respiratory_rate')" data-metric="respiratory_rate" class="metric-btn bg-slate-100 text-slate-600 px-3 py-1.5 rounded-lg text-xs font-semibold">呼吸 RR</button>
+            <button onclick="setMetric('irregular_pulse_score')" data-metric="irregular_pulse_score" class="metric-btn bg-slate-100 text-slate-600 px-3 py-1.5 rounded-lg text-xs font-semibold">脈搏規律</button>
+            <button onclick="setMetric('signal_quality')" data-metric="signal_quality" class="metric-btn bg-slate-100 text-slate-600 px-3 py-1.5 rounded-lg text-xs font-semibold">訊號品質</button>
+            <button onclick="setMetric('spo2_experimental')" data-metric="spo2_experimental" class="metric-btn bg-slate-100 text-slate-600 px-3 py-1.5 rounded-lg text-xs font-semibold">SpO₂*</button>
           </div>
           <div class="flex justify-between items-center mb-2">
             <h4 id="chart-title" class="font-bold text-sm text-slate-800">7 天心率趨勢 (BPM)</h4>
@@ -310,7 +315,12 @@
     const metricConfig = {
       heart_rate: { title: "7 天心率趨勢 (BPM)", label: "心率", unit: "BPM", color: "#059669" },
       hrv_sdnn: { title: "7 天 HRV（SDNN）趨勢 (ms)", label: "HRV SDNN", unit: "ms", color: "#2563eb" },
-      stress_score: { title: "7 天壓力指數趨勢", label: "壓力指數", unit: "/ 100", color: "#d97706" }
+      stress_score: { title: "7 天壓力指數趨勢", label: "壓力指數", unit: "/ 100", color: "#d97706" },
+      hrv_rmssd: { title: "7 天 HRV（RMSSD）趨勢", label: "RMSSD", unit: "ms", color: "#7c3aed" },
+      respiratory_rate: { title: "7 天呼吸頻率趨勢", label: "呼吸頻率", unit: "次/分", color: "#0891b2" },
+      irregular_pulse_score: { title: "7 天脈搏不規則風險趨勢", label: "不規則風險", unit: "/ 100", color: "#dc2626" },
+      signal_quality: { title: "7 天 rPPG 訊號品質", label: "訊號品質", unit: "/ 100", color: "#475569" },
+      spo2_experimental: { title: "7 天 SpO₂ 實驗性趨勢（未校正）", label: "SpO₂*", unit: "%", color: "#0284c7" }
     };
 
     function escapeHTML(value) {
@@ -525,7 +535,12 @@
           <div class="grid grid-cols-2 lg:grid-cols-4 gap-2 pt-1 border-t border-slate-200/50 text-slate-700">
             <div>心率: <strong class="text-slate-900">${escapeHTML(r.heart_rate ?? "--")} BPM</strong></div>
             <div>壓力: <strong class="text-slate-900">${escapeHTML(r.stress_score ?? "--")} / 100</strong></div>
-            <div>HRV: <strong class="text-slate-900">${escapeHTML(r.hrv_sdnn ?? "--")} ms</strong></div>
+            <div>HRV SDNN: <strong class="text-slate-900">${escapeHTML(r.hrv_sdnn ?? "--")} ms</strong></div>
+            <div>RMSSD: <strong class="text-slate-900">${escapeHTML(r.hrv_rmssd ?? "--")} ms</strong></div>
+            <div>呼吸: <strong class="text-slate-900">${escapeHTML(r.respiratory_rate ?? "--")} 次/分</strong></div>
+            <div>脈搏不規則風險: <strong class="text-slate-900">${escapeHTML(r.irregular_pulse_score ?? "--")} / 100</strong></div>
+            <div>訊號品質: <strong class="text-slate-900">${escapeHTML(r.signal_quality ?? "--")} / 100</strong></div>
+            <div>SpO₂*: <strong class="text-slate-900">${escapeHTML(r.spo2_experimental ?? "--")}%</strong> <span class="text-[10px] text-slate-400">實驗性</span></div>
             <div>狀態: <strong class="text-slate-900">${escapeHTML(r.health_light ?? "--")}</strong></div>
           </div>`;
         historyListDiv.appendChild(div);
@@ -602,8 +617,8 @@
           scales: {
             y: {
               beginAtZero: false,
-              suggestedMin: currentMetric === "stress_score" ? 0 : undefined,
-              suggestedMax: currentMetric === "stress_score" ? 100 : undefined,
+              suggestedMin: ["stress_score", "irregular_pulse_score", "signal_quality"].includes(currentMetric) ? 0 : undefined,
+              suggestedMax: ["stress_score", "irregular_pulse_score", "signal_quality"].includes(currentMetric) ? 100 : undefined,
               ticks: {
                 font: { size: 11 },
                 color: "#64748b",

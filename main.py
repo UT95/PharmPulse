@@ -9,7 +9,7 @@ import numpy as np
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Union, Dict, Any
 from contextlib import asynccontextmanager
-from scipy.signal import butter, filtfilt, find_peaks
+from scipy.signal import butter, filtfilt, find_peaks, hilbert
 
 from fastapi import FastAPI, HTTPException, Request, Depends, BackgroundTasks, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -121,6 +121,12 @@ class RPPGRecord(Base):
     user_line_id = Column(String(255), index=True, nullable=True)
     heart_rate = Column(Integer, nullable=False)
     hrv_sdnn = Column(Float, nullable=False)
+    hrv_rmssd = Column(Float, nullable=True)
+    respiratory_rate = Column(Float, nullable=True)
+    irregular_pulse_score = Column(Integer, nullable=True)
+    signal_quality = Column(Integer, nullable=True)
+    signal_quality_label = Column(String(20), nullable=True)
+    spo2_experimental = Column(Float, nullable=True)
     stress_score = Column(Integer, nullable=False)
     health_light = Column(String(20), nullable=False)
     is_resolved = Column(Boolean, default=False)
@@ -173,7 +179,13 @@ def auto_migrate_db():
                     ("user_line_id", "VARCHAR(255)"),
                     ("is_resolved", "BOOLEAN DEFAULT FALSE"),
                     ("summary", "TEXT"),
-                    ("action_advice", "TEXT")
+                    ("action_advice", "TEXT"),
+                    ("hrv_rmssd", "DOUBLE PRECISION"),
+                    ("respiratory_rate", "DOUBLE PRECISION"),
+                    ("irregular_pulse_score", "INTEGER"),
+                    ("signal_quality", "INTEGER"),
+                    ("signal_quality_label", "VARCHAR(20)"),
+                    ("spo2_experimental", "DOUBLE PRECISION")
                 ]
                 for col_name, col_type in columns_to_add:
                     try:
@@ -182,6 +194,23 @@ def auto_migrate_db():
                         print(f"[Migration Warning] Add column {col_name}: {e}")
         except Exception as e:
             print(f"[Migration Error] Database connection failed: {e}")
+    elif "sqlite" in DATABASE_URL:
+        try:
+            with engine.begin() as conn:
+                existing = {row[1] for row in conn.execute(text("PRAGMA table_info(rppg_records)"))}
+                sqlite_columns = {
+                    "hrv_rmssd": "FLOAT",
+                    "respiratory_rate": "FLOAT",
+                    "irregular_pulse_score": "INTEGER",
+                    "signal_quality": "INTEGER",
+                    "signal_quality_label": "VARCHAR(20)",
+                    "spo2_experimental": "FLOAT",
+                }
+                for col_name, col_type in sqlite_columns.items():
+                    if col_name not in existing:
+                        conn.execute(text(f"ALTER TABLE rppg_records ADD COLUMN {col_name} {col_type}"))
+        except Exception as e:
+            print(f"[Migration Warning] SQLite advanced metrics migration: {e}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -357,6 +386,11 @@ def generate_ai_chat_response(db: Session, user_line_id: str, question: str, rec
 【民眾最新生理紀錄】
 - 心率: {record.heart_rate} BPM
 - HRV (SDNN): {record.hrv_sdnn} ms
+- HRV (RMSSD): {record.hrv_rmssd if record.hrv_rmssd is not None else '未取得'} ms
+- 呼吸頻率: {record.respiratory_rate if record.respiratory_rate is not None else '未取得'} 次/分
+- 脈搏不規則風險分數: {record.irregular_pulse_score if record.irregular_pulse_score is not None else '未取得'} / 100（僅篩檢提示）
+- 訊號品質: {record.signal_quality if record.signal_quality is not None else '未取得'} / 100
+- SpO₂ 實驗性估值: {record.spo2_experimental if record.spo2_experimental is not None else '未取得'} %（未校正、不可作診斷）
 - 壓力指數: {record.stress_score} / 100
 - 健康燈號: {record.health_light}
 - 檢測時間: {created_str}
@@ -495,10 +529,119 @@ def calculate_rppg_metrics(green_signal: List[float], fps: float = 30.0):
     sdnn = round(float(np.clip(sdnn, 12.0, 120.0)), 1)
     return hr, sdnn
 
+def extract_red_green_signals(rgb_signals: Any):
+    """解析前端 [R,G] / [R,G,B] / frame-major 格式，回傳等長 red、green。"""
+    raw = np.asarray(rgb_signals, dtype=np.float64)
+    raw = np.squeeze(raw)
+    if raw.ndim != 2:
+        raise ValueError("進階生理指標需要同時提供 Red 與 Green channel")
+    rows, cols = raw.shape
+    if rows in (2, 3) and cols >= 5:
+        red, green = raw[0, :], raw[1, :]
+    elif cols in (2, 3) and rows >= 5:
+        red, green = raw[:, 0], raw[:, 1]
+    else:
+        raise ValueError(f"無法解析 Red/Green 訊號 shape={raw.shape}")
+    valid = np.isfinite(red) & np.isfinite(green)
+    red, green = red[valid], green[valid]
+    if len(green) < 30:
+        raise ValueError("有效 Red/Green 訊號不足")
+    return red, green
+
+def calculate_advanced_rppg_metrics(red_signal, green_signal, fps: float, hr: int):
+    """
+    研究/健康管理用途的進階 rPPG 指標。
+    SpO2 為一般 RGB 相機 Red/Green ratio-of-ratios 的未校正實驗值，
+    不參與紅黃綠分流，也不可替代血氧機。
+    """
+    fps = float(np.clip(fps, 10.0, 60.0))
+    red = np.asarray(red_signal, dtype=float)
+    green = np.asarray(green_signal, dtype=float)
+    n = min(len(red), len(green))
+    red, green = red[:n], green[:n]
+    duration = n / fps
+
+    gd = green - np.mean(green)
+    try:
+        pulse = butter_bandpass_filter(gd, 0.75, 2.5, fps)
+    except Exception:
+        pulse = gd
+
+    # 訊號品質：主心率頻帶功率 / 心率頻帶總功率 + RR 穩定度。
+    n_fft = max(2048, 2 ** int(math.ceil(math.log2(max(n, 1)))))
+    spec = np.abs(np.fft.rfft(pulse, n=n_fft)) ** 2
+    freqs = np.fft.rfftfreq(n_fft, 1.0 / fps)
+    band = (freqs >= 0.75) & (freqs <= 2.5)
+    target = hr / 60.0
+    peak_band = band & (np.abs(freqs - target) <= 0.12)
+    band_power = float(spec[band].sum()) if np.any(band) else 0.0
+    peak_power = float(spec[peak_band].sum()) if np.any(peak_band) else 0.0
+    spectral_ratio = peak_power / band_power if band_power > 0 else 0.0
+
+    prominence = max(float(np.std(pulse)) * 0.3, 1e-8)
+    peaks, _ = find_peaks(pulse, distance=max(int(fps * 60 / 160), 1), prominence=prominence)
+    rr = np.diff(peaks) / fps * 1000.0 if len(peaks) >= 3 else np.array([])
+    rr = rr[(rr >= 375.0) & (rr <= 1333.0)]
+
+    rmssd = None
+    irregular = None
+    rr_consistency = 0.5
+    if len(rr) >= 3:
+        diffs = np.diff(rr)
+        rmssd = round(float(np.sqrt(np.mean(diffs ** 2))), 1)
+        median_rr = float(np.median(rr))
+        mad = float(np.median(np.abs(rr - median_rr)))
+        robust_cv = mad / median_rr if median_rr > 0 else 0.0
+        large_diff_ratio = float(np.mean(np.abs(diffs) > 80.0)) if len(diffs) else 0.0
+        irregular = int(round(np.clip((robust_cv / 0.12) * 55 + large_diff_ratio * 45, 0, 100)))
+        rr_consistency = float(np.clip(1.0 - robust_cv / 0.18, 0, 1))
+
+    quality = int(round(np.clip((spectral_ratio / 0.55) * 70 + rr_consistency * 30, 0, 100)))
+    quality_label = "GOOD" if quality >= 70 else ("FAIR" if quality >= 45 else "POOR")
+
+    # 呼吸頻率：至少約 20 秒，從 Green 低頻調變估測。品質差時不硬輸出。
+    respiratory_rate = None
+    if duration >= 18.0 and quality >= 45:
+        try:
+            # 呼吸會調變脈搏振幅；使用 Hilbert envelope 比直接看 RGB 慢漂移更穩定。
+            envelope = np.abs(hilbert(pulse))
+            envelope = envelope - np.mean(envelope)
+            resp = butter_bandpass_filter(envelope, 0.10, 0.50, fps, order=2)
+            rspec = np.abs(np.fft.rfft(resp, n=n_fft)) ** 2
+            rband = (freqs >= 0.10) & (freqs <= 0.50)
+            if np.any(rband):
+                rf = float(freqs[np.where(rband)[0][np.argmax(rspec[rband])]])
+                respiratory_rate = round(float(np.clip(rf * 60.0, 8.0, 30.0)), 1)
+        except Exception:
+            respiratory_rate = None
+
+    # 實驗性 SpO2：RGB 相機沒有 IR channel，僅供趨勢研究，不作醫療判讀。
+    spo2 = None
+    if duration >= 18.0 and quality >= 70:
+        r_dc, g_dc = float(np.mean(red)), float(np.mean(green))
+        r_ac, g_ac = float(np.std(red - r_dc)), float(np.std(green - g_dc))
+        if r_dc > 1e-6 and g_dc > 1e-6 and g_ac > 1e-6:
+            ratio = (r_ac / r_dc) / (g_ac / g_dc)
+            candidate = 110.0 - 25.0 * ratio
+            if np.isfinite(candidate):
+                spo2 = round(float(np.clip(candidate, 90.0, 100.0)), 1)
+
+    return {
+        "hrv_rmssd": rmssd,
+        "respiratory_rate": respiratory_rate,
+        "irregular_pulse_score": irregular,
+        "signal_quality": quality,
+        "signal_quality_label": quality_label,
+        "spo2_experimental": spo2,
+        "measurement_seconds": round(duration, 1),
+    }
+
 # ----------------------------------------------------
 # 7. LINE Flex Message + Quick Reply 互動卡片
 # ----------------------------------------------------
-def build_flex_message(heart_rate: int, stress_score: int, health_light: str, summary: str, advice: str):
+def build_flex_message(heart_rate: int, stress_score: int, health_light: str, summary: str, advice: str,
+                       hrv_rmssd=None, respiratory_rate=None, irregular_pulse_score=None,
+                       signal_quality=None, spo2_experimental=None):
     color_map = {
         "GREEN": "#1DB954",
         "YELLOW": "#FFB800",
@@ -558,6 +701,21 @@ def build_flex_message(heart_rate: int, stress_score: int, health_light: str, su
                         }
                     ]
                 },
+                {
+                    "type": "text",
+                    "text": (
+                        f"HRV RMSSD: {hrv_rmssd if hrv_rmssd is not None else '--'} ms  ·  "
+                        f"呼吸: {respiratory_rate if respiratory_rate is not None else '--'} 次/分\n"
+                        f"脈搏不規則風險: {irregular_pulse_score if irregular_pulse_score is not None else '--'}/100  ·  "
+                        f"訊號品質: {signal_quality if signal_quality is not None else '--'}/100\n"
+                        f"SpO₂(實驗性): {spo2_experimental if spo2_experimental is not None else '--'}%"
+                    ),
+                    "size": "xs",
+                    "color": "#555555",
+                    "wrap": True,
+                    "margin": "md"
+                },
+                {"type": "text", "text": "※ SpO₂ 與脈搏不規則分數僅供研究/趨勢參考，不作診斷。", "size": "xxs", "color": "#999999", "wrap": True, "margin": "xs"},
                 {"type": "separator", "margin": "lg"},
                 {
                     "type": "text",
@@ -621,7 +779,8 @@ def build_flex_message(heart_rate: int, stress_score: int, health_light: str, su
         }
     }
 
-def send_line_push_message(user_id: str, heart_rate: int, stress_score: int, health_light: str, summary: str, advice: str):
+def send_line_push_message(user_id: str, heart_rate: int, stress_score: int, health_light: str, summary: str, advice: str,
+                           hrv_rmssd=None, respiratory_rate=None, irregular_pulse_score=None, signal_quality=None, spo2_experimental=None):
     token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
     if not token or token.startswith("你的") or token == "YOUR_LINE_CHANNEL_ACCESS_TOKEN":
         print("[LINE Push Warning] 未設定正確的 LINE_CHANNEL_ACCESS_TOKEN，跳過推播。")
@@ -631,7 +790,10 @@ def send_line_push_message(user_id: str, heart_rate: int, stress_score: int, hea
         print(f"[LINE Push Warning] user_id ({user_id}) 不是有效的 LINE User ID，跳過推播。")
         return
 
-    flex_payload = build_flex_message(heart_rate, stress_score, health_light, summary, advice)
+    flex_payload = build_flex_message(
+        heart_rate, stress_score, health_light, summary, advice,
+        hrv_rmssd, respiratory_rate, irregular_pulse_score, signal_quality, spo2_experimental
+    )
 
     headers = {
         "Content-Type": "application/json",
@@ -822,10 +984,13 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
         if req.rgb_signals is None or (isinstance(req.rgb_signals, list) and len(req.rgb_signals) == 0):
             if "DEMO_RED" in user_id_upper or "TEST_HIGH" in user_id_upper:
                 hr, sdnn, stress, is_mock = random.randint(105, 125), round(random.uniform(15.0, 22.0), 1), random.randint(82, 95), True
+                advanced_metrics = {"hrv_rmssd": 18.0, "respiratory_rate": 23.0, "irregular_pulse_score": 62, "signal_quality": 88, "signal_quality_label": "GOOD", "spo2_experimental": 94.0}
             elif "DEMO_YELLOW" in user_id_upper or "TEST_WARN" in user_id_upper:
                 hr, sdnn, stress, is_mock = random.randint(88, 98), round(random.uniform(28.0, 36.0), 1), random.randint(62, 74), True
+                advanced_metrics = {"hrv_rmssd": 30.0, "respiratory_rate": 19.0, "irregular_pulse_score": 32, "signal_quality": 90, "signal_quality_label": "GOOD", "spo2_experimental": 96.0}
             elif "DEMO_GREEN" in user_id_upper:
                 hr, sdnn, stress, is_mock = random.randint(65, 76), round(random.uniform(48.0, 68.0), 1), random.randint(20, 42), True
+                advanced_metrics = {"hrv_rmssd": 46.0, "respiratory_rate": 15.0, "irregular_pulse_score": 10, "signal_quality": 93, "signal_quality_label": "GOOD", "spo2_experimental": 98.0}
             else:
                 raise HTTPException(status_code=400, detail="rgb_signals 不能為空，請保持鏡頭對準臉部並重新開始測量")
 
@@ -833,6 +998,7 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
             # 1. 解析與提取 Green Channel 訊號
             try:
                 green_signal = extract_green_signal(req.rgb_signals)
+                red_signal, green_for_advanced = extract_red_green_signals(req.rgb_signals)
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc))
 
@@ -856,6 +1022,9 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
 
             # 3. 呼叫 rPPG 演算法計算動態心率 (BPM) 與估計 HRV (SDNN)
             hr, sdnn = calculate_rppg_metrics(green_signal, fps=target_fps)
+            advanced_metrics = calculate_advanced_rppg_metrics(
+                red_signal, green_for_advanced, target_fps, hr
+            )
 
             # 4. 根據真實 SDNN 與 HR 動態換算壓力指數
             normalized_sdnn = np.clip(sdnn, 15.0, 80.0)
@@ -864,7 +1033,10 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
                 calc_stress += (hr - 85) * 0.35
             stress = int(round(np.clip(calc_stress, 15, 95)))
 
-        # 健康燈號評估
+        if 'advanced_metrics' not in locals():
+            advanced_metrics = {"hrv_rmssd": None, "respiratory_rate": None, "irregular_pulse_score": None, "signal_quality": None, "signal_quality_label": None, "spo2_experimental": None}
+
+        # 健康燈號評估（目前不讓實驗性 SpO₂ / 不規則分數直接影響分流）
         if stress > 75 or hr > 100 or hr < 50:
             light = "RED"
         elif stress > 50 or hr >= 85:
@@ -909,6 +1081,12 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
             user_line_id=req.user_line_id,
             heart_rate=hr,
             hrv_sdnn=sdnn,
+            hrv_rmssd=advanced_metrics.get("hrv_rmssd"),
+            respiratory_rate=advanced_metrics.get("respiratory_rate"),
+            irregular_pulse_score=advanced_metrics.get("irregular_pulse_score"),
+            signal_quality=advanced_metrics.get("signal_quality"),
+            signal_quality_label=advanced_metrics.get("signal_quality_label"),
+            spo2_experimental=advanced_metrics.get("spo2_experimental"),
             stress_score=stress,
             health_light=light,
             is_resolved=False,
@@ -928,7 +1106,12 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
             stress_score=stress,
             health_light=light,
             summary=summary,
-            advice=advice
+            advice=advice,
+            hrv_rmssd=advanced_metrics.get("hrv_rmssd"),
+            respiratory_rate=advanced_metrics.get("respiratory_rate"),
+            irregular_pulse_score=advanced_metrics.get("irregular_pulse_score"),
+            signal_quality=advanced_metrics.get("signal_quality"),
+            spo2_experimental=advanced_metrics.get("spo2_experimental")
         )
 
         return {
@@ -937,6 +1120,12 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
                 "id": record.id,
                 "heart_rate": hr,
                 "hrv_sdnn": sdnn,
+                "hrv_rmssd": advanced_metrics.get("hrv_rmssd"),
+                "respiratory_rate": advanced_metrics.get("respiratory_rate"),
+                "irregular_pulse_score": advanced_metrics.get("irregular_pulse_score"),
+                "signal_quality": advanced_metrics.get("signal_quality"),
+                "signal_quality_label": advanced_metrics.get("signal_quality_label"),
+                "spo2_experimental": advanced_metrics.get("spo2_experimental"),
                 "stress_score": stress,
                 "health_light": light,
                 "summary": summary,
@@ -997,6 +1186,12 @@ def get_user_history(user_line_id: str, limit: int = 10, db: Session = Depends(g
                 "id": r.id,
                 "heart_rate": r.heart_rate,
                 "hrv_sdnn": r.hrv_sdnn,
+                "hrv_rmssd": r.hrv_rmssd,
+                "respiratory_rate": r.respiratory_rate,
+                "irregular_pulse_score": r.irregular_pulse_score,
+                "signal_quality": r.signal_quality,
+                "signal_quality_label": r.signal_quality_label,
+                "spo2_experimental": r.spo2_experimental,
                 "stress_score": r.stress_score,
                 "health_light": r.health_light,
                 "summary": r.summary,
@@ -1028,6 +1223,12 @@ def get_pharmacy_alerts(db: Session = Depends(get_db)):
                 "user_line_id": r.user_line_id or r.user_uuid,
                 "heart_rate": r.heart_rate,
                 "hrv_sdnn": r.hrv_sdnn,
+                "hrv_rmssd": r.hrv_rmssd,
+                "respiratory_rate": r.respiratory_rate,
+                "irregular_pulse_score": r.irregular_pulse_score,
+                "signal_quality": r.signal_quality,
+                "signal_quality_label": r.signal_quality_label,
+                "spo2_experimental": r.spo2_experimental,
                 "stress_score": r.stress_score,
                 "health_light": r.health_light,
                 "summary": r.summary,
@@ -1076,6 +1277,12 @@ def get_patient_7day_history(user_line_id: str, db: Session = Depends(get_db)):
                 "id": r.id,
                 "heart_rate": r.heart_rate,
                 "hrv_sdnn": r.hrv_sdnn,
+                "hrv_rmssd": r.hrv_rmssd,
+                "respiratory_rate": r.respiratory_rate,
+                "irregular_pulse_score": r.irregular_pulse_score,
+                "signal_quality": r.signal_quality,
+                "signal_quality_label": r.signal_quality_label,
+                "spo2_experimental": r.spo2_experimental,
                 "stress_score": r.stress_score,
                 "health_light": r.health_light,
                 "summary": r.summary,
