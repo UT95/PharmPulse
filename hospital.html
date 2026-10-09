@@ -63,7 +63,7 @@
         <div>
           <h2 class="font-bold text-slate-800">待醫師評估轉介個案</h2>
           <p class="text-xs text-slate-500 mt-1">
-            第一版僅顯示 WAITING 個案；醫師處置與回傳 LINE 將於下一階段串接。
+            此頁顯示 WAITING 轉介個案；醫師完成處置後會自動移出待處理清單，並回傳藥局與 LINE。
           </p>
         </div>
 
@@ -347,6 +347,54 @@
               </p>
             </div>
 
+            <form onsubmit="submitDoctorDecision(event, ${Number(item.referral_id)})"
+                  class="border border-sky-100 bg-sky-50/60 rounded-xl p-4 space-y-3">
+              <div>
+                <p class="text-sm font-bold text-sky-900 flex items-center gap-2">
+                  <i class="fa-solid fa-user-doctor"></i> 醫師處置
+                </p>
+                <p class="text-[11px] text-sky-700 mt-1">
+                  請依實際臨床評估選擇後續處理；完成後此個案將自待處理清單移除。
+                </p>
+              </div>
+
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                <label class="bg-white border border-sky-100 rounded-lg p-3 flex gap-2 items-center cursor-pointer">
+                  <input type="radio" name="decision-${item.referral_id}" value="HOME_OBSERVE" required>
+                  持續居家觀察
+                </label>
+
+                <label class="bg-white border border-sky-100 rounded-lg p-3 flex gap-2 items-center cursor-pointer">
+                  <input type="radio" name="decision-${item.referral_id}" value="ROUTINE_VISIT">
+                  安排一般門診
+                </label>
+
+                <label class="bg-white border border-sky-100 rounded-lg p-3 flex gap-2 items-center cursor-pointer">
+                  <input type="radio" name="decision-${item.referral_id}" value="PRIORITY_VISIT">
+                  建議優先門診
+                </label>
+
+                <label class="bg-white border border-sky-100 rounded-lg p-3 flex gap-2 items-center cursor-pointer">
+                  <input type="radio" name="decision-${item.referral_id}" value="URGENT_CARE">
+                  建議儘速就醫
+                </label>
+              </div>
+
+              <textarea id="doctor-note-${item.referral_id}"
+                        rows="3"
+                        placeholder="醫師備註（選填），例如：建議攜帶近期血壓紀錄回診評估..."
+                        class="w-full px-3 py-2 text-sm bg-white border border-sky-100 rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-sky-500"></textarea>
+
+              <div class="flex justify-end">
+                <button id="doctor-submit-${item.referral_id}"
+                        type="submit"
+                        class="bg-sky-700 hover:bg-sky-800 text-white text-xs font-semibold px-4 py-2.5 rounded-lg transition">
+                  <i class="fa-solid fa-check mr-1"></i>
+                  完成醫師處置
+                </button>
+              </div>
+            </form>
+
             <div class="pt-1 text-[11px] text-slate-400">
               rPPG 為遠距趨勢與分流輔助資訊，不取代正式醫療診斷；SpO₂ 實驗性估值未作為醫院轉介判斷依據。
             </div>
@@ -355,6 +403,69 @@
       `;
     }).join("");
   }
+
+  async function submitDoctorDecision(event, referralId) {
+    event.preventDefault();
+
+    const selected = document.querySelector(`input[name="decision-${referralId}"]:checked`);
+    if (!selected) {
+      alert("請選擇醫師處置方式。");
+      return;
+    }
+
+    const note = document.getElementById(`doctor-note-${referralId}`)?.value.trim() || "";
+    const btn = document.getElementById(`doctor-submit-${referralId}`);
+
+    if (!confirm("確認完成此轉介的醫師處置？完成後將從待處理清單移除。")) {
+      return;
+    }
+
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin mr-1"></i> 儲存中...`;
+    }
+
+    try {
+      const res = await fetch(`${API_BASE}/hospital/referrals/${referralId}/decision`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          decision: selected.value,
+          doctor_note: note || null
+        })
+      });
+
+      const data = await res.json();
+
+      if (!res.ok || data.status !== "success") {
+        throw new Error(data.detail || data.message || "醫師處置儲存失敗");
+      }
+
+      const lineStatus = data.line_notification?.status;
+      const lineText =
+        lineStatus === "sent"
+          ? "LINE 已同步通知使用者。"
+          : lineStatus === "skipped"
+            ? "醫師處置已儲存；LINE 因設定或使用者 ID 條件未發送。"
+            : "醫師處置已儲存；LINE 通知未成功，請稍後確認。";
+
+      alert(`醫師處置已完成。\n${lineText}`);
+
+      await refreshHospital();
+
+    } catch (err) {
+      console.error("Submit doctor decision error:", err);
+      alert(`醫師處置失敗：${err.message}`);
+
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = `<i class="fa-solid fa-check mr-1"></i> 完成醫師處置`;
+      }
+    }
+  }
+
 
   async function refreshHospital() {
     const box = document.getElementById("referral-list");

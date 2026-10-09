@@ -197,6 +197,25 @@ class HospitalReferral(Base):
     )
 
 
+
+class HospitalDecision(Base):
+    __tablename__ = "hospital_decisions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    referral_id = Column(Integer, unique=True, index=True, nullable=False)
+    user_line_id = Column(String(255), index=True, nullable=False)
+
+    # HOME_OBSERVE / ROUTINE_VISIT / PRIORITY_VISIT / URGENT_CARE
+    decision = Column(String(40), nullable=False)
+    decision_label = Column(String(100), nullable=False)
+    doctor_note = Column(Text, nullable=True)
+
+    created_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc)
+    )
+
+
 class PatientChronicProfile(Base):
     __tablename__ = "patient_chronic_profiles"
 
@@ -1012,6 +1031,86 @@ def send_line_push_message(user_id: str, heart_rate: int, stress_score: int, hea
     except Exception as e:
         print(f"[LINE Push Error] 發送異常: {str(e)}")
 
+
+HOSPITAL_DECISION_LABELS = {
+    "HOME_OBSERVE": "持續居家觀察",
+    "ROUTINE_VISIT": "安排一般門診",
+    "PRIORITY_VISIT": "建議優先門診",
+    "URGENT_CARE": "建議儘速就醫"
+}
+
+def send_line_doctor_decision_message(
+    user_id: str,
+    decision_label: str,
+    doctor_note: Optional[str] = None
+) -> dict:
+    """
+    將醫師端處置摘要推播至 LINE。
+    回傳 sent/skipped/failed，避免 LINE 發送失敗影響醫院端資料庫處置。
+    """
+    token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
+
+    if not token or token.startswith("你的") or token == "YOUR_LINE_CHANNEL_ACCESS_TOKEN":
+        print("[LINE Doctor Decision] 未設定正確 LINE_CHANNEL_ACCESS_TOKEN，跳過推播。")
+        return {"status": "skipped", "reason": "missing_token"}
+
+    if not (user_id and user_id.startswith("U") and len(user_id) == 33):
+        print(f"[LINE Doctor Decision] user_id ({user_id}) 格式無效，跳過推播。")
+        return {"status": "skipped", "reason": "invalid_user_id"}
+
+    lines = [
+        "【PharmPulse 醫療端處置更新】",
+        f"醫師處置：{decision_label}"
+    ]
+
+    if doctor_note:
+        clean_note = doctor_note.strip()
+        if clean_note:
+            lines.append(f"醫師備註：{clean_note}")
+
+    lines.extend([
+        "",
+        "請依醫療人員建議安排後續照護，並持續使用 PharmPulse 追蹤生理趨勢。",
+        "若出現明顯或快速惡化的不適，請依當地緊急醫療指示尋求協助。"
+    ])
+
+    payload = {
+        "to": user_id,
+        "messages": [{
+            "type": "text",
+            "text": "\n".join(lines)
+        }]
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}"
+    }
+
+    try:
+        res = requests.post(
+            "https://api.line.me/v2/bot/message/push",
+            json=payload,
+            headers=headers,
+            timeout=5
+        )
+
+        if res.status_code == 200:
+            print(f"[LINE Doctor Decision] 已通知 {user_id}")
+            return {"status": "sent"}
+
+        print(f"[LINE Doctor Decision] 發送失敗 {res.status_code}: {res.text}")
+        return {
+            "status": "failed",
+            "http_status": res.status_code,
+            "detail": res.text[:300]
+        }
+
+    except Exception as e:
+        print(f"[LINE Doctor Decision] 發送異常: {e}")
+        return {"status": "failed", "detail": str(e)}
+
+
 # ----------------------------------------------------
 # 8. FastAPI 應用程式與安全 CORS 設定
 # ----------------------------------------------------
@@ -1111,6 +1210,10 @@ class PatientChronicProfileRequest(BaseModel):
     chronic_conditions: Optional[str] = None
     medication_note: Optional[str] = None
     care_note: Optional[str] = None
+
+class HospitalDecisionRequest(BaseModel):
+    decision: str
+    doctor_note: Optional[str] = None
 
 class PharmacyInterventionRequest(BaseModel):
     user_line_id: str
@@ -2089,6 +2192,154 @@ def get_hospital_referrals(db: Session = Depends(get_db)):
             "records": [],
             "message": str(e)
         }
+
+
+
+@app.post("/api/v1/hospital/referrals/{referral_id}/decision")
+def complete_hospital_referral(
+    referral_id: int,
+    req: HospitalDecisionRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    醫師完成轉介處置：
+    1. 建立 HospitalDecision
+    2. HospitalReferral WAITING -> COMPLETED
+    3. 對應 PharmacyIntervention 標記 HOSPITAL_COMPLETED
+    4. commit 後嘗試 LINE 通知
+    """
+    decision_key = (req.decision or "").strip().upper()
+
+    if decision_key not in HOSPITAL_DECISION_LABELS:
+        raise HTTPException(status_code=400, detail="無效的醫師處置選項")
+
+    referral = (
+        db.query(HospitalReferral)
+        .filter(HospitalReferral.id == referral_id)
+        .first()
+    )
+
+    if not referral:
+        raise HTTPException(status_code=404, detail="找不到此轉介個案")
+
+    if referral.status != "WAITING":
+        existing = (
+            db.query(HospitalDecision)
+            .filter(HospitalDecision.referral_id == referral_id)
+            .first()
+        )
+        if existing:
+            raise HTTPException(status_code=409, detail="此轉介已完成醫師處置")
+        raise HTTPException(status_code=409, detail="此轉介目前不可處置")
+
+    existing = (
+        db.query(HospitalDecision)
+        .filter(HospitalDecision.referral_id == referral_id)
+        .first()
+    )
+    if existing:
+        raise HTTPException(status_code=409, detail="此轉介已存在醫師處置紀錄")
+
+    try:
+        decision_label = HOSPITAL_DECISION_LABELS[decision_key]
+
+        decision = HospitalDecision(
+            referral_id=referral.id,
+            user_line_id=referral.user_line_id,
+            decision=decision_key,
+            decision_label=decision_label,
+            doctor_note=(req.doctor_note or "").strip() or None
+        )
+        db.add(decision)
+
+        referral.status = "COMPLETED"
+
+        if referral.intervention_id:
+            intervention = (
+                db.query(PharmacyIntervention)
+                .filter(PharmacyIntervention.id == referral.intervention_id)
+                .first()
+            )
+            if intervention:
+                intervention.referral_status = "HOSPITAL_COMPLETED"
+
+        db.commit()
+        db.refresh(decision)
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"醫師處置儲存失敗: {str(e)}")
+
+    # LINE 失敗不回滾醫師處置。
+    line_result = send_line_doctor_decision_message(
+        referral.user_line_id,
+        decision_label,
+        decision.doctor_note
+    )
+
+    return {
+        "status": "success",
+        "message": "醫師處置已完成",
+        "decision": {
+            "id": decision.id,
+            "referral_id": decision.referral_id,
+            "user_line_id": decision.user_line_id,
+            "decision": decision.decision,
+            "decision_label": decision.decision_label,
+            "doctor_note": decision.doctor_note,
+            "created_at": utc_iso(decision.created_at)
+        },
+        "line_notification": line_result
+    }
+
+
+@app.get("/api/v1/pharmacy/patient/{user_line_id}/hospital-decisions")
+def get_patient_hospital_decisions(
+    user_line_id: str,
+    db: Session = Depends(get_db)
+):
+    """藥局端查看指定民眾的醫院處置歷史，最新一筆在前。"""
+    try:
+        decisions = (
+            db.query(HospitalDecision)
+            .filter(HospitalDecision.user_line_id == user_line_id)
+            .order_by(HospitalDecision.created_at.desc())
+            .all()
+        )
+
+        records = []
+        for item in decisions:
+            referral = (
+                db.query(HospitalReferral)
+                .filter(HospitalReferral.id == item.referral_id)
+                .first()
+            )
+
+            records.append({
+                "id": item.id,
+                "referral_id": item.referral_id,
+                "decision": item.decision,
+                "decision_label": item.decision_label,
+                "doctor_note": item.doctor_note,
+                "created_at": utc_iso(item.created_at),
+                "referral_created_at": utc_iso(referral.created_at) if referral else None,
+                "monitoring_mode": referral.monitoring_mode if referral else None
+            })
+
+        return {
+            "status": "success",
+            "user_line_id": user_line_id,
+            "records": records
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "user_line_id": user_line_id,
+            "records": [],
+            "message": str(e)
+        }
+
 
 
 # ----------------------------------------------------

@@ -146,7 +146,7 @@
 
           <div class="p-4 bg-emerald-50 border border-emerald-100 rounded-lg text-xs text-emerald-800 space-y-1">
             <p class="font-bold flex items-center gap-1"><i class="fa-solid fa-circle-info"></i> 操作提示</p>
-            <p>查詢後可查看 7 天心率、HRV、壓力趨勢，以及異常次數與最近一次藥師關懷紀錄。</p>
+            <p>查詢後可查看 7 天生理趨勢、異常次數、最近藥師關懷與最新醫院處置結果。</p>
           </div>
         </div>
 
@@ -239,6 +239,16 @@
           </div>
           <div id="latest-intervention" class="text-xs text-slate-500 bg-slate-50 rounded-lg p-3">
             尚無本瀏覽器儲存的關懷紀錄。
+          </div>
+        </div>
+
+        <!-- Hospital decision summary -->
+        <div class="bg-white p-5 rounded-xl border border-sky-100 shadow-sm">
+          <h4 class="font-bold text-sm flex items-center gap-2 mb-3">
+            <i class="fa-solid fa-hospital-user text-sky-600"></i> 最新醫院處置結果
+          </h4>
+          <div id="latest-hospital-decision" class="text-xs text-slate-500 bg-sky-50/60 rounded-lg p-3">
+            尚無醫院處置紀錄。
           </div>
         </div>
 
@@ -674,6 +684,7 @@
 
       renderHistoryList();
       renderLatestIntervention();
+      renderLatestHospitalDecision();
       setMetric("heart_rate");
 
       const modal = document.getElementById("patient-detail-modal");
@@ -827,6 +838,78 @@
         }
       });
     }
+
+    async function renderLatestHospitalDecision() {
+      const box = document.getElementById("latest-hospital-decision");
+      if (!box) return;
+
+      if (!currentPatientId) {
+        box.textContent = "尚無醫院處置紀錄。";
+        return;
+      }
+
+      box.innerHTML = `
+        <div class="text-slate-400">
+          <i class="fa-solid fa-spinner fa-spin mr-1"></i> 讀取醫院處置中...
+        </div>
+      `;
+
+      try {
+        const res = await fetch(
+          `${API_BASE}/pharmacy/patient/${encodeURIComponent(currentPatientId)}/hospital-decisions`
+        );
+        const data = await res.json();
+
+        if (!res.ok || data.status !== "success") {
+          throw new Error(data.message || "醫院處置讀取失敗");
+        }
+
+        const records = Array.isArray(data.records) ? data.records : [];
+
+        if (!records.length) {
+          box.innerHTML = `
+            <p class="text-slate-500">目前尚無醫院處置紀錄。</p>
+          `;
+          return;
+        }
+
+        const r = records[0];
+
+        box.innerHTML = `
+          <div class="space-y-1.5">
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="inline-flex px-2.5 py-1 rounded-full bg-sky-100 text-sky-700 font-bold">
+                醫師已處置
+              </span>
+              <span class="text-slate-400">
+                ${escapeHTML(formatTaiwanTime(r.created_at))}
+              </span>
+            </div>
+
+            <p class="pt-1">
+              <strong>處置結果：</strong>
+              <span class="text-sky-800 font-semibold">${escapeHTML(r.decision_label || "--")}</span>
+            </p>
+
+            <p>
+              <strong>醫師備註：</strong>
+              ${escapeHTML(r.doctor_note || "無")}
+            </p>
+
+            <p class="text-slate-400">
+              Referral #${escapeHTML(r.referral_id ?? "--")}
+            </p>
+          </div>
+        `;
+
+      } catch (err) {
+        console.error("Fetch hospital decision error:", err);
+        box.innerHTML = `
+          <p class="text-red-500">醫院處置讀取失敗：${escapeHTML(err.message)}</p>
+        `;
+      }
+    }
+
 
     async function renderLatestIntervention() {
       const box = document.getElementById("latest-intervention");
