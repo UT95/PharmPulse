@@ -22,9 +22,14 @@
           <p class="text-xs text-emerald-100">社區藥局生理即時追蹤與照護平台</p>
         </div>
       </div>
-      <button onclick="refreshDashboard()" class="bg-emerald-800 hover:bg-emerald-900 text-emerald-100 text-sm px-3 py-1.5 rounded-lg transition flex items-center gap-1.5">
-        <i class="fa-solid fa-rotate-right"></i> 重新整理
-      </button>
+      <div class="flex items-center gap-2">
+        <a href="/hospital" class="bg-emerald-600 hover:bg-emerald-500 text-white text-sm px-3 py-1.5 rounded-lg transition flex items-center gap-1.5">
+          <i class="fa-solid fa-hospital-user"></i> 醫院端
+        </a>
+        <button onclick="refreshDashboard()" class="bg-emerald-800 hover:bg-emerald-900 text-emerald-100 text-sm px-3 py-1.5 rounded-lg transition flex items-center gap-1.5">
+          <i class="fa-solid fa-rotate-right"></i> 重新整理
+        </button>
+      </div>
     </div>
   </header>
 
@@ -966,7 +971,10 @@
         await refreshDashboard();
 
         if (data.referral_status === "REFERRED") {
-          alert("關懷紀錄已儲存，並已標記為轉介醫療院所。");
+          const referralText = data.hospital_referral_id
+            ? `（轉介編號 #${data.hospital_referral_id}）`
+            : "";
+          alert(`關懷紀錄已儲存，醫院端已收到轉介個案${referralText}。`);
         } else {
           alert("藥師關懷紀錄已成功儲存到資料庫。");
         }

@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PharmPulse 醫院端轉介管理</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body class="bg-slate-50 min-h-screen text-slate-800 font-sans">
+
+  <header class="bg-sky-800 text-white shadow-md sticky top-0 z-40">
+    <div class="max-w-7xl mx-auto px-4 py-4 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
+      <div class="flex items-center gap-3">
+        <i class="fa-solid fa-hospital-user text-2xl text-sky-200"></i>
+        <div>
+          <h1 class="text-xl font-bold tracking-wide">PharmPulse 醫院端轉介系統</h1>
+          <p class="text-xs text-sky-100">接收藥局轉介之慢性病異常個案</p>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-2">
+        <a href="/pharmacy"
+           class="bg-sky-700 hover:bg-sky-600 text-white text-sm px-3 py-2 rounded-lg transition">
+          <i class="fa-solid fa-prescription-bottle-medical mr-1"></i>
+          藥局端
+        </a>
+        <button onclick="refreshHospital()"
+                class="bg-sky-950 hover:bg-slate-900 text-sky-100 text-sm px-3 py-2 rounded-lg transition">
+          <i class="fa-solid fa-rotate-right mr-1"></i>
+          重新整理
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto px-4 py-6 space-y-6">
+
+    <section class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div class="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+        <p class="text-xs text-slate-500">待處理轉介</p>
+        <p id="kpi-total" class="text-2xl font-bold mt-1">--</p>
+      </div>
+
+      <div class="bg-white rounded-xl border border-red-100 p-4 shadow-sm">
+        <p class="text-xs text-slate-500">RED 來源個案</p>
+        <p id="kpi-red" class="text-2xl font-bold text-red-600 mt-1">--</p>
+      </div>
+
+      <div class="bg-white rounded-xl border border-amber-100 p-4 shadow-sm">
+        <p class="text-xs text-slate-500">YELLOW 來源個案</p>
+        <p id="kpi-yellow" class="text-2xl font-bold text-amber-600 mt-1">--</p>
+      </div>
+
+      <div class="bg-white rounded-xl border border-sky-100 p-4 shadow-sm">
+        <p class="text-xs text-slate-500">心血管 / 呼吸慢病</p>
+        <p id="kpi-chronic" class="text-2xl font-bold text-sky-700 mt-1">--</p>
+      </div>
+    </section>
+
+    <section class="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+      <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+        <div>
+          <h2 class="font-bold text-slate-800">待醫師評估轉介個案</h2>
+          <p class="text-xs text-slate-500 mt-1">
+            第一版僅顯示 WAITING 個案；醫師處置與回傳 LINE 將於下一階段串接。
+          </p>
+        </div>
+
+        <div class="flex flex-wrap gap-2">
+          <button onclick="setModeFilter('ALL')" data-mode="ALL"
+                  class="mode-btn bg-sky-800 text-white text-xs px-3 py-2 rounded-lg">全部</button>
+          <button onclick="setModeFilter('GENERAL')" data-mode="GENERAL"
+                  class="mode-btn bg-white border border-slate-200 text-slate-600 text-xs px-3 py-2 rounded-lg">一般</button>
+          <button onclick="setModeFilter('CARDIO')" data-mode="CARDIO"
+                  class="mode-btn bg-white border border-slate-200 text-slate-600 text-xs px-3 py-2 rounded-lg">高血壓 / 心血管</button>
+          <button onclick="setModeFilter('RESPIRATORY')" data-mode="RESPIRATORY"
+                  class="mode-btn bg-white border border-slate-200 text-slate-600 text-xs px-3 py-2 rounded-lg">COPD / 呼吸</button>
+        </div>
+      </div>
+
+      <div class="relative mt-4">
+        <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"></i>
+        <input id="search-input"
+               oninput="renderReferrals()"
+               placeholder="搜尋個案 ID / 慢性病 / 症狀 / 藥師備註..."
+               class="w-full pl-9 pr-3 py-2.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500">
+      </div>
+    </section>
+
+    <section>
+      <div id="referral-list" class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <div class="xl:col-span-2 bg-white rounded-xl border border-slate-200 p-10 text-center text-slate-400">
+          <i class="fa-solid fa-spinner fa-spin text-2xl text-sky-600 mb-3"></i>
+          <p>正在讀取轉介個案...</p>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+<script>
+  const API_BASE = "/api/v1";
+  let referralData = [];
+  let modeFilter = "ALL";
+
+  function escapeHTML(value) {
+    return String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
+
+  function parseServerDate(value) {
+    if (!value) return null;
+    let text = String(value).trim();
+
+    // 舊 SQLite / API 若沒有 timezone，視為 UTC，避免台灣時間少 8 小時。
+    const hasTimezone = /(?:Z|[+-]\d{2}:\d{2})$/i.test(text);
+    if (!hasTimezone) {
+      text += "Z";
+    }
+
+    const d = new Date(text);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  function formatTaiwanTime(value) {
+    const d = parseServerDate(value);
+    if (!d) return "未知時間";
+
+    return d.toLocaleString("zh-TW", {
+      timeZone: "Asia/Taipei",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false
+    });
+  }
+
+  function maskLineId(value) {
+    const text = String(value || "");
+    if (text.length <= 10) return text;
+    return `${text.slice(0, 5)}••••${text.slice(-4)}`;
+  }
+
+  function setModeFilter(mode) {
+    modeFilter = mode;
+
+    document.querySelectorAll(".mode-btn").forEach(btn => {
+      const active = btn.dataset.mode === mode;
+      btn.className = active
+        ? "mode-btn bg-sky-800 text-white text-xs px-3 py-2 rounded-lg"
+        : "mode-btn bg-white border border-slate-200 text-slate-600 text-xs px-3 py-2 rounded-lg";
+    });
+
+    renderReferrals();
+  }
+
+  function updateKPI() {
+    document.getElementById("kpi-total").textContent = referralData.length;
+
+    document.getElementById("kpi-red").textContent =
+      referralData.filter(x => x.rppg?.health_light === "RED").length;
+
+    document.getElementById("kpi-yellow").textContent =
+      referralData.filter(x => x.rppg?.health_light === "YELLOW").length;
+
+    document.getElementById("kpi-chronic").textContent =
+      referralData.filter(x =>
+        x.monitoring_mode === "CARDIO" ||
+        x.monitoring_mode === "RESPIRATORY"
+      ).length;
+  }
+
+  function renderReferrals() {
+    const box = document.getElementById("referral-list");
+    const search = document.getElementById("search-input").value.trim().toLowerCase();
+
+    const rows = referralData.filter(item => {
+      const matchesMode =
+        modeFilter === "ALL" ||
+        item.monitoring_mode === modeFilter;
+
+      const haystack = [
+        item.user_line_id,
+        item.monitoring_mode_label,
+        item.chronic_conditions,
+        item.symptoms,
+        item.pharmacist_note,
+        item.medication_note,
+        item.rppg?.summary,
+        item.rppg?.mode_alert_reasons
+      ].join(" ").toLowerCase();
+
+      return matchesMode && (!search || haystack.includes(search));
+    });
+
+    if (!rows.length) {
+      box.innerHTML = `
+        <div class="xl:col-span-2 bg-white rounded-xl border border-slate-200 p-10 text-center text-slate-500">
+          <i class="fa-solid fa-circle-check text-3xl text-emerald-500 mb-3"></i>
+          <p class="font-semibold">目前沒有符合條件的待處理轉介</p>
+        </div>
+      `;
+      return;
+    }
+
+    box.innerHTML = rows.map(item => {
+      const r = item.rppg || {};
+      const light = r.health_light || "--";
+
+      const lightClass =
+        light === "RED"
+          ? "bg-red-100 text-red-700 border-red-200"
+          : light === "YELLOW"
+            ? "bg-amber-100 text-amber-700 border-amber-200"
+            : "bg-slate-100 text-slate-600 border-slate-200";
+
+      const bp =
+        item.systolic_bp != null && item.diastolic_bp != null
+          ? `${item.systolic_bp} / ${item.diastolic_bp}`
+          : "--";
+
+      return `
+        <article class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+          <div class="p-4 border-b border-slate-100">
+            <div class="flex justify-between items-start gap-3">
+              <div>
+                <div class="flex flex-wrap gap-2 items-center">
+                  <span class="text-xs font-bold border rounded-full px-2.5 py-1 ${lightClass}">
+                    ${escapeHTML(light)}
+                  </span>
+
+                  <span class="text-xs font-semibold rounded-full px-2.5 py-1 bg-sky-50 text-sky-700 border border-sky-100">
+                    ${escapeHTML(item.monitoring_mode_label || "一般健康監測")}
+                  </span>
+
+                  <span class="text-xs font-semibold rounded-full px-2.5 py-1 bg-violet-50 text-violet-700 border border-violet-100">
+                    WAITING
+                  </span>
+                </div>
+
+                <p class="mt-2 font-semibold text-slate-800">
+                  個案 ${escapeHTML(maskLineId(item.user_line_id))}
+                </p>
+
+                <p class="text-xs text-slate-400 font-mono mt-0.5" title="${escapeHTML(item.user_line_id)}">
+                  Referral #${escapeHTML(item.referral_id)}
+                </p>
+              </div>
+
+              <div class="text-right">
+                <p class="text-[11px] text-slate-400">轉介時間</p>
+                <p class="text-xs font-medium text-slate-600 mt-1">
+                  ${escapeHTML(formatTaiwanTime(item.created_at))}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div class="p-4 space-y-4">
+
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
+              <div class="bg-slate-50 rounded-lg p-3">
+                <p class="text-[10px] text-slate-500">心率</p>
+                <p class="font-bold">${escapeHTML(r.heart_rate ?? "--")} <span class="text-[10px] font-normal">BPM</span></p>
+              </div>
+              <div class="bg-slate-50 rounded-lg p-3">
+                <p class="text-[10px] text-slate-500">SDNN</p>
+                <p class="font-bold">${escapeHTML(r.hrv_sdnn ?? "--")} <span class="text-[10px] font-normal">ms</span></p>
+              </div>
+              <div class="bg-slate-50 rounded-lg p-3">
+                <p class="text-[10px] text-slate-500">RMSSD</p>
+                <p class="font-bold">${escapeHTML(r.hrv_rmssd ?? "--")} <span class="text-[10px] font-normal">ms</span></p>
+              </div>
+              <div class="bg-slate-50 rounded-lg p-3">
+                <p class="text-[10px] text-slate-500">呼吸頻率</p>
+                <p class="font-bold">${escapeHTML(r.respiratory_rate ?? "--")} <span class="text-[10px] font-normal">次/分</span></p>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
+              <div class="bg-red-50 rounded-lg p-3">
+                <p class="text-[10px] text-red-500">近 7 天 RED</p>
+                <p class="font-bold text-red-700">${escapeHTML(item.seven_day_red_count ?? 0)}</p>
+              </div>
+              <div class="bg-amber-50 rounded-lg p-3">
+                <p class="text-[10px] text-amber-600">近 7 天 YELLOW</p>
+                <p class="font-bold text-amber-700">${escapeHTML(item.seven_day_yellow_count ?? 0)}</p>
+              </div>
+              <div class="bg-sky-50 rounded-lg p-3">
+                <p class="text-[10px] text-sky-600">藥局血壓</p>
+                <p class="font-bold text-sky-800">${escapeHTML(bp)} <span class="text-[10px] font-normal">mmHg</span></p>
+              </div>
+              <div class="bg-sky-50 rounded-lg p-3">
+                <p class="text-[10px] text-sky-600">藥局脈搏</p>
+                <p class="font-bold text-sky-800">${escapeHTML(item.pulse ?? "--")} <span class="text-[10px] font-normal">BPM</span></p>
+              </div>
+            </div>
+
+            ${item.chronic_conditions ? `
+              <div>
+                <p class="text-xs font-bold text-slate-600">個人慢性病檔案</p>
+                <p class="text-sm mt-1 text-slate-700">${escapeHTML(item.chronic_conditions)}</p>
+              </div>
+            ` : ""}
+
+            ${item.medication_note ? `
+              <div>
+                <p class="text-xs font-bold text-slate-600">用藥備註</p>
+                <p class="text-sm mt-1 text-slate-700">${escapeHTML(item.medication_note)}</p>
+              </div>
+            ` : ""}
+
+            <div class="grid md:grid-cols-2 gap-3">
+              <div class="bg-slate-50 rounded-xl p-3">
+                <p class="text-xs font-bold text-slate-600">民眾症狀 / 狀況</p>
+                <p class="text-sm text-slate-700 mt-1 leading-relaxed">
+                  ${escapeHTML(item.symptoms || "未記錄")}
+                </p>
+              </div>
+
+              <div class="bg-slate-50 rounded-xl p-3">
+                <p class="text-xs font-bold text-slate-600">藥師備註</p>
+                <p class="text-sm text-slate-700 mt-1 leading-relaxed">
+                  ${escapeHTML(item.pharmacist_note || "未記錄")}
+                </p>
+              </div>
+            </div>
+
+            <div>
+              <p class="text-xs font-bold text-slate-600">模式提示</p>
+              <p class="text-sm mt-1 text-slate-700">
+                ${escapeHTML(r.mode_alert_reasons || "無")}
+              </p>
+            </div>
+
+            <div>
+              <p class="text-xs font-bold text-slate-600">AI / 系統摘要</p>
+              <p class="text-sm mt-1 text-slate-700 leading-relaxed">
+                ${escapeHTML(r.summary || "無摘要")}
+              </p>
+            </div>
+
+            <div class="pt-1 text-[11px] text-slate-400">
+              rPPG 為遠距趨勢與分流輔助資訊，不取代正式醫療診斷；SpO₂ 實驗性估值未作為醫院轉介判斷依據。
+            </div>
+          </div>
+        </article>
+      `;
+    }).join("");
+  }
+
+  async function refreshHospital() {
+    const box = document.getElementById("referral-list");
+    box.innerHTML = `
+      <div class="xl:col-span-2 bg-white rounded-xl border border-slate-200 p-10 text-center text-slate-400">
+        <i class="fa-solid fa-spinner fa-spin text-2xl text-sky-600 mb-3"></i>
+        <p>正在讀取轉介個案...</p>
+      </div>
+    `;
+
+    try {
+      const res = await fetch(`${API_BASE}/hospital/referrals`);
+      const data = await res.json();
+
+      if (!res.ok || data.status !== "success") {
+        throw new Error(data.message || "取得醫院轉介清單失敗");
+      }
+
+      referralData = Array.isArray(data.records) ? data.records : [];
+      updateKPI();
+      renderReferrals();
+
+    } catch (err) {
+      console.error("Hospital referrals error:", err);
+
+      document.getElementById("kpi-total").textContent = "--";
+      document.getElementById("kpi-red").textContent = "--";
+      document.getElementById("kpi-yellow").textContent = "--";
+      document.getElementById("kpi-chronic").textContent = "--";
+
+      box.innerHTML = `
+        <div class="xl:col-span-2 bg-white rounded-xl border border-red-200 p-8 text-center text-red-600">
+          <i class="fa-solid fa-triangle-exclamation text-2xl mb-2"></i>
+          <p class="font-semibold">讀取醫院轉介失敗</p>
+          <p class="text-xs mt-1">${escapeHTML(err.message)}</p>
+        </div>
+      `;
+    }
+  }
+
+  window.onload = refreshHospital;
+</script>
+
+</body>
+</html>

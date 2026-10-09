@@ -168,6 +168,35 @@ class PharmacyIntervention(Base):
     )
 
 
+class HospitalReferral(Base):
+    __tablename__ = "hospital_referrals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_line_id = Column(String(255), index=True, nullable=False)
+
+    # 來源：藥師關懷與對應 rPPG
+    intervention_id = Column(Integer, index=True, nullable=True)
+    rppg_record_id = Column(Integer, index=True, nullable=True)
+
+    # GENERAL / CARDIO / RESPIRATORY
+    monitoring_mode = Column(String(30), nullable=False, default="GENERAL")
+
+    # 藥師轉介時留下的資訊
+    symptoms = Column(Text, nullable=True)
+    pharmacist_note = Column(Text, nullable=True)
+    systolic_bp = Column(Integer, nullable=True)
+    diastolic_bp = Column(Integer, nullable=True)
+    pulse = Column(Integer, nullable=True)
+
+    # WAITING / COMPLETED（醫師處置功能下一階段再接）
+    status = Column(String(30), nullable=False, default="WAITING")
+
+    created_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc)
+    )
+
+
 class PatientChronicProfile(Base):
     __tablename__ = "patient_chronic_profiles"
 
@@ -1021,6 +1050,13 @@ def serve_pharmacy():
         return FileResponse("pharmacy.html")
     return {"status": "error", "message": "pharmacy.html not found"}
 
+@app.get("/hospital")
+def serve_hospital():
+    """提供醫院端轉介個案管理頁面"""
+    if os.path.exists("hospital.html"):
+        return FileResponse("hospital.html")
+    return {"status": "error", "message": "hospital.html not found"}
+
 if handler and MessageEvent:
     @handler.add(MessageEvent, message=TextMessage)
     def handle_message(event):
@@ -1772,7 +1808,7 @@ def create_pharmacy_intervention(
     req: PharmacyInterventionRequest,
     db: Session = Depends(get_db)
 ):
-    """儲存藥師的線上/電話/到店/就醫關懷紀錄。"""
+    """儲存藥師關懷；若選擇 REFER，會同步建立醫院端 WAITING 轉介個案。"""
     allowed_methods = {"LINE", "PHONE", "IN_STORE", "MEDICAL"}
     allowed_results = {"OBSERVE", "RETEST", "FOLLOW_UP", "REFER"}
 
@@ -1788,6 +1824,7 @@ def create_pharmacy_intervention(
     followup_dt = None
     if req.followup_date:
         try:
+            # 前端 date input 是台灣日期；此欄目前只當追蹤「日期」使用。
             followup_dt = datetime.strptime(req.followup_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
         except ValueError:
             raise HTTPException(status_code=400, detail="followup_date 格式必須為 YYYY-MM-DD")
@@ -1808,17 +1845,88 @@ def create_pharmacy_intervention(
             followup_date=followup_dt,
             referral_status=referral_status
         )
+
+        # flush 先取得 intervention.id，但整筆交易尚未 commit。
         db.add(intervention)
+        db.flush()
+
+        hospital_referral = None
+
+        if req.action_result == "REFER":
+            # 優先使用藥師目前正在處理的 rPPG；沒有的話找該使用者最新一筆。
+            source_rppg = None
+            if req.rppg_record_id:
+                source_rppg = (
+                    db.query(RPPGRecord)
+                    .filter(RPPGRecord.id == req.rppg_record_id)
+                    .first()
+                )
+
+            if not source_rppg:
+                source_rppg = (
+                    db.query(RPPGRecord)
+                    .filter(
+                        or_(
+                            RPPGRecord.user_line_id == req.user_line_id,
+                            RPPGRecord.user_uuid == req.user_line_id
+                        )
+                    )
+                    .order_by(RPPGRecord.created_at.desc())
+                    .first()
+                )
+
+            profile = (
+                db.query(PatientChronicProfile)
+                .filter(PatientChronicProfile.user_line_id == req.user_line_id)
+                .first()
+            )
+
+            monitoring_mode = normalize_monitoring_mode(
+                profile.monitoring_mode
+                if profile and profile.monitoring_mode
+                else (source_rppg.monitoring_mode if source_rppg else "GENERAL")
+            )
+
+            # 同一筆藥師關懷只允許建立一個醫院轉介。
+            hospital_referral = (
+                db.query(HospitalReferral)
+                .filter(HospitalReferral.intervention_id == intervention.id)
+                .first()
+            )
+
+            if not hospital_referral:
+                hospital_referral = HospitalReferral(
+                    user_line_id=req.user_line_id,
+                    intervention_id=intervention.id,
+                    rppg_record_id=source_rppg.id if source_rppg else req.rppg_record_id,
+                    monitoring_mode=monitoring_mode,
+                    symptoms=req.symptoms,
+                    pharmacist_note=req.pharmacist_note,
+                    systolic_bp=req.systolic_bp,
+                    diastolic_bp=req.diastolic_bp,
+                    pulse=req.pulse,
+                    status="WAITING"
+                )
+                db.add(hospital_referral)
+                db.flush()
+
         db.commit()
         db.refresh(intervention)
 
         return {
             "status": "success",
-            "message": "藥師關懷紀錄已儲存",
+            "message": (
+                "藥師關懷紀錄已儲存，醫院轉介已建立"
+                if hospital_referral
+                else "藥師關懷紀錄已儲存"
+            ),
             "id": intervention.id,
-            "referral_status": intervention.referral_status
+            "referral_status": intervention.referral_status,
+            "hospital_referral_id": hospital_referral.id if hospital_referral else None
         }
+
     except HTTPException:
+        db.rollback()
         raise
     except Exception as e:
         db.rollback()
@@ -1860,6 +1968,127 @@ def get_pharmacy_interventions(user_line_id: str, db: Session = Depends(get_db))
         }
     except Exception as e:
         return {"status": "error", "user_line_id": user_line_id, "records": [], "message": str(e)}
+
+
+# ----------------------------------------------------
+# 15. 醫院端轉介 API
+# ----------------------------------------------------
+@app.get("/api/v1/hospital/referrals")
+def get_hospital_referrals(db: Session = Depends(get_db)):
+    """醫院端待處理轉介清單。第一版只顯示 WAITING。"""
+    try:
+        referrals = (
+            db.query(HospitalReferral)
+            .filter(HospitalReferral.status == "WAITING")
+            .order_by(HospitalReferral.created_at.desc())
+            .all()
+        )
+
+        result = []
+        seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+
+        for referral in referrals:
+            rppg = None
+            if referral.rppg_record_id:
+                rppg = (
+                    db.query(RPPGRecord)
+                    .filter(RPPGRecord.id == referral.rppg_record_id)
+                    .first()
+                )
+
+            # 若來源紀錄不存在，仍以該使用者最新 rPPG 作為醫院參考。
+            if not rppg:
+                rppg = (
+                    db.query(RPPGRecord)
+                    .filter(
+                        or_(
+                            RPPGRecord.user_line_id == referral.user_line_id,
+                            RPPGRecord.user_uuid == referral.user_line_id
+                        )
+                    )
+                    .order_by(RPPGRecord.created_at.desc())
+                    .first()
+                )
+
+            profile = (
+                db.query(PatientChronicProfile)
+                .filter(PatientChronicProfile.user_line_id == referral.user_line_id)
+                .first()
+            )
+
+            recent_records = (
+                db.query(RPPGRecord)
+                .filter(
+                    or_(
+                        RPPGRecord.user_line_id == referral.user_line_id,
+                        RPPGRecord.user_uuid == referral.user_line_id
+                    ),
+                    RPPGRecord.created_at >= seven_days_ago
+                )
+                .all()
+            )
+
+            red_count = sum(1 for x in recent_records if x.health_light == "RED")
+            yellow_count = sum(1 for x in recent_records if x.health_light == "YELLOW")
+
+            mode = normalize_monitoring_mode(
+                profile.monitoring_mode
+                if profile and profile.monitoring_mode
+                else referral.monitoring_mode
+            )
+
+            result.append({
+                "referral_id": referral.id,
+                "user_line_id": referral.user_line_id,
+                "status": referral.status,
+
+                "monitoring_mode": mode,
+                "monitoring_mode_label": MONITORING_MODES[mode]["label"],
+                "chronic_conditions": profile.chronic_conditions if profile else None,
+                "medication_note": profile.medication_note if profile else None,
+
+                "symptoms": referral.symptoms,
+                "pharmacist_note": referral.pharmacist_note,
+                "systolic_bp": referral.systolic_bp,
+                "diastolic_bp": referral.diastolic_bp,
+                "pulse": referral.pulse,
+
+                "seven_day_red_count": red_count,
+                "seven_day_yellow_count": yellow_count,
+
+                "rppg": {
+                    "record_id": rppg.id,
+                    "heart_rate": rppg.heart_rate,
+                    "hrv_sdnn": rppg.hrv_sdnn,
+                    "hrv_rmssd": rppg.hrv_rmssd,
+                    "respiratory_rate": rppg.respiratory_rate,
+                    "irregular_pulse_score": rppg.irregular_pulse_score,
+                    "signal_quality": rppg.signal_quality,
+                    "signal_quality_label": rppg.signal_quality_label,
+                    "stress_score": rppg.stress_score,
+                    "health_light": rppg.health_light,
+                    "mode_alert_reasons": rppg.mode_alert_reasons,
+                    "summary": rppg.summary,
+                    "action_advice": rppg.action_advice,
+                    "created_at": utc_iso(rppg.created_at)
+                } if rppg else None,
+
+                "created_at": utc_iso(referral.created_at)
+            })
+
+        return {
+            "status": "success",
+            "count": len(result),
+            "records": result
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "count": 0,
+            "records": [],
+            "message": str(e)
+        }
 
 
 # ----------------------------------------------------
