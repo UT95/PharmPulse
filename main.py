@@ -529,26 +529,82 @@ def calculate_rppg_metrics(green_signal: List[float], fps: float = 30.0):
     sdnn = round(float(np.clip(sdnn, 12.0, 120.0)), 1)
     return hr, sdnn
 
-def extract_red_green_signals(rgb_signals: Any):
-    """解析前端 [R,G] / [R,G,B] / frame-major 格式，回傳等長 red、green。"""
+def extract_rgb_signals(rgb_signals: Any):
+    """解析前端 [R,G,B] / [R,G] / frame-major 格式，回傳等長 red、green、blue。"""
     raw = np.asarray(rgb_signals, dtype=np.float64)
     raw = np.squeeze(raw)
     if raw.ndim != 2:
-        raise ValueError("進階生理指標需要同時提供 Red 與 Green channel")
+        raise ValueError("進階 rPPG 指標需要提供多通道 RGB 訊號")
     rows, cols = raw.shape
     if rows in (2, 3) and cols >= 5:
         red, green = raw[0, :], raw[1, :]
+        blue = raw[2, :] if rows == 3 else green.copy()
     elif cols in (2, 3) and rows >= 5:
         red, green = raw[:, 0], raw[:, 1]
+        blue = raw[:, 2] if cols == 3 else green.copy()
     else:
-        raise ValueError(f"無法解析 Red/Green 訊號 shape={raw.shape}")
-    valid = np.isfinite(red) & np.isfinite(green)
-    red, green = red[valid], green[valid]
+        raise ValueError(f"無法解析 RGB 訊號 shape={raw.shape}")
+
+    valid = np.isfinite(red) & np.isfinite(green) & np.isfinite(blue)
+    red, green, blue = red[valid], green[valid], blue[valid]
     if len(green) < 30:
-        raise ValueError("有效 Red/Green 訊號不足")
+        raise ValueError("有效 RGB 訊號不足")
+    return red, green, blue
+
+
+def calculate_pos_signal(red_signal, green_signal, blue_signal, fps: float):
+    """
+    Plane-Orthogonal-to-Skin (POS) rPPG approximation.
+    使用滑動視窗正規化 RGB，再投影到兩個與皮膚色調正交的方向，
+    比單獨 Green channel 更能抑制共同光照變化與部分動作雜訊。
+    """
+    fps = float(np.clip(fps, 10.0, 60.0))
+    r = np.asarray(red_signal, dtype=float)
+    g = np.asarray(green_signal, dtype=float)
+    b = np.asarray(blue_signal, dtype=float)
+    n = min(len(r), len(g), len(b))
+    r, g, b = r[:n], g[:n], b[:n]
+
+    if n < max(60, int(fps * 3)):
+        raise ValueError("POS rPPG 有效 RGB 訊號不足")
+
+    rgb = np.vstack([r, g, b])
+    window = max(int(round(1.6 * fps)), 16)
+    h = np.zeros(n, dtype=float)
+    weights = np.zeros(n, dtype=float)
+
+    for end_idx in range(window, n + 1):
+        start_idx = end_idx - window
+        seg = rgb[:, start_idx:end_idx]
+        means = np.mean(seg, axis=1, keepdims=True)
+        if np.any(np.abs(means) < 1e-8):
+            continue
+        cn = seg / means - 1.0
+        x = cn[1] - cn[2]
+        y = cn[1] + cn[2] - 2.0 * cn[0]
+        sy = float(np.std(y))
+        alpha = float(np.std(x) / sy) if sy > 1e-8 else 0.0
+        pulse = x + alpha * y
+        pulse = pulse - np.mean(pulse)
+        h[start_idx:end_idx] += pulse
+        weights[start_idx:end_idx] += 1.0
+
+    valid = weights > 0
+    if not np.any(valid):
+        raise ValueError("POS rPPG 無法建立有效訊號")
+    h[valid] /= weights[valid]
+    if np.any(~valid):
+        h[~valid] = np.interp(np.flatnonzero(~valid), np.flatnonzero(valid), h[valid])
+
+    return h
+
+
+def extract_red_green_signals(rgb_signals: Any):
+    """向後相容舊程式：回傳 red、green。"""
+    red, green, _ = extract_rgb_signals(rgb_signals)
     return red, green
 
-def calculate_advanced_rppg_metrics(red_signal, green_signal, fps: float, hr: int):
+def calculate_advanced_rppg_metrics(red_signal, green_signal, fps: float, hr: int, pulse_signal=None):
     """
     研究/健康管理用途的進階 rPPG 指標。
     SpO2 為一般 RGB 相機 Red/Green ratio-of-ratios 的未校正實驗值，
@@ -561,7 +617,11 @@ def calculate_advanced_rppg_metrics(red_signal, green_signal, fps: float, hr: in
     red, green = red[:n], green[:n]
     duration = n / fps
 
-    gd = green - np.mean(green)
+    if pulse_signal is not None:
+        gd = np.asarray(pulse_signal, dtype=float)[:n]
+        gd = gd - np.mean(gd)
+    else:
+        gd = green - np.mean(green)
     try:
         pulse = butter_bandpass_filter(gd, 0.75, 2.5, fps)
     except Exception:
@@ -997,8 +1057,11 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
         if not is_mock:
             # 1. 解析與提取 Green Channel 訊號
             try:
-                green_signal = extract_green_signal(req.rgb_signals)
-                red_signal, green_for_advanced = extract_red_green_signals(req.rgb_signals)
+                red_signal, green_for_advanced, blue_signal = extract_rgb_signals(req.rgb_signals)
+                pos_signal = calculate_pos_signal(
+                    red_signal, green_for_advanced, blue_signal, float(np.clip(req.fps, 10.0, 60.0))
+                )
+                green_signal = green_for_advanced.tolist()
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc))
 
@@ -1021,10 +1084,19 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
             target_fps = float(np.clip(req.fps, 10.0, 60.0))
 
             # 3. 呼叫 rPPG 演算法計算動態心率 (BPM) 與估計 HRV (SDNN)
-            hr, sdnn = calculate_rppg_metrics(green_signal, fps=target_fps)
+            # POS 訊號作為主要脈搏波來源；Green channel 僅保留相容/除錯用途。
+            hr, sdnn = calculate_rppg_metrics(pos_signal.tolist(), fps=target_fps)
             advanced_metrics = calculate_advanced_rppg_metrics(
-                red_signal, green_for_advanced, target_fps, hr
+                red_signal, green_for_advanced, target_fps, hr, pulse_signal=pos_signal
             )
+
+            # 品質門檻：低品質時保留 HR 供參考，但不硬輸出較敏感的 HRV/RR/SpO2 指標。
+            quality = advanced_metrics.get("signal_quality")
+            if quality is not None and quality < 45:
+                advanced_metrics["hrv_rmssd"] = None
+                advanced_metrics["respiratory_rate"] = None
+                advanced_metrics["irregular_pulse_score"] = None
+                advanced_metrics["spo2_experimental"] = None
 
             # 4. 根據真實 SDNN 與 HR 動態換算壓力指數
             normalized_sdnn = np.clip(sdnn, 15.0, 80.0)
@@ -1130,7 +1202,7 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
                 "health_light": light,
                 "summary": summary,
                 "action_advice": advice,
-                "created_at": record.created_at.isoformat()
+                "created_at": utc_iso(record.created_at)
             }
         }
 
@@ -1196,7 +1268,7 @@ def get_user_history(user_line_id: str, limit: int = 10, db: Session = Depends(g
                 "health_light": r.health_light,
                 "summary": r.summary,
                 "action_advice": r.action_advice,
-                "created_at": r.created_at.isoformat() if r.created_at else None
+                "created_at": utc_iso(r.created_at)
             })
         return {"status": "success", "history": result}
     except Exception as e:
@@ -1233,7 +1305,7 @@ def get_pharmacy_alerts(db: Session = Depends(get_db)):
                 "health_light": r.health_light,
                 "summary": r.summary,
                 "action_advice": r.action_advice,
-                "created_at": r.created_at.isoformat() if r.created_at else None
+                "created_at": utc_iso(r.created_at)
             })
         return {"status": "success", "alerts": result}
     except Exception as e:

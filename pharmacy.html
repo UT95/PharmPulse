@@ -292,19 +292,35 @@
     const API_BASE = "/api/v1";
     let modalChartInstance = null;
     let currentHistory = [];
-    function formatTaiwanTime(value) {
-  if (!value) return "未知時間";
+    function parseServerDate(value) {
+      if (!value) return null;
+      let text = String(value).trim();
 
-  return new Date(value).toLocaleString("zh-TW", {
-    timeZone: "Asia/Taipei",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false
-  });
-}
+      // PostgreSQL 通常會帶 +00:00；SQLite 舊資料可能沒有時區。
+      // PharmPulse 的 created_at 一律以 UTC 儲存，因此沒有 offset 時明確補 Z。
+      if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(text) && !/(Z|[+-]\d{2}:?\d{2})$/.test(text)) {
+        text += "Z";
+      }
+
+      const date = new Date(text);
+      return Number.isNaN(date.getTime()) ? null : date;
+    }
+
+    function formatTaiwanTime(value) {
+      const date = parseServerDate(value);
+      if (!date) return "未知時間";
+
+      return date.toLocaleString("zh-TW", {
+        timeZone: "Asia/Taipei",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false
+      });
+    }
     let currentPatientId = "";
     let currentRecordId = null;
     let currentMetric = "heart_rate";
@@ -563,19 +579,24 @@
       if (!canvas || !currentHistory.length) return;
 
       const cfg = metricConfig[currentMetric];
-      const sortedData = [...currentHistory].sort((a, b) => new Date(a.created_at || 0) - new Date(b.created_at || 0));
+      const sortedData = [...currentHistory].sort((a, b) => {
+        const da = parseServerDate(a.created_at)?.getTime() ?? 0;
+        const db = parseServerDate(b.created_at)?.getTime() ?? 0;
+        return da - db;
+      });
       const labels = sortedData.map(item => {
-  if (!item.created_at) return "未知";
+        const date = parseServerDate(item.created_at);
+        if (!date) return "未知";
 
-  return new Date(item.created_at).toLocaleString("zh-TW", {
-    timeZone: "Asia/Taipei",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false
-  });
-});
+        return date.toLocaleString("zh-TW", {
+          timeZone: "Asia/Taipei",
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false
+        });
+      });
       const values = sortedData.map(item => {
         const v = item[currentMetric];
         return v === null || v === undefined || v === "" ? null : Number(v);

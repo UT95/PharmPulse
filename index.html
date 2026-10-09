@@ -148,12 +148,16 @@
         let isMeasuring = false;
         let collectedGreenSignals = [];
         let collectedRedSignals = [];
+        let collectedBlueSignals = [];
         let collectedTimestamps = [];
-        const MIN_FRAMES = 150;
-        const TARGET_MEASUREMENT_MS = 20000; // RR / RMSSD 需要較長的穩定訊號
-        const MAX_MEASUREMENT_MS = 30000;
+        const MIN_FRAMES = 250;
+        const TARGET_MEASUREMENT_MS = 30000; // 30 秒標準量測，提升 RR / HRV 穩定性
+        const MAX_MEASUREMENT_MS = 45000;
         let measurementStartTime = 0;
         let lastSampleTime = 0;
+        let previousNosePoint = null;
+        let rejectedMotionFrames = 0;
+        let rejectedLightFrames = 0;
 
         // 生成 LINE ID QR Code
         function renderUserQRCode(userLineId) {
@@ -242,63 +246,106 @@
             }
         }
 
-        // 3. 處理每影格人臉偵測與綠光擷取
+        // 3. 處理每影格人臉偵測與多 ROI RGB 擷取
+        // 額頭 + 左右臉頰一起取樣，並排除明顯頭部移動與曝光不良影格。
         function onFaceMeshResults(results) {
             canvasCtx.save();
             canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-            
+
             if (results.image) {
                 canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
             }
 
             if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
                 const landmarks = results.multiFaceLandmarks[0];
-                const foreheadPt = landmarks[10]; // 額頭特徵點
-                
-                const x = Math.floor(foreheadPt.x * canvasElement.width);
-                const y = Math.floor(foreheadPt.y * canvasElement.height);
 
-                canvasCtx.fillStyle = "#1DB446";
-                canvasCtx.beginPath();
-                canvasCtx.arc(x, y, 6, 0, 2 * Math.PI);
-                canvasCtx.fill();
+                // MediaPipe landmarks：額頭中央、左右臉頰附近。
+                const roiPoints = [landmarks[10], landmarks[50], landmarks[280]];
+                const nose = landmarks[1];
 
-                // 防護：必須是啟動狀態且數量未滿
-                if (isMeasuring) {
-                    const now = performance.now();
-                    const roiSize = 20;
+                // 以鼻尖位移作為簡單 motion gate。位移太大時不把該影格送進 rPPG。
+                let motionTooLarge = false;
+                if (previousNosePoint) {
+                    const dx = nose.x - previousNosePoint.x;
+                    const dy = nose.y - previousNosePoint.y;
+                    const displacement = Math.sqrt(dx * dx + dy * dy);
+                    motionTooLarge = displacement > 0.010;
+                }
+                previousNosePoint = { x: nose.x, y: nose.y };
+
+                let frameR = 0, frameG = 0, frameB = 0, validRois = 0;
+                const roiSize = 26;
+
+                for (const pt of roiPoints) {
+                    const x = Math.floor(pt.x * canvasElement.width);
+                    const y = Math.floor(pt.y * canvasElement.height);
+
+                    canvasCtx.strokeStyle = "#1DB446";
+                    canvasCtx.lineWidth = 2;
+                    canvasCtx.strokeRect(x - roiSize / 2, y - roiSize / 2, roiSize, roiSize);
+
                     const startX = Math.max(0, Math.min(canvasElement.width - roiSize, x - Math.floor(roiSize / 2)));
                     const startY = Math.max(0, Math.min(canvasElement.height - roiSize, y - Math.floor(roiSize / 2)));
-
                     const imgData = canvasCtx.getImageData(startX, startY, roiSize, roiSize);
 
-                    let sumG = 0, sumR = 0;
+                    let sumR = 0, sumG = 0, sumB = 0;
                     const totalPixels = imgData.data.length / 4;
-
                     for (let i = 0; i < imgData.data.length; i += 4) {
-                        sumR += imgData.data[i];    // Red
-                        sumG += imgData.data[i + 1]; // Green
+                        sumR += imgData.data[i];
+                        sumG += imgData.data[i + 1];
+                        sumB += imgData.data[i + 2];
                     }
 
-                    collectedGreenSignals.push(sumG / totalPixels);
-                    collectedRedSignals.push(sumR / totalPixels);
-                    collectedTimestamps.push(now);
-                    lastSampleTime = now;
+                    const avgR = sumR / totalPixels;
+                    const avgG = sumG / totalPixels;
+                    const avgB = sumB / totalPixels;
+                    const brightness = (avgR + avgG + avgB) / 3;
+
+                    // 過暗或過曝 ROI 不採用。
+                    if (brightness >= 45 && brightness <= 220) {
+                        frameR += avgR;
+                        frameG += avgG;
+                        frameB += avgB;
+                        validRois += 1;
+                    }
+                }
+
+                if (isMeasuring) {
+                    const now = performance.now();
+
+                    if (motionTooLarge) {
+                        rejectedMotionFrames += 1;
+                        document.getElementById("status-text").innerText = "⚠️ 偵測到頭部移動，請保持不動；移動期間不會計入量測。";
+                    } else if (validRois < 2) {
+                        rejectedLightFrames += 1;
+                        document.getElementById("status-text").innerText = "⚠️ 光線過暗或過曝，請移到光線均勻的位置。";
+                    } else {
+                        // 多 ROI 平均可降低單一區域陰影、表情與追蹤誤差。
+                        collectedRedSignals.push(frameR / validRois);
+                        collectedGreenSignals.push(frameG / validRois);
+                        collectedBlueSignals.push(frameB / validRois);
+                        collectedTimestamps.push(now);
+                        lastSampleTime = now;
+                    }
 
                     const currentCount = collectedGreenSignals.length;
                     const elapsedMs = now - measurementStartTime;
                     const progress = Math.min(100, (elapsedMs / TARGET_MEASUREMENT_MS) * 100);
                     document.getElementById("progress-bar").style.width = progress + "%";
-                    document.getElementById("status-text").innerText = `⏳ 正在擷取多參數 rPPG (${Math.floor(elapsedMs / 1000)}/20 秒，${currentCount} 點)... 請保持靜止`;
 
-                    // 至少 20 秒 + 足夠取樣點；最多 30 秒避免低 FPS 無限等待。
+                    if (!motionTooLarge && validRois >= 2) {
+                        document.getElementById("status-text").innerText =
+                            `⏳ 正在擷取高品質 rPPG (${Math.floor(elapsedMs / 1000)}/30 秒，${currentCount} 個有效點)... 請保持靜止`;
+                    }
+
+                    // 30 秒 + 足夠有效取樣點；最多 45 秒避免低 FPS 或偶發移動造成無限等待。
                     if ((elapsedMs >= TARGET_MEASUREMENT_MS && currentCount >= MIN_FRAMES) || elapsedMs >= MAX_MEASUREMENT_MS) {
                         isMeasuring = false;
                         processRppgAnalysis();
                     }
                 }
             } else if (isMeasuring) {
-                document.getElementById("status-text").innerText = "⚠️ 請面向螢幕並保持額頭未被遮擋！";
+                document.getElementById("status-text").innerText = "⚠️ 未穩定偵測到臉部，請面向螢幕並保持光線均勻。";
             }
             canvasCtx.restore();
         }
@@ -335,7 +382,11 @@
             setTimeout(() => {
                 collectedGreenSignals = [];
                 collectedRedSignals = [];
+                collectedBlueSignals = [];
                 collectedTimestamps = [];
+                previousNosePoint = null;
+                rejectedMotionFrames = 0;
+                rejectedLightFrames = 0;
                 measurementStartTime = performance.now();
                 lastSampleTime = measurementStartTime;
                 isMeasuring = true;
@@ -361,12 +412,12 @@
                 ? Math.min(60, Math.max(10, (collectedTimestamps.length - 1) / durationSec))
                 : 30;
 
-            document.getElementById("status-text").innerText = `🔄 訊號擷取完成（${collectedGreenSignals.length} 點 / ${estimatedFps.toFixed(1)} FPS），正在進行演算法分析...`;
+            document.getElementById("status-text").innerText = `🔄 訊號擷取完成（${collectedGreenSignals.length} 個有效點 / ${estimatedFps.toFixed(1)} FPS；移動排除 ${rejectedMotionFrames} 幀），正在進行 POS rPPG 分析...`;
             document.getElementById("progress-container").style.display = "none";
 
             const payload = {
                 user_line_id: currentUserId,
-                rgb_signals: [collectedRedSignals, collectedGreenSignals],
+                rgb_signals: [collectedRedSignals, collectedGreenSignals, collectedBlueSignals],
                 fps: Number(estimatedFps.toFixed(2))
             };
 
