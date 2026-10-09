@@ -1568,6 +1568,144 @@ def get_pharmacy_alerts(db: Session = Depends(get_db)):
     except Exception as e:
         return {"status": "error", "alerts": [], "message": str(e)}
 
+@app.get("/api/v1/pharmacy/dashboard")
+def get_pharmacy_dashboard(db: Session = Depends(get_db)):
+    """藥師慢性病個案管理 KPI 與已到期追蹤清單。"""
+    try:
+        # 1) 個人慢性病檔案：若存在，優先作為病人的分群來源。
+        profiles = db.query(PatientChronicProfile).all()
+        profile_map = {p.user_line_id: p for p in profiles if p.user_line_id}
+
+        # 2) 建立每位曾量測民眾的最新監測模式，讓尚未建立個人檔案者也能納入總個案。
+        measurement_rows = (
+            db.query(RPPGRecord)
+            .order_by(RPPGRecord.created_at.desc())
+            .all()
+        )
+        patient_mode = {}
+        for r in measurement_rows:
+            user_id = r.user_line_id or r.user_uuid
+            if not user_id or user_id in patient_mode:
+                continue
+            profile = profile_map.get(user_id)
+            mode = normalize_monitoring_mode(
+                profile.monitoring_mode if profile and profile.monitoring_mode else r.monitoring_mode
+            )
+            patient_mode[user_id] = mode
+
+        # 有個人檔案但還沒有量測的人也計入個案管理總數。
+        for user_id, profile in profile_map.items():
+            patient_mode[user_id] = normalize_monitoring_mode(profile.monitoring_mode)
+
+        mode_keys = ["GENERAL", "CARDIO", "RESPIRATORY"]
+        stats = {
+            mode: {
+                "mode": mode,
+                "label": MONITORING_MODES[mode]["label"],
+                "total_patients": 0,
+                "red_patients": 0,
+                "yellow_patients": 0,
+                "due_followups": 0,
+            }
+            for mode in mode_keys
+        }
+
+        for user_id, mode in patient_mode.items():
+            stats[mode]["total_patients"] += 1
+
+        # 3) 未結案紅黃燈以「民眾」計數，不因同一人多筆異常而重複灌高 KPI。
+        unresolved = (
+            db.query(RPPGRecord)
+            .filter(RPPGRecord.health_light.in_(["RED", "YELLOW"]))
+            .filter(or_(RPPGRecord.is_resolved == False, RPPGRecord.is_resolved.is_(None)))
+            .order_by(RPPGRecord.created_at.desc())
+            .all()
+        )
+        red_users = {mode: set() for mode in mode_keys}
+        yellow_users = {mode: set() for mode in mode_keys}
+        for r in unresolved:
+            user_id = r.user_line_id or r.user_uuid
+            if not user_id:
+                continue
+            profile = profile_map.get(user_id)
+            mode = normalize_monitoring_mode(
+                profile.monitoring_mode if profile and profile.monitoring_mode else r.monitoring_mode
+            )
+            if r.health_light == "RED":
+                red_users[mode].add(user_id)
+            elif r.health_light == "YELLOW":
+                yellow_users[mode].add(user_id)
+
+        for mode in mode_keys:
+            stats[mode]["red_patients"] = len(red_users[mode])
+            stats[mode]["yellow_patients"] = len(yellow_users[mode])
+
+        # 4) 每位民眾只看最新一筆藥師關懷；如果其追蹤日期已到且尚未轉介醫院，就列為待追蹤。
+        interventions = (
+            db.query(PharmacyIntervention)
+            .order_by(PharmacyIntervention.created_at.desc())
+            .all()
+        )
+        latest_intervention = {}
+        for item in interventions:
+            if item.user_line_id and item.user_line_id not in latest_intervention:
+                latest_intervention[item.user_line_id] = item
+
+        today = datetime.now(timezone.utc).date()
+        followups = []
+        for user_id, item in latest_intervention.items():
+            if not item.followup_date or item.action_result == "REFER":
+                continue
+            due_date = item.followup_date.date()
+            if due_date > today:
+                continue
+
+            profile = profile_map.get(user_id)
+            mode = normalize_monitoring_mode(
+                profile.monitoring_mode if profile and profile.monitoring_mode
+                else patient_mode.get(user_id, "GENERAL")
+            )
+            stats[mode]["due_followups"] += 1
+            followups.append({
+                "intervention_id": item.id,
+                "user_line_id": user_id,
+                "monitoring_mode": mode,
+                "monitoring_mode_label": MONITORING_MODES[mode]["label"],
+                "chronic_conditions": profile.chronic_conditions if profile else None,
+                "care_method": item.care_method,
+                "action_result": item.action_result,
+                "pharmacist_note": item.pharmacist_note,
+                "followup_date": due_date.isoformat(),
+                "days_overdue": max(0, (today - due_date).days),
+                "is_overdue": due_date < today,
+            })
+
+        followups.sort(key=lambda x: (x["followup_date"], x["user_line_id"]))
+
+        all_stats = {
+            "mode": "ALL",
+            "label": "全部慢性病個案",
+            "total_patients": len(patient_mode),
+            "red_patients": len(set().union(*red_users.values())),
+            "yellow_patients": len(set().union(*yellow_users.values())),
+            "due_followups": len(followups),
+        }
+
+        return {
+            "status": "success",
+            "stats": {"ALL": all_stats, **stats},
+            "followups": followups,
+            "generated_at": utc_iso(datetime.now(timezone.utc)),
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "stats": {},
+            "followups": [],
+            "message": str(e),
+        }
+
+
 @app.post("/api/v1/pharmacy/resolve/{record_id}")
 def resolve_pharmacy_alert(record_id: int, db: Session = Depends(get_db)):
     """藥師端標註警示個案為已處置/已結案"""

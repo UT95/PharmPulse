@@ -22,7 +22,7 @@
           <p class="text-xs text-emerald-100">社區藥局生理即時追蹤與照護平台</p>
         </div>
       </div>
-      <button onclick="fetchAlerts()" class="bg-emerald-800 hover:bg-emerald-900 text-emerald-100 text-sm px-3 py-1.5 rounded-lg transition flex items-center gap-1.5">
+      <button onclick="refreshDashboard()" class="bg-emerald-800 hover:bg-emerald-900 text-emerald-100 text-sm px-3 py-1.5 rounded-lg transition flex items-center gap-1.5">
         <i class="fa-solid fa-rotate-right"></i> 重新整理
       </button>
     </div>
@@ -31,26 +31,34 @@
   <main class="max-w-7xl mx-auto px-4 py-6 space-y-6">
 
     <!-- Dashboard KPI -->
-    <section class="grid grid-cols-2 lg:grid-cols-4 gap-3">
-      <div class="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
-        <p class="text-xs text-slate-500">待處理警示</p>
-        <p id="kpi-pending" class="text-2xl font-bold text-slate-800 mt-1">--</p>
-        <p class="text-[11px] text-slate-400 mt-1">RED + YELLOW</p>
+    <section>
+      <div class="flex flex-wrap items-end justify-between gap-2 mb-2">
+        <div>
+          <p id="kpi-mode-title" class="text-sm font-bold text-slate-700">全部慢性病個案</p>
+          <p class="text-[11px] text-slate-400">KPI 會跟著下方「監測分類」同步切換</p>
+        </div>
       </div>
-      <div class="bg-white rounded-xl border border-red-100 p-4 shadow-sm">
-        <p class="text-xs text-slate-500">RED 高度警示</p>
-        <p id="kpi-red" class="text-2xl font-bold text-red-600 mt-1">--</p>
-        <p class="text-[11px] text-slate-400 mt-1">需優先關懷</p>
-      </div>
-      <div class="bg-white rounded-xl border border-amber-100 p-4 shadow-sm">
-        <p class="text-xs text-slate-500">YELLOW 輕度風險</p>
-        <p id="kpi-yellow" class="text-2xl font-bold text-amber-600 mt-1">--</p>
-        <p class="text-[11px] text-slate-400 mt-1">建議持續追蹤</p>
-      </div>
-      <div class="bg-white rounded-xl border border-emerald-100 p-4 shadow-sm">
-        <p class="text-xs text-slate-500">本頁已處置</p>
-        <p id="kpi-resolved" class="text-2xl font-bold text-emerald-600 mt-1">--</p>
-        <p class="text-[11px] text-slate-400 mt-1">本次頁面操作</p>
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div class="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
+          <p class="text-xs text-slate-500">總個案</p>
+          <p id="kpi-patients" class="text-2xl font-bold text-slate-800 mt-1">--</p>
+          <p class="text-[11px] text-slate-400 mt-1">曾量測或已建立慢病檔案</p>
+        </div>
+        <div class="bg-white rounded-xl border border-red-100 p-4 shadow-sm">
+          <p class="text-xs text-slate-500">RED 個案</p>
+          <p id="kpi-red" class="text-2xl font-bold text-red-600 mt-1">--</p>
+          <p class="text-[11px] text-slate-400 mt-1">未結案、需優先關懷</p>
+        </div>
+        <div class="bg-white rounded-xl border border-amber-100 p-4 shadow-sm">
+          <p class="text-xs text-slate-500">YELLOW 個案</p>
+          <p id="kpi-yellow" class="text-2xl font-bold text-amber-600 mt-1">--</p>
+          <p class="text-[11px] text-slate-400 mt-1">未結案、建議持續追蹤</p>
+        </div>
+        <div class="bg-white rounded-xl border border-blue-100 p-4 shadow-sm">
+          <p class="text-xs text-slate-500">待追蹤</p>
+          <p id="kpi-followup" class="text-2xl font-bold text-blue-600 mt-1">--</p>
+          <p class="text-[11px] text-slate-400 mt-1">追蹤日期已到或逾期</p>
+        </div>
       </div>
     </section>
 
@@ -92,6 +100,21 @@
           <div class="text-center py-12 text-slate-400 bg-white rounded-xl shadow-sm border border-slate-100">
             <i class="fa-solid fa-spinner fa-spin text-2xl mb-2 text-emerald-600"></i>
             <p>正在載入緊急關懷卡片...</p>
+          </div>
+        </div>
+
+        <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm mt-5">
+          <div class="flex items-start justify-between gap-3 mb-3">
+            <div>
+              <h3 class="font-bold text-slate-800 flex items-center gap-2">
+                <i class="fa-solid fa-calendar-check text-blue-600"></i> 待追蹤個案
+              </h3>
+              <p class="text-xs text-slate-500 mt-1">顯示最新藥師關懷中，追蹤日期已到或逾期的民眾。</p>
+            </div>
+            <span id="followup-count" class="text-xs font-semibold bg-blue-50 text-blue-700 px-2.5 py-1 rounded-full">--</span>
+          </div>
+          <div id="followup-list" class="space-y-2">
+            <div class="text-sm text-slate-400 py-4 text-center">正在載入追蹤工作...</div>
           </div>
         </div>
       </section>
@@ -339,7 +362,7 @@
     let alertData = [];
     let alertFilter = "ALL";
     let modeFilter = "ALL";
-    let resolvedThisSession = 0;
+    let dashboardData = { stats: {}, followups: [] };
 
     const metricConfig = {
       heart_rate: { title: "7 天心率趨勢 (BPM)", label: "心率", unit: "BPM", color: "#059669" },
@@ -368,12 +391,105 @@
     }
 
     function updateKPI() {
-      const red = alertData.filter(x => x.health_light === "RED").length;
-      const yellow = alertData.filter(x => x.health_light === "YELLOW").length;
-      document.getElementById("kpi-pending").textContent = alertData.length;
-      document.getElementById("kpi-red").textContent = red;
-      document.getElementById("kpi-yellow").textContent = yellow;
-      document.getElementById("kpi-resolved").textContent = resolvedThisSession;
+      const stats = dashboardData?.stats?.[modeFilter] || dashboardData?.stats?.ALL;
+      const fallbackModeLabels = {
+        ALL: "全部慢性病個案",
+        GENERAL: "一般健康監測",
+        CARDIO: "高血壓 / 心血管監測",
+        RESPIRATORY: "COPD / 呼吸慢病監測"
+      };
+
+      document.getElementById("kpi-mode-title").textContent =
+        stats?.label || fallbackModeLabels[modeFilter] || "慢性病個案";
+      document.getElementById("kpi-patients").textContent = stats?.total_patients ?? 0;
+      document.getElementById("kpi-red").textContent = stats?.red_patients ?? 0;
+      document.getElementById("kpi-yellow").textContent = stats?.yellow_patients ?? 0;
+      document.getElementById("kpi-followup").textContent = stats?.due_followups ?? 0;
+    }
+
+    function getFilteredFollowups() {
+      const all = Array.isArray(dashboardData?.followups) ? dashboardData.followups : [];
+      if (modeFilter === "ALL") return all;
+      return all.filter(item => (item.monitoring_mode || "GENERAL") === modeFilter);
+    }
+
+    function renderFollowups() {
+      const box = document.getElementById("followup-list");
+      const badge = document.getElementById("followup-count");
+      if (!box || !badge) return;
+
+      const records = getFilteredFollowups();
+      badge.textContent = `${records.length} 人`;
+
+      if (!records.length) {
+        box.innerHTML = `
+          <div class="text-center py-5 text-slate-400 text-sm">
+            <i class="fa-regular fa-circle-check text-emerald-500 mr-1"></i>
+            目前此分類沒有已到期的追蹤個案
+          </div>`;
+        return;
+      }
+
+      const careMap = {
+        LINE: "LINE 線上關懷",
+        PHONE: "電話關懷",
+        IN_STORE: "到藥局複測",
+        MEDICAL: "建議就醫"
+      };
+
+      box.innerHTML = records.map(item => {
+        const overdueText = item.is_overdue
+          ? `<span class="text-red-600 font-semibold">逾期 ${Number(item.days_overdue || 0)} 天</span>`
+          : `<span class="text-blue-600 font-semibold">今天追蹤</span>`;
+        return `
+          <div class="border ${item.is_overdue ? "border-red-100 bg-red-50/40" : "border-blue-100 bg-blue-50/30"} rounded-xl p-3">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div class="min-w-0">
+                <div class="flex flex-wrap items-center gap-2">
+                  <p class="font-semibold text-sm text-slate-800">${escapeHTML(maskLineId(item.user_line_id))}</p>
+                  <span class="text-[10px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-semibold">${escapeHTML(item.monitoring_mode_label || "一般健康監測")}</span>
+                  ${overdueText}
+                </div>
+                <p class="text-xs text-slate-500 mt-1">追蹤日期：${escapeHTML(item.followup_date || "--")}｜${escapeHTML(careMap[item.care_method] || item.care_method || "未記錄")}</p>
+                ${item.chronic_conditions ? `<p class="text-xs text-slate-600 mt-1">個人檔案：${escapeHTML(item.chronic_conditions)}</p>` : ""}
+                <p class="text-xs text-slate-500 mt-1 line-clamp-2">藥師備註：${escapeHTML(item.pharmacist_note || "無")}</p>
+              </div>
+              <div class="flex gap-2 shrink-0">
+                <button onclick="quickLookup('${escapeHTML(item.user_line_id)}')"
+                  class="bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs px-3 py-2 rounded-lg font-medium">
+                  查看個案
+                </button>
+                <button onclick="startIntervention('${escapeHTML(item.user_line_id)}', null)"
+                  class="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-2 rounded-lg font-medium">
+                  開始追蹤
+                </button>
+              </div>
+            </div>
+          </div>`;
+      }).join("");
+    }
+
+    async function fetchDashboard() {
+      try {
+        const res = await fetch(`${API_BASE}/pharmacy/dashboard`);
+        const data = await res.json();
+        if (!res.ok || data.status !== "success") {
+          throw new Error(data.message || "Dashboard 載入失敗");
+        }
+        dashboardData = data;
+        updateKPI();
+        renderFollowups();
+      } catch (err) {
+        console.error("Fetch Dashboard Error:", err);
+        dashboardData = { stats: {}, followups: [] };
+        updateKPI();
+        const box = document.getElementById("followup-list");
+        if (box) box.innerHTML = `<div class="text-sm text-red-500 py-3">待追蹤資料載入失敗。</div>`;
+      }
+    }
+
+    async function refreshDashboard() {
+      await Promise.all([fetchAlerts(), fetchDashboard()]);
     }
 
     async function fetchAlerts() {
@@ -387,7 +503,6 @@
 
         alertData = Array.isArray(data.alerts) ? data.alerts : [];
         countBadge.textContent = `${alertData.length} 筆待處理`;
-        updateKPI();
         renderAlerts();
       } catch (err) {
         console.error("Fetch Alerts Error:", err);
@@ -418,6 +533,8 @@
       });
 
       renderAlerts();
+      updateKPI();
+      renderFollowups();
     }
 
     function renderAlerts() {
@@ -430,9 +547,10 @@
         const matchesMode = modeFilter === "ALL" || itemMode === modeFilter;
         const haystack = [
           item.user_line_id, item.summary, item.action_advice,
-          item.health_light, item.heart_rate, item.stress_score
+          item.health_light, item.heart_rate, item.stress_score,
+          item.chronic_conditions, item.profile_monitoring_mode_label, item.monitoring_mode_label
         ].join(" ").toLowerCase();
-        return matchesFilter && (!search || haystack.includes(search));
+        return matchesFilter && matchesMode && (!search || haystack.includes(search));
       });
 
       if (!filtered.length) {
@@ -842,11 +960,10 @@
           }
         }
 
-        resolvedThisSession += 1;
         updateKPI();
         closeInterventionModal();
         await renderLatestIntervention();
-        await fetchAlerts();
+        await refreshDashboard();
 
         if (data.referral_status === "REFERRED") {
           alert("關懷紀錄已儲存，並已標記為轉介醫療院所。");
@@ -866,7 +983,7 @@
       }
     });
 
-    window.onload = fetchAlerts;
+    window.onload = refreshDashboard;
   </script>
 </body>
 </html>
