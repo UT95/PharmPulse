@@ -1677,6 +1677,27 @@ def get_user_history(user_line_id: str, limit: int = 10, db: Session = Depends(g
 # 14. 藥局端專用管理 API
 # ----------------------------------------------------
 
+def _latest_measurements_by_user(db: Session):
+    """
+    每位民眾只保留最新一筆量測，不限制燈號。
+    用於藥師端查詢目前最新狀態為 GREEN 的民眾。
+    """
+    rows = (
+        db.query(RPPGRecord)
+        .order_by(RPPGRecord.created_at.desc(), RPPGRecord.id.desc())
+        .all()
+    )
+
+    latest_by_user = {}
+    for row in rows:
+        user_id = row.user_line_id or row.user_uuid
+        if not user_id or user_id in latest_by_user:
+            continue
+        latest_by_user[user_id] = row
+
+    return list(latest_by_user.values())
+
+
 def _current_pending_alerts(db: Session):
     """
     每位民眾只保留最新一筆未結案 RED / YELLOW 警示。
@@ -1700,10 +1721,25 @@ def _current_pending_alerts(db: Session):
     return list(latest_by_user.values())
 
 @app.get("/api/v1/pharmacy/alerts")
-def get_pharmacy_alerts(db: Session = Depends(get_db)):
-    """取得社區藥局端即時異常警示清單（黃燈/紅燈且未結案）"""
+def get_pharmacy_alerts(light: Optional[str] = None, db: Session = Depends(get_db)):
+    """取得藥局端清單。預設為未結案 RED/YELLOW；light=GREEN 時回傳目前最新狀態為 GREEN 的民眾。"""
     try:
-        records = _current_pending_alerts(db)
+        requested_light = (light or "").strip().upper()
+
+        if requested_light == "GREEN":
+            # GREEN 是歷史正常量測查詢，不是待處置警示。
+            # 直接回傳近 7 天全部 GREEN 紀錄，確保剛完成的正常量測可立即被藥師查到。
+            seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+            records = (
+                db.query(RPPGRecord)
+                .filter(RPPGRecord.health_light == "GREEN")
+                .filter(RPPGRecord.created_at >= seven_days_ago)
+                .order_by(RPPGRecord.created_at.desc(), RPPGRecord.id.desc())
+                .limit(300)
+                .all()
+            )
+        else:
+            records = _current_pending_alerts(db)
         
         user_ids = [r.user_line_id or r.user_uuid for r in records if (r.user_line_id or r.user_uuid)]
         profiles = db.query(PatientChronicProfile).filter(
@@ -1737,7 +1773,11 @@ def get_pharmacy_alerts(db: Session = Depends(get_db)):
                 "action_advice": r.action_advice,
                 "created_at": utc_iso(r.created_at)
             })
-        return {"status": "success", "alerts": result}
+        return {
+            "status": "success",
+            "list_type": "GREEN" if requested_light == "GREEN" else "ALERT",
+            "alerts": result
+        }
     except Exception as e:
         return {"status": "error", "alerts": [], "message": str(e)}
 
@@ -2098,6 +2138,87 @@ def create_pharmacy_intervention(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"儲存藥師關懷紀錄失敗: {str(e)}")
+
+
+@app.get("/api/v1/pharmacy/interventions")
+def get_all_pharmacy_interventions(db: Session = Depends(get_db)):
+    """藥師主頁使用：取得所有已儲存的關懷紀錄，最新一筆排在最前面。"""
+    try:
+        records = (
+            db.query(PharmacyIntervention)
+            .order_by(PharmacyIntervention.created_at.desc(), PharmacyIntervention.id.desc())
+            .limit(500)
+            .all()
+        )
+
+        result = []
+        for r in records:
+            source_rppg = None
+            if r.rppg_record_id:
+                source_rppg = (
+                    db.query(RPPGRecord)
+                    .filter(RPPGRecord.id == r.rppg_record_id)
+                    .first()
+                )
+
+            if not source_rppg:
+                source_rppg = (
+                    db.query(RPPGRecord)
+                    .filter(
+                        or_(
+                            RPPGRecord.user_line_id == r.user_line_id,
+                            RPPGRecord.user_uuid == r.user_line_id
+                        )
+                    )
+                    .order_by(RPPGRecord.created_at.desc(), RPPGRecord.id.desc())
+                    .first()
+                )
+
+            profile = (
+                db.query(PatientChronicProfile)
+                .filter(PatientChronicProfile.user_line_id == r.user_line_id)
+                .first()
+            )
+
+            mode = normalize_monitoring_mode(
+                profile.monitoring_mode if profile and profile.monitoring_mode
+                else (source_rppg.monitoring_mode if source_rppg else "GENERAL")
+            )
+
+            result.append({
+                "id": r.id,
+                "user_line_id": r.user_line_id,
+                "rppg_record_id": r.rppg_record_id,
+                "care_method": r.care_method,
+                "symptoms": r.symptoms,
+                "systolic_bp": r.systolic_bp,
+                "diastolic_bp": r.diastolic_bp,
+                "pulse": r.pulse,
+                "pharmacist_note": r.pharmacist_note,
+                "action_result": r.action_result,
+                "followup_date": r.followup_date.strftime("%Y-%m-%d") if r.followup_date else None,
+                "referral_status": r.referral_status,
+                "created_at": utc_iso(r.created_at),
+                "monitoring_mode": mode,
+                "monitoring_mode_label": MONITORING_MODES[mode]["label"],
+                "source_health_light": source_rppg.health_light if source_rppg else None,
+                "source_created_at": utc_iso(source_rppg.created_at) if source_rppg else None,
+                "chronic_conditions": profile.chronic_conditions if profile else None
+            })
+
+        return {
+            "status": "success",
+            "records": result,
+            "count": len(result)
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "records": [],
+            "count": 0,
+            "message": str(e)
+        }
 
 
 @app.get("/api/v1/pharmacy/patient/{user_line_id}/interventions")
