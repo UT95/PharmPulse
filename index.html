@@ -63,6 +63,120 @@
         .report-title { font-weight: bold; font-size: 16px; margin-bottom: 8px; color: #166534; }
         .report-metric { font-size: 15px; margin-bottom: 6px; }
         .report-section { margin-top: 10px; font-size: 14px; line-height: 1.5; white-space: pre-line; }
+        .mode-focus-preview {
+            margin-top: 10px;
+            padding: 11px 12px;
+            border-radius: 10px;
+            background: rgba(255,255,255,0.75);
+            border: 1px solid rgba(22,101,52,0.12);
+        }
+        .mode-focus-title {
+            font-size: 12px;
+            font-weight: 700;
+            color: #166534;
+            margin-bottom: 6px;
+        }
+        .mode-focus-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .mode-chip {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 8px;
+            border-radius: 999px;
+            background: #dcfce7;
+            color: #166534;
+            font-size: 11px;
+            font-weight: 700;
+        }
+        .mode-focus-note {
+            font-size: 11px;
+            color: #64748b;
+            line-height: 1.45;
+            margin-top: 7px;
+        }
+        .mode-result-header {
+            margin-bottom: 10px;
+            padding: 10px 12px;
+            border-radius: 10px;
+            background: rgba(255,255,255,0.72);
+            border: 1px solid rgba(15,23,42,0.08);
+        }
+        .mode-result-name {
+            font-weight: 800;
+            color: #0f172a;
+            font-size: 14px;
+        }
+        .mode-result-reason {
+            margin-top: 5px;
+            color: #475569;
+            font-size: 12px;
+            line-height: 1.45;
+        }
+        .primary-metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 9px;
+            margin-top: 10px;
+        }
+        .primary-metric-card {
+            background: rgba(255,255,255,0.82);
+            border: 1px solid rgba(148,163,184,0.28);
+            border-radius: 10px;
+            padding: 10px;
+        }
+        .primary-metric-label {
+            font-size: 11px;
+            color: #64748b;
+            margin-bottom: 4px;
+        }
+        .primary-metric-value {
+            color: #0f172a;
+            font-size: 17px;
+            line-height: 1.25;
+            font-weight: 800;
+        }
+        .primary-metric-sub {
+            margin-top: 3px;
+            color: #64748b;
+            font-size: 10px;
+            line-height: 1.35;
+        }
+        .secondary-metrics {
+            margin-top: 10px;
+            padding: 10px 12px;
+            border-radius: 10px;
+            background: rgba(248,250,252,0.85);
+            border: 1px solid rgba(148,163,184,0.2);
+        }
+        .secondary-metrics-title {
+            font-size: 11px;
+            font-weight: 800;
+            color: #475569;
+            margin-bottom: 6px;
+        }
+        .secondary-metrics-body {
+            white-space: pre-line;
+            color: #64748b;
+            font-size: 12px;
+            line-height: 1.55;
+        }
+        .clinical-note {
+            margin-top: 10px;
+            border-radius: 9px;
+            padding: 9px 10px;
+            font-size: 11px;
+            line-height: 1.45;
+            background: #fff7ed;
+            color: #9a3412;
+            border: 1px solid #fed7aa;
+        }
+        @media (max-width: 420px) {
+            .primary-metrics-grid { grid-template-columns: 1fr 1fr; gap: 7px; }
+            .primary-metric-value { font-size: 15px; }
+        }
 
         /* 歷史紀錄彈窗 Modal CSS */
         .modal { display: none; position: fixed; z-index: 100; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); }
@@ -117,6 +231,11 @@
                 <option value="RESPIRATORY">COPD / 呼吸慢病監測</option>
             </select>
             <div id="monitoring-mode-hint" style="margin-top:7px;font-size:12px;line-height:1.45;color:#64748b;">日常追蹤心率、HRV、呼吸與壓力趨勢。</div>
+            <div id="monitoring-mode-focus" class="mode-focus-preview">
+                <div class="mode-focus-title">本模式主要觀察</div>
+                <div id="monitoring-mode-chips" class="mode-focus-chips"></div>
+                <div id="monitoring-mode-note" class="mode-focus-note"></div>
+            </div>
         </div>
 
         <div class="camera-container">
@@ -134,8 +253,22 @@
 
         <div id="report-card" class="report-card">
             <div id="report-title" class="report-title">🟢 量測結果報告</div>
-            <div id="report-metrics" class="report-metric"></div>
-            <hr style="margin: 8px 0; border: none; border-top: 1px solid rgba(0,0,0,0.1);">
+
+            <div class="mode-result-header">
+                <div id="report-mode-name" class="mode-result-name">一般健康監測</div>
+                <div id="report-mode-reason" class="mode-result-reason">目前無模式特定警示</div>
+            </div>
+
+            <div id="report-primary-metrics" class="primary-metrics-grid"></div>
+
+            <div class="secondary-metrics">
+                <div class="secondary-metrics-title">其他參考指標</div>
+                <div id="report-secondary-metrics" class="secondary-metrics-body"></div>
+            </div>
+
+            <div id="report-clinical-note" class="clinical-note"></div>
+
+            <hr style="margin: 12px 0 8px; border: none; border-top: 1px solid rgba(0,0,0,0.1);">
             <div id="report-summary" class="report-section"></div>
             <div id="report-advice" class="report-section" style="font-weight: 500;"></div>
         </div>
@@ -200,9 +333,24 @@
         let currentUserId = "";
 
         const monitoringModeInfo = {
-            GENERAL: { label: "一般健康監測", hint: "日常追蹤心率、HRV、呼吸與壓力趨勢。" },
-            CARDIO: { label: "高血壓 / 心血管監測", hint: "著重心率、脈搏規律與 HRV 趨勢；高血壓仍需搭配合格血壓計確認。" },
-            RESPIRATORY: { label: "COPD / 呼吸慢病監測", hint: "著重呼吸頻率與心肺負荷；SpO₂ 為實驗性估值，不作醫療判斷。" }
+            GENERAL: {
+                label: "一般健康監測",
+                hint: "日常追蹤心率、HRV、呼吸與壓力趨勢。",
+                focus: ["❤️ 心率 HR", "💓 HRV", "📊 壓力"],
+                note: "適合日常趨勢追蹤；異常結果建議休息後重新量測。"
+            },
+            CARDIO: {
+                label: "高血壓 / 心血管監測",
+                hint: "著重心率、脈搏規律與 HRV 趨勢；高血壓仍需搭配合格血壓計確認。",
+                focus: ["❤️ 心率 HR", "💓 HRV", "〰️ 脈搏規律", "📊 壓力"],
+                note: "相機 rPPG 不直接量血壓；高血壓監測仍需搭配合格血壓計。"
+            },
+            RESPIRATORY: {
+                label: "COPD / 呼吸慢病監測",
+                hint: "著重呼吸頻率與心肺負荷；SpO₂ 為實驗性估值，不作醫療判斷。",
+                focus: ["🫁 呼吸頻率 RR", "❤️ 心率 HR", "📊 壓力", "🩸 SpO₂*"],
+                note: "SpO₂ 為一般 RGB 相機的實驗性趨勢估值，不可作為醫療診斷依據。"
+            }
         };
 
         let chronicProfile = null;
@@ -301,8 +449,20 @@
         function updateMonitoringModeHint() {
             const mode = getMonitoringMode();
             const info = monitoringModeInfo[mode] || monitoringModeInfo.GENERAL;
+
             const hint = document.getElementById("monitoring-mode-hint");
             if (hint) hint.textContent = info.hint;
+
+            const chips = document.getElementById("monitoring-mode-chips");
+            if (chips) {
+                chips.innerHTML = (info.focus || [])
+                    .map(item => `<span class="mode-chip">${escapeHTML(item)}</span>`)
+                    .join("");
+            }
+
+            const note = document.getElementById("monitoring-mode-note");
+            if (note) note.textContent = info.note || "";
+
             if (!chronicProfile) {
                 localStorage.setItem("pharmpulse_monitoring_mode", mode);
             }
@@ -878,6 +1038,99 @@
         });
 
         // 4. 開始量測按鈕觸發
+        function metricCard(label, value, sub = "") {
+            return `
+                <div class="primary-metric-card">
+                    <div class="primary-metric-label">${escapeHTML(label)}</div>
+                    <div class="primary-metric-value">${escapeHTML(value)}</div>
+                    ${sub ? `<div class="primary-metric-sub">${escapeHTML(sub)}</div>` : ""}
+                </div>
+            `;
+        }
+
+        function renderModeSpecificResult(data) {
+            const mode = data.monitoring_mode || getMonitoringMode() || "GENERAL";
+            const info = monitoringModeInfo[mode] || monitoringModeInfo.GENERAL;
+            const qLabel = data.signal_quality_label === "GOOD"
+                ? "良好"
+                : (data.signal_quality_label === "FAIR" ? "普通" : "需重測");
+
+            const modeReasons = Array.isArray(data.mode_alert_reasons)
+                ? data.mode_alert_reasons.join("、")
+                : (data.mode_alert_reasons || "目前無模式特定警示");
+
+            const modeName = document.getElementById("report-mode-name");
+            const modeReason = document.getElementById("report-mode-reason");
+            const primary = document.getElementById("report-primary-metrics");
+            const secondary = document.getElementById("report-secondary-metrics");
+            const clinical = document.getElementById("report-clinical-note");
+
+            if (modeName) {
+                modeName.textContent = `🩺 ${data.monitoring_mode_label || info.label}`;
+            }
+            if (modeReason) {
+                modeReason.textContent = `🎯 模式判讀：${modeReasons}`;
+            }
+
+            let primaryCards = [];
+            let secondaryLines = [];
+            let clinicalNote = info.note || "";
+
+            if (mode === "CARDIO") {
+                primaryCards = [
+                    metricCard("❤️ 心率 HR", `${data.heart_rate ?? "--"} BPM`, "心血管模式主要指標"),
+                    metricCard("💓 HRV", `SDNN ${data.hrv_sdnn ?? "--"} ms`, `RMSSD ${data.hrv_rmssd ?? "--"} ms`),
+                    metricCard("〰️ 脈搏不規則風險", `${data.irregular_pulse_score ?? "--"} / 100`, "僅作篩檢提示，不等於心律不整診斷"),
+                    metricCard("📊 壓力指數", `${data.stress_score ?? "--"} / 100`, "搭配 HR / HRV 觀察整體負荷")
+                ];
+
+                secondaryLines = [
+                    `🫁 呼吸頻率：${data.respiratory_rate ?? "--"} 次/分`,
+                    `📶 訊號品質：${data.signal_quality ?? "--"} / 100（${qLabel}）`,
+                    `🩸 SpO₂：${data.spo2_experimental ?? "--"}%（實驗性）`
+                ];
+
+                clinicalNote = "高血壓 / 心血管模式會特別看 HR、HRV 與脈搏規律性；手機相機無法取代正式血壓計，血壓仍需以合格設備確認。";
+
+            } else if (mode === "RESPIRATORY") {
+                primaryCards = [
+                    metricCard("🫁 呼吸頻率 RR", `${data.respiratory_rate ?? "--"} 次/分`, "COPD / 呼吸模式主要指標"),
+                    metricCard("❤️ 心率 HR", `${data.heart_rate ?? "--"} BPM`, "觀察呼吸負荷伴隨的心率變化"),
+                    metricCard("📊 壓力指數", `${data.stress_score ?? "--"} / 100`, "作為整體生理負荷參考"),
+                    metricCard("🩸 SpO₂ 趨勢*", `${data.spo2_experimental ?? "--"}%`, "實驗性、未校正，不作醫療診斷")
+                ];
+
+                secondaryLines = [
+                    `💓 HRV：SDNN ${data.hrv_sdnn ?? "--"} ms｜RMSSD ${data.hrv_rmssd ?? "--"} ms`,
+                    `〰️ 脈搏不規則風險：${data.irregular_pulse_score ?? "--"} / 100`,
+                    `📶 訊號品質：${data.signal_quality ?? "--"} / 100（${qLabel}）`
+                ];
+
+                clinicalNote = "COPD / 呼吸模式會特別依呼吸頻率做分流；SpO₂ 僅為 RGB 相機的實驗性趨勢估值，真正血氧請使用經驗證的血氧設備。";
+
+            } else {
+                primaryCards = [
+                    metricCard("❤️ 心率 HR", `${data.heart_rate ?? "--"} BPM`, "一般健康監測主要指標"),
+                    metricCard("💓 HRV", `SDNN ${data.hrv_sdnn ?? "--"} ms`, `RMSSD ${data.hrv_rmssd ?? "--"} ms`),
+                    metricCard("📊 壓力指數", `${data.stress_score ?? "--"} / 100`, "日常生理負荷趨勢"),
+                    metricCard("📶 訊號品質", `${data.signal_quality ?? "--"} / 100`, qLabel)
+                ];
+
+                secondaryLines = [
+                    `🫁 呼吸頻率：${data.respiratory_rate ?? "--"} 次/分`,
+                    `〰️ 脈搏不規則風險：${data.irregular_pulse_score ?? "--"} / 100`,
+                    `🩸 SpO₂：${data.spo2_experimental ?? "--"}%（實驗性）`
+                ];
+
+                clinicalNote = "一般健康模式以日常 HR、HRV 與壓力趨勢為主；單次異常不代表疾病，建議在安靜狀態下重新量測並觀察趨勢。";
+            }
+
+            if (primary) primary.innerHTML = primaryCards.join("");
+            if (secondary) secondary.textContent = secondaryLines.join("\n");
+            if (clinical) clinical.textContent = clinicalNote;
+        }
+
+
         async function startMeasurement() {
             // 若頁面初次載入時相機權限被延遲，按開始量測時再嘗試一次。
             try {
@@ -992,21 +1245,10 @@
 
                     const reportCard = document.getElementById("report-card");
                     reportCard.className = "report-card " + (data.health_light === "RED" ? "red" : (data.health_light === "YELLOW" ? "yellow" : ""));
-                    document.getElementById("report-title").innerText = (data.health_light === "RED" ? "🔴" : (data.health_light === "YELLOW" ? "🟡" : "🟢")) + " 生理量測結果";
-                    const qLabel = data.signal_quality_label === "GOOD" ? "良好" : (data.signal_quality_label === "FAIR" ? "普通" : "需重測");
-                    const modeReasons = Array.isArray(data.mode_alert_reasons)
-                        ? data.mode_alert_reasons.join("、")
-                        : (data.mode_alert_reasons || "目前無模式特定警示");
-                    document.getElementById("report-metrics").innerText =
-                        `🩺 模式：${data.monitoring_mode_label || monitoringModeInfo[getMonitoringMode()].label}\n` +
-                        `🎯 模式提示：${modeReasons}\n` +
-                        `❤️ 心率：${data.heart_rate} BPM\n` +
-                        `💓 HRV：SDNN ${data.hrv_sdnn ?? "--"} ms｜RMSSD ${data.hrv_rmssd ?? "--"} ms\n` +
-                        `🫁 呼吸頻率：${data.respiratory_rate ?? "需較佳訊號"} 次/分\n` +
-                        `〰️ 脈搏不規則風險：${data.irregular_pulse_score ?? "--"} / 100\n` +
-                        `📶 訊號品質：${data.signal_quality ?? "--"} / 100（${qLabel}）\n` +
-                        `🩸 SpO₂：${data.spo2_experimental ?? "需較佳訊號"}%（實驗性、未校正）\n` +
-                        `📊 壓力指數：${data.stress_score} / 100`;
+                    document.getElementById("report-title").innerText =
+                        (data.health_light === "RED" ? "🔴" : (data.health_light === "YELLOW" ? "🟡" : "🟢")) +
+                        ` ${data.monitoring_mode_label || monitoringModeInfo[getMonitoringMode()].label}結果`;
+                    renderModeSpecificResult(data);
                     document.getElementById("report-summary").innerText = "📝 檢測摘要：\n" + data.summary;
                     document.getElementById("report-advice").innerText = "💡 處置建議：\n" + data.action_advice;
                     reportCard.style.display = "block";
