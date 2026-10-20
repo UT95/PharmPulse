@@ -45,17 +45,17 @@
       </div>
       <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <div class="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
-          <p class="text-xs text-slate-500">總個案</p>
+          <p class="text-xs text-slate-500">待處理總人數</p>
           <p id="kpi-patients" class="text-2xl font-bold text-slate-800 mt-1">--</p>
           <p class="text-[11px] text-slate-400 mt-1">曾量測或已建立慢病檔案</p>
         </div>
         <div class="bg-white rounded-xl border border-red-100 p-4 shadow-sm">
-          <p class="text-xs text-slate-500">RED 個案</p>
+          <p class="text-xs text-slate-500">RED 待處理人數</p>
           <p id="kpi-red" class="text-2xl font-bold text-red-600 mt-1">--</p>
           <p class="text-[11px] text-slate-400 mt-1">未結案、需優先關懷</p>
         </div>
         <div class="bg-white rounded-xl border border-amber-100 p-4 shadow-sm">
-          <p class="text-xs text-slate-500">YELLOW 個案</p>
+          <p class="text-xs text-slate-500">YELLOW 待處理人數</p>
           <p id="kpi-yellow" class="text-2xl font-bold text-amber-600 mt-1">--</p>
           <p class="text-[11px] text-slate-400 mt-1">未結案、建議持續追蹤</p>
         </div>
@@ -416,7 +416,8 @@
 
       document.getElementById("kpi-mode-title").textContent =
         stats?.label || fallbackModeLabels[modeFilter] || "慢性病個案";
-      document.getElementById("kpi-patients").textContent = stats?.total_patients ?? 0;
+      document.getElementById("kpi-patients").textContent =
+        stats?.pending_patients ?? ((stats?.red_patients ?? 0) + (stats?.yellow_patients ?? 0));
       document.getElementById("kpi-red").textContent = stats?.red_patients ?? 0;
       document.getElementById("kpi-yellow").textContent = stats?.yellow_patients ?? 0;
       document.getElementById("kpi-followup").textContent = stats?.due_followups ?? 0;
@@ -517,7 +518,7 @@
         if (data.status !== "success") throw new Error(data.message || "載入失敗");
 
         alertData = Array.isArray(data.alerts) ? data.alerts : [];
-        countBadge.textContent = `${alertData.length} 筆待處理`;
+        countBadge.textContent = `${alertData.length} 位待處理`;
         renderAlerts();
       } catch (err) {
         console.error("Fetch Alerts Error:", err);
@@ -567,6 +568,11 @@
         ].join(" ").toLowerCase();
         return matchesFilter && matchesMode && (!search || haystack.includes(search));
       });
+
+      const countBadge = document.getElementById("alert-count");
+      if (countBadge) {
+        countBadge.textContent = `${filtered.length} 位目前顯示`;
+      }
 
       if (!filtered.length) {
         container.innerHTML = `

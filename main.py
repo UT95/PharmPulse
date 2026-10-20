@@ -1666,16 +1666,34 @@ def get_user_history(user_line_id: str, limit: int = 10, db: Session = Depends(g
 # ----------------------------------------------------
 # 14. 藥局端專用管理 API
 # ----------------------------------------------------
+
+def _current_pending_alerts(db: Session):
+    """
+    每位民眾只保留最新一筆未結案 RED / YELLOW 警示。
+    這讓警示卡、待處理人數與 Dashboard KPI 使用同一個統計口徑。
+    """
+    rows = (
+        db.query(RPPGRecord)
+        .filter(RPPGRecord.health_light.in_(["RED", "YELLOW"]))
+        .filter(or_(RPPGRecord.is_resolved == False, RPPGRecord.is_resolved.is_(None)))
+        .order_by(RPPGRecord.created_at.desc(), RPPGRecord.id.desc())
+        .all()
+    )
+
+    latest_by_user = {}
+    for row in rows:
+        user_id = row.user_line_id or row.user_uuid
+        if not user_id or user_id in latest_by_user:
+            continue
+        latest_by_user[user_id] = row
+
+    return list(latest_by_user.values())
+
 @app.get("/api/v1/pharmacy/alerts")
 def get_pharmacy_alerts(db: Session = Depends(get_db)):
     """取得社區藥局端即時異常警示清單（黃燈/紅燈且未結案）"""
     try:
-        records = db.query(RPPGRecord)\
-                    .filter(RPPGRecord.health_light.in_(["RED", "YELLOW"]))\
-                    .filter(or_(RPPGRecord.is_resolved == False, RPPGRecord.is_resolved.is_(None)))\
-                    .order_by(RPPGRecord.created_at.desc())\
-                    .limit(30)\
-                    .all()
+        records = _current_pending_alerts(db)
         
         user_ids = [r.user_line_id or r.user_uuid for r in records if (r.user_line_id or r.user_uuid)]
         profiles = db.query(PatientChronicProfile).filter(
@@ -1758,17 +1776,12 @@ def get_pharmacy_dashboard(db: Session = Depends(get_db)):
         for user_id, mode in patient_mode.items():
             stats[mode]["total_patients"] += 1
 
-        # 3) 未結案紅黃燈以「民眾」計數，不因同一人多筆異常而重複灌高 KPI。
-        unresolved = (
-            db.query(RPPGRecord)
-            .filter(RPPGRecord.health_light.in_(["RED", "YELLOW"]))
-            .filter(or_(RPPGRecord.is_resolved == False, RPPGRecord.is_resolved.is_(None)))
-            .order_by(RPPGRecord.created_at.desc())
-            .all()
-        )
+        # 3) KPI 與警示清單採相同口徑：每位民眾只看最新一筆未結案 RED / YELLOW。
+        current_alerts = _current_pending_alerts(db)
         red_users = {mode: set() for mode in mode_keys}
         yellow_users = {mode: set() for mode in mode_keys}
-        for r in unresolved:
+
+        for r in current_alerts:
             user_id = r.user_line_id or r.user_uuid
             if not user_id:
                 continue
@@ -1784,6 +1797,7 @@ def get_pharmacy_dashboard(db: Session = Depends(get_db)):
         for mode in mode_keys:
             stats[mode]["red_patients"] = len(red_users[mode])
             stats[mode]["yellow_patients"] = len(yellow_users[mode])
+            stats[mode]["pending_patients"] = len(red_users[mode] | yellow_users[mode])
 
         # 4) 每位民眾只看最新一筆藥師關懷；如果其追蹤日期已到且尚未轉介醫院，就列為待追蹤。
         interventions = (
@@ -1836,6 +1850,7 @@ def get_pharmacy_dashboard(db: Session = Depends(get_db)):
             "red_patients": len(set().union(*red_users.values())),
             "yellow_patients": len(set().union(*yellow_users.values())),
             "due_followups": len(followups),
+            "pending_patients": len(current_alerts),
         }
 
         return {
@@ -1855,14 +1870,45 @@ def get_pharmacy_dashboard(db: Session = Depends(get_db)):
 
 @app.post("/api/v1/pharmacy/resolve/{record_id}")
 def resolve_pharmacy_alert(record_id: int, db: Session = Depends(get_db)):
-    """藥師端標註警示個案為已處置/已結案"""
+    """
+    藥師完成此個案關懷時，將同一民眾截至該筆量測時間的舊未處理紅黃燈一併結案。
+    新於該筆的警示不會被誤關閉。
+    """
     try:
         rec = db.query(RPPGRecord).filter(RPPGRecord.id == record_id).first()
         if not rec:
             raise HTTPException(status_code=404, detail="Record not found")
-        rec.is_resolved = True
+
+        user_id = rec.user_line_id or rec.user_uuid
+        if not user_id:
+            rec.is_resolved = True
+            resolved_count = 1
+        else:
+            q = (
+                db.query(RPPGRecord)
+                .filter(
+                    or_(
+                        RPPGRecord.user_line_id == user_id,
+                        RPPGRecord.user_uuid == user_id
+                    )
+                )
+                .filter(RPPGRecord.health_light.in_(["RED", "YELLOW"]))
+                .filter(or_(RPPGRecord.is_resolved == False, RPPGRecord.is_resolved.is_(None)))
+            )
+            if rec.created_at is not None:
+                q = q.filter(RPPGRecord.created_at <= rec.created_at)
+
+            resolved_count = q.update(
+                {RPPGRecord.is_resolved: True},
+                synchronize_session=False
+            )
+
         db.commit()
-        return {"status": "success", "message": "Marked as resolved"}
+        return {
+            "status": "success",
+            "message": "Patient alerts marked as resolved",
+            "resolved_count": resolved_count
+        }
     except HTTPException:
         raise
     except Exception as e:
