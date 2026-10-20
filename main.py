@@ -1140,12 +1140,22 @@ def get_db():
 # ----------------------------------------------------
 # 9. 靜態頁面與 LINE Webhook 入口
 # ----------------------------------------------------
+NO_CACHE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
+
 @app.get("/")
 @app.get("/liff")
 def serve_liff():
     """提供 LIFF 前端靜態頁面"""
     if os.path.exists("index.html"):
-        return FileResponse("index.html")
+        return FileResponse(
+            "index.html",
+            headers=NO_CACHE_HEADERS
+        )
     return {"status": "online", "message": "PharmPulse API Service is running"}
 
 @app.get("/pharmacy")
