@@ -74,13 +74,14 @@
         <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-3">
           <div class="flex items-center gap-2">
             <span class="w-3 h-3 rounded-full bg-red-500 animate-pulse"></span>
-            <h2 class="text-lg font-bold text-slate-800">待處置紅/黃燈警示個案</h2>
+            <h2 id="alert-list-title" class="text-lg font-bold text-slate-800">待處置紅/黃燈警示個案</h2>
             <span id="alert-count" class="bg-slate-200 text-slate-700 text-xs font-semibold px-2.5 py-0.5 rounded-full">載入中...</span>
           </div>
           <div class="flex items-center gap-2">
             <button onclick="setAlertFilter('ALL')" data-filter="ALL" class="filter-btn bg-slate-800 text-white text-xs px-3 py-1.5 rounded-lg">全部</button>
             <button onclick="setAlertFilter('RED')" data-filter="RED" class="filter-btn bg-white border border-slate-200 text-slate-600 text-xs px-3 py-1.5 rounded-lg">RED</button>
             <button onclick="setAlertFilter('YELLOW')" data-filter="YELLOW" class="filter-btn bg-white border border-slate-200 text-slate-600 text-xs px-3 py-1.5 rounded-lg">YELLOW</button>
+            <button onclick="setAlertFilter('GREEN')" data-filter="GREEN" class="filter-btn bg-white border border-emerald-200 text-emerald-700 text-xs px-3 py-1.5 rounded-lg">GREEN</button>
           </div>
         </div>
 
@@ -183,7 +184,7 @@
       <div class="p-6 overflow-y-auto space-y-5 flex-1 bg-slate-50/50">
 
         <!-- Summary cards -->
-        <div class="grid grid-cols-2 lg:grid-cols-6 gap-3">
+        <div class="grid grid-cols-2 lg:grid-cols-5 gap-3">
           <div class="bg-white border border-slate-200 rounded-xl p-3">
             <p class="text-[11px] text-slate-500">7 天紀錄</p>
             <p id="patient-record-count" class="text-xl font-bold mt-1">--</p>
@@ -195,10 +196,6 @@
           <div class="bg-white border border-amber-100 rounded-xl p-3">
             <p class="text-[11px] text-slate-500">YELLOW 次數</p>
             <p id="patient-yellow-count" class="text-xl font-bold text-amber-600 mt-1">--</p>
-          </div>
-          <div class="bg-white border border-emerald-100 rounded-xl p-3">
-            <p class="text-[11px] text-slate-500">GREEN 次數</p>
-            <p id="patient-green-count" class="text-xl font-bold text-emerald-600 mt-1">--</p>
           </div>
           <div class="bg-white border border-slate-200 rounded-xl p-3">
             <p class="text-[11px] text-slate-500">最近一次</p>
@@ -246,6 +243,22 @@
           </div>
         </div>
 
+        <!-- Full pharmacist care history -->
+        <div class="bg-white p-5 rounded-xl border border-emerald-100 shadow-sm">
+          <div class="flex justify-between items-center mb-3">
+            <h4 class="font-bold text-sm flex items-center gap-2">
+              <i class="fa-solid fa-notes-medical text-emerald-600"></i> 完整藥師關懷紀錄
+            </h4>
+            <span id="intervention-history-count" class="text-[11px] bg-emerald-50 text-emerald-700 px-2.5 py-1 rounded-full">載入中</span>
+          </div>
+
+          <div id="intervention-history-list" class="space-y-2.5 text-xs text-slate-500">
+            <div class="text-slate-400">
+              <i class="fa-solid fa-spinner fa-spin mr-1"></i> 正在讀取關懷紀錄...
+            </div>
+          </div>
+        </div>
+
         <!-- Hospital decision summary -->
         <div class="bg-white p-5 rounded-xl border border-sky-100 shadow-sm">
           <h4 class="font-bold text-sm flex items-center gap-2 mb-3">
@@ -256,52 +269,12 @@
           </div>
         </div>
 
-        <!-- Detailed measurement history -->
+        <!-- Detailed history -->
         <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-3">
-          <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-            <div>
-              <h4 class="font-bold text-slate-800 text-sm flex items-center gap-2">
-                <i class="fa-solid fa-clock-rotate-left text-emerald-600"></i> 詳細檢測歷史紀錄
-              </h4>
-              <p class="text-[11px] text-slate-400 mt-1">主警示清單仍只顯示 RED / YELLOW；此處可查看近 7 天包含 GREEN 的完整量測。</p>
-            </div>
-            <div class="flex flex-wrap gap-2">
-              <button onclick="setHistoryFilter('ALL')" data-history-filter="ALL" class="history-filter-btn bg-slate-800 text-white px-3 py-1.5 rounded-lg text-xs font-semibold">全部紀錄</button>
-              <button onclick="setHistoryFilter('GREEN')" data-history-filter="GREEN" class="history-filter-btn bg-white border border-slate-200 text-slate-600 px-3 py-1.5 rounded-lg text-xs font-semibold">GREEN 正常</button>
-              <button onclick="setHistoryFilter('ALERT')" data-history-filter="ALERT" class="history-filter-btn bg-white border border-slate-200 text-slate-600 px-3 py-1.5 rounded-lg text-xs font-semibold">RED / YELLOW</button>
-            </div>
-          </div>
-          <div class="flex items-center justify-between text-[11px] text-slate-400 border-t border-slate-100 pt-3">
-            <span id="history-filter-label">顯示全部紀錄</span>
-            <span id="history-filter-count">0 筆</span>
-          </div>
+          <h4 class="font-bold text-slate-800 text-sm flex items-center gap-2">
+            <i class="fa-solid fa-clock-rotate-left text-emerald-600"></i> 詳細檢測歷史紀錄
+          </h4>
           <div id="modal-history-list" class="space-y-2.5"></div>
-        </div>
-
-        <!-- Full pharmacist care history -->
-        <div class="bg-white p-5 rounded-xl border border-emerald-100 shadow-sm space-y-3">
-          <div class="flex items-center justify-between gap-3">
-            <h4 class="font-bold text-slate-800 text-sm flex items-center gap-2">
-              <i class="fa-solid fa-notes-medical text-emerald-600"></i> 完整藥師關懷紀錄
-            </h4>
-            <span id="intervention-history-count" class="text-[11px] bg-emerald-50 text-emerald-700 px-2.5 py-1 rounded-full">0 筆</span>
-          </div>
-          <div id="intervention-history-list" class="space-y-2.5 text-xs text-slate-500">
-            尚無藥師關懷紀錄。
-          </div>
-        </div>
-
-        <!-- Full hospital decision history -->
-        <div class="bg-white p-5 rounded-xl border border-sky-100 shadow-sm space-y-3">
-          <div class="flex items-center justify-between gap-3">
-            <h4 class="font-bold text-slate-800 text-sm flex items-center gap-2">
-              <i class="fa-solid fa-hospital-user text-sky-600"></i> 完整醫院處置紀錄
-            </h4>
-            <span id="hospital-history-count" class="text-[11px] bg-sky-50 text-sky-700 px-2.5 py-1 rounded-full">0 筆</span>
-          </div>
-          <div id="hospital-history-list" class="space-y-2.5 text-xs text-slate-500">
-            尚無醫院處置紀錄。
-          </div>
         </div>
       </div>
 
@@ -418,7 +391,6 @@
     let currentPatientId = "";
     let currentRecordId = null;
     let currentMetric = "heart_rate";
-    let currentHistoryFilter = "ALL";
     let alertData = [];
     let alertFilter = "ALL";
     let modeFilter = "ALL";
@@ -557,13 +529,28 @@
       const container = document.getElementById("alerts-container");
       const countBadge = document.getElementById("alert-count");
       try {
-        const res = await fetch(`${API_BASE}/pharmacy/alerts`);
+        const endpoint = alertFilter === "GREEN"
+          ? `${API_BASE}/pharmacy/alerts?light=GREEN`
+          : `${API_BASE}/pharmacy/alerts`;
+
+        const res = await fetch(endpoint);
         const data = await res.json();
 
         if (data.status !== "success") throw new Error(data.message || "載入失敗");
 
         alertData = Array.isArray(data.alerts) ? data.alerts : [];
-        countBadge.textContent = `${alertData.length} 位待處理`;
+
+        const title = document.getElementById("alert-list-title");
+        if (title) {
+          title.textContent = alertFilter === "GREEN"
+            ? "目前最新狀態為 GREEN 的正常個案"
+            : "待處置紅/黃燈警示個案";
+        }
+
+        countBadge.textContent = alertFilter === "GREEN"
+          ? `${alertData.length} 位 GREEN`
+          : `${alertData.length} 位待處理`;
+
         renderAlerts();
       } catch (err) {
         console.error("Fetch Alerts Error:", err);
@@ -572,15 +559,24 @@
       }
     }
 
-    function setAlertFilter(filter) {
+    async function setAlertFilter(filter) {
       alertFilter = filter;
+
       document.querySelectorAll(".filter-btn").forEach(btn => {
         const active = btn.dataset.filter === filter;
-        btn.className = active
-          ? "filter-btn bg-slate-800 text-white text-xs px-3 py-1.5 rounded-lg"
-          : "filter-btn bg-white border border-slate-200 text-slate-600 text-xs px-3 py-1.5 rounded-lg";
+
+        if (active && filter === "GREEN") {
+          btn.className = "filter-btn bg-emerald-600 text-white text-xs px-3 py-1.5 rounded-lg";
+        } else if (active) {
+          btn.className = "filter-btn bg-slate-800 text-white text-xs px-3 py-1.5 rounded-lg";
+        } else if (btn.dataset.filter === "GREEN") {
+          btn.className = "filter-btn bg-white border border-emerald-200 text-emerald-700 text-xs px-3 py-1.5 rounded-lg";
+        } else {
+          btn.className = "filter-btn bg-white border border-slate-200 text-slate-600 text-xs px-3 py-1.5 rounded-lg";
+        }
       });
-      renderAlerts();
+
+      await fetchAlerts();
     }
 
     function setModeFilter(mode) {
@@ -633,12 +629,27 @@
 
     function buildAlertCard(item) {
       const isRed = item.health_light === "RED";
-      const badgeBg = isRed ? "bg-red-100 text-red-700 border-red-200" : "bg-amber-100 text-amber-700 border-amber-200";
-      const lightTitle = isRed ? "🔴 高度警示 (RED)" : "🟡 輕度風險 (YELLOW)";
+      const isYellow = item.health_light === "YELLOW";
+      const isGreen = item.health_light === "GREEN";
+
+      const badgeBg = isRed
+        ? "bg-red-100 text-red-700 border-red-200"
+        : (isYellow
+            ? "bg-amber-100 text-amber-700 border-amber-200"
+            : "bg-emerald-100 text-emerald-700 border-emerald-200");
+
+      const lightTitle = isRed
+        ? "🔴 高度警示 (RED)"
+        : (isYellow ? "🟡 輕度風險 (YELLOW)" : "🟢 正常狀態 (GREEN)");
+
+      const cardBorder = isRed
+        ? "border-red-200"
+        : (isYellow ? "border-amber-200" : "border-emerald-200");
+
       const timeStr = item.created_at ? formatTaiwanTime(item.created_at) : "剛剛";
 
       return `
-        <div class="bg-white p-5 rounded-xl shadow-sm border ${isRed ? "border-red-200" : "border-amber-200"} space-y-3 relative hover:shadow-md transition">
+        <div class="bg-white p-5 rounded-xl shadow-sm border ${cardBorder} space-y-3 relative hover:shadow-md transition">
           <div class="flex justify-between items-start gap-3">
             <div>
               <span class="inline-block text-xs px-2.5 py-1 rounded-full border font-bold ${badgeBg}">${lightTitle}</span>
@@ -665,7 +676,7 @@
             <p><strong class="text-slate-700">模式提示：</strong>${escapeHTML(item.mode_alert_reasons || "目前未出現模式特定警示")}</p>
             <p><strong class="text-slate-700">檢測摘要：</strong>${escapeHTML(item.summary || "無摘要")}</p>
             <p class="bg-amber-50 text-amber-900 p-2.5 rounded-lg border border-amber-100">
-              <strong class="text-amber-800">處置建議：</strong>${escapeHTML(item.action_advice || "建議進行臨櫃詢問與衛教。")}
+              <strong class="text-amber-800">處置建議：</strong>${escapeHTML(item.action_advice || (isGreen ? "目前無需異常處置，可持續居家監測。" : "建議進行臨櫃詢問與衛教。"))}
             </p>
           </div>
 
@@ -725,18 +736,14 @@
 
       const red = currentHistory.filter(r => r.health_light === "RED").length;
       const yellow = currentHistory.filter(r => r.health_light === "YELLOW").length;
-      const green = currentHistory.filter(r => r.health_light === "GREEN").length;
       const latest = currentHistory[0];
 
       document.getElementById("patient-record-count").textContent = currentHistory.length;
       document.getElementById("patient-red-count").textContent = red;
       document.getElementById("patient-yellow-count").textContent = yellow;
-      document.getElementById("patient-green-count").textContent = green;
       document.getElementById("patient-latest-status").textContent = latest?.health_light || "--";
       document.getElementById("patient-monitoring-mode").textContent = latest?.monitoring_mode_label || "一般健康監測";
 
-      currentHistoryFilter = "ALL";
-      updateHistoryFilterButtons();
       renderHistoryList();
       renderLatestIntervention();
       renderLatestHospitalDecision();
@@ -747,67 +754,15 @@
       modal.classList.add("flex");
     }
 
-    function getFilteredPatientHistory() {
-      if (currentHistoryFilter === "GREEN") {
-        return currentHistory.filter(r => r.health_light === "GREEN");
-      }
-      if (currentHistoryFilter === "ALERT") {
-        return currentHistory.filter(r => ["RED", "YELLOW"].includes(r.health_light));
-      }
-      return currentHistory;
-    }
-
-    function updateHistoryFilterButtons() {
-      const labelMap = {
-        ALL: "顯示全部紀錄",
-        GREEN: "只顯示 GREEN 正常紀錄",
-        ALERT: "只顯示 RED / YELLOW 異常紀錄"
-      };
-
-      document.querySelectorAll(".history-filter-btn").forEach(btn => {
-        const active = btn.dataset.historyFilter === currentHistoryFilter;
-        btn.className = active
-          ? "history-filter-btn bg-slate-800 text-white px-3 py-1.5 rounded-lg text-xs font-semibold"
-          : "history-filter-btn bg-white border border-slate-200 text-slate-600 px-3 py-1.5 rounded-lg text-xs font-semibold";
-      });
-
-      const label = document.getElementById("history-filter-label");
-      if (label) label.textContent = labelMap[currentHistoryFilter] || labelMap.ALL;
-    }
-
-    function setHistoryFilter(filter) {
-      currentHistoryFilter = filter;
-      updateHistoryFilterButtons();
-      renderHistoryList();
-    }
-
     function renderHistoryList() {
       const historyListDiv = document.getElementById("modal-history-list");
-      const countNode = document.getElementById("history-filter-count");
-      if (!historyListDiv) return;
-
-      const records = getFilteredPatientHistory();
       historyListDiv.innerHTML = "";
-      if (countNode) countNode.textContent = `${records.length} 筆`;
 
-      if (!records.length) {
-        historyListDiv.innerHTML = `
-          <div class="border border-dashed border-slate-200 rounded-xl p-5 text-center text-xs text-slate-400">
-            目前沒有符合此篩選條件的量測紀錄。
-          </div>
-        `;
-        return;
-      }
-
-      records.forEach(r => {
+      currentHistory.forEach(r => {
         const isRed = r.health_light === "RED";
         const isYellow = r.health_light === "YELLOW";
-        const isGreen = r.health_light === "GREEN";
-        const lightBg = isRed
-          ? "bg-red-50 border-red-200"
-          : (isYellow ? "bg-amber-50 border-amber-200" : "bg-emerald-50 border-emerald-200");
+        const lightBg = isRed ? "bg-red-50 border-red-200" : (isYellow ? "bg-amber-50 border-amber-200" : "bg-emerald-50 border-emerald-200");
         const dot = isRed ? "bg-red-500" : (isYellow ? "bg-amber-500" : "bg-emerald-500");
-        const lightLabel = isGreen ? "GREEN 正常" : `${r.health_light || "NORMAL"} 燈號狀態`;
         const timeStr = formatTaiwanTime(r.created_at);
 
         const div = document.createElement("div");
@@ -816,7 +771,7 @@
           <div class="flex justify-between items-center font-bold">
             <span class="flex items-center gap-1.5">
               <span class="w-2 h-2 rounded-full ${dot}"></span>
-              ${escapeHTML(lightLabel)}
+              ${escapeHTML(r.health_light || "NORMAL")} 燈號狀態
             </span>
             <span class="text-slate-400 font-normal">${escapeHTML(timeStr)}</span>
           </div>
@@ -831,9 +786,8 @@
             <div>脈搏不規則風險: <strong class="text-slate-900">${escapeHTML(r.irregular_pulse_score ?? "--")} / 100</strong></div>
             <div>訊號品質: <strong class="text-slate-900">${escapeHTML(r.signal_quality ?? "--")} / 100</strong></div>
             <div>SpO₂*: <strong class="text-slate-900">${escapeHTML(r.spo2_experimental ?? "--")}%</strong> <span class="text-[10px] text-slate-400">實驗性</span></div>
-          </div>
-          ${r.summary ? `<div class="text-slate-600"><strong>摘要：</strong>${escapeHTML(r.summary)}</div>` : ""}
-        `;
+            <div>狀態: <strong class="text-slate-900">${escapeHTML(r.health_light ?? "--")}</strong></div>
+          </div>`;
         historyListDiv.appendChild(div);
       });
     }
@@ -948,131 +902,243 @@
     }
 
     async function renderLatestHospitalDecision() {
-      const latestBox = document.getElementById("latest-hospital-decision");
-      const historyBox = document.getElementById("hospital-history-list");
-      const countBox = document.getElementById("hospital-history-count");
-      if (!latestBox || !historyBox) return;
+      const box = document.getElementById("latest-hospital-decision");
+      if (!box) return;
 
       if (!currentPatientId) {
-        latestBox.textContent = "尚無醫院處置紀錄。";
-        historyBox.textContent = "尚無醫院處置紀錄。";
-        if (countBox) countBox.textContent = "0 筆";
+        box.textContent = "尚無醫院處置紀錄。";
         return;
       }
 
-      latestBox.innerHTML = `<div class="text-slate-400"><i class="fa-solid fa-spinner fa-spin mr-1"></i> 讀取醫院處置中...</div>`;
-      historyBox.innerHTML = `<div class="text-slate-400"><i class="fa-solid fa-spinner fa-spin mr-1"></i> 讀取完整醫院紀錄中...</div>`;
+      box.innerHTML = `
+        <div class="text-slate-400">
+          <i class="fa-solid fa-spinner fa-spin mr-1"></i> 讀取醫院處置中...
+        </div>
+      `;
 
       try {
-        const res = await fetch(`${API_BASE}/pharmacy/patient/${encodeURIComponent(currentPatientId)}/hospital-decisions`);
+        const res = await fetch(
+          `${API_BASE}/pharmacy/patient/${encodeURIComponent(currentPatientId)}/hospital-decisions`
+        );
         const data = await res.json();
-        if (!res.ok || data.status !== "success") throw new Error(data.message || "醫院處置讀取失敗");
+
+        if (!res.ok || data.status !== "success") {
+          throw new Error(data.message || "醫院處置讀取失敗");
+        }
 
         const records = Array.isArray(data.records) ? data.records : [];
-        if (countBox) countBox.textContent = `${records.length} 筆`;
 
         if (!records.length) {
-          latestBox.innerHTML = `<p class="text-slate-500">目前尚無醫院處置紀錄。</p>`;
-          historyBox.innerHTML = `<p class="text-slate-500">目前尚無醫院處置紀錄。</p>`;
+          box.innerHTML = `
+            <p class="text-slate-500">目前尚無醫院處置紀錄。</p>
+          `;
           return;
         }
 
         const r = records[0];
-        latestBox.innerHTML = `
+
+        box.innerHTML = `
           <div class="space-y-1.5">
             <div class="flex flex-wrap items-center gap-2">
-              <span class="inline-flex px-2.5 py-1 rounded-full bg-sky-100 text-sky-700 font-bold">醫師已處置</span>
-              <span class="text-slate-400">${escapeHTML(formatTaiwanTime(r.created_at))}</span>
+              <span class="inline-flex px-2.5 py-1 rounded-full bg-sky-100 text-sky-700 font-bold">
+                醫師已處置
+              </span>
+              <span class="text-slate-400">
+                ${escapeHTML(formatTaiwanTime(r.created_at))}
+              </span>
             </div>
-            <p class="pt-1"><strong>處置結果：</strong><span class="text-sky-800 font-semibold">${escapeHTML(r.decision_label || "--")}</span></p>
-            <p><strong>醫師備註：</strong>${escapeHTML(r.doctor_note || "無")}</p>
-            <p class="text-slate-400">Referral #${escapeHTML(r.referral_id ?? "--")}</p>
-          </div>`;
 
-        historyBox.innerHTML = records.map((item, index) => `
-          <div class="border border-sky-100 bg-sky-50/50 rounded-xl p-3 space-y-1.5">
-            <div class="flex flex-wrap items-center justify-between gap-2">
-              <div class="flex items-center gap-2">
-                <span class="inline-flex px-2 py-1 rounded-full bg-sky-100 text-sky-700 font-bold">${index === 0 ? "最新" : "醫院處置"}</span>
-                <span class="font-semibold text-sky-900">${escapeHTML(item.decision_label || "--")}</span>
-              </div>
-              <span class="text-slate-400">${escapeHTML(formatTaiwanTime(item.created_at))}</span>
-            </div>
-            <p><strong>醫師備註：</strong>${escapeHTML(item.doctor_note || "無")}</p>
-            <p class="text-slate-400">Referral #${escapeHTML(item.referral_id ?? "--")}${item.referral_created_at ? `｜轉介：${escapeHTML(formatTaiwanTime(item.referral_created_at))}` : ""}</p>
+            <p class="pt-1">
+              <strong>處置結果：</strong>
+              <span class="text-sky-800 font-semibold">${escapeHTML(r.decision_label || "--")}</span>
+            </p>
+
+            <p>
+              <strong>醫師備註：</strong>
+              ${escapeHTML(r.doctor_note || "無")}
+            </p>
+
+            <p class="text-slate-400">
+              Referral #${escapeHTML(r.referral_id ?? "--")}
+            </p>
           </div>
-        `).join("");
+        `;
+
       } catch (err) {
         console.error("Fetch hospital decision error:", err);
-        latestBox.innerHTML = `<p class="text-red-500">醫院處置讀取失敗：${escapeHTML(err.message)}</p>`;
-        historyBox.innerHTML = `<p class="text-red-500">完整醫院紀錄讀取失敗：${escapeHTML(err.message)}</p>`;
+        box.innerHTML = `
+          <p class="text-red-500">醫院處置讀取失敗：${escapeHTML(err.message)}</p>
+        `;
       }
     }
+
 
     async function renderLatestIntervention() {
       const latestBox = document.getElementById("latest-intervention");
       const historyBox = document.getElementById("intervention-history-list");
       const countBox = document.getElementById("intervention-history-count");
-      if (!latestBox || !historyBox) return;
+
+      if (!latestBox) return;
 
       if (!currentPatientId) {
         latestBox.textContent = "尚無關懷紀錄。";
-        historyBox.textContent = "尚無藥師關懷紀錄。";
+        if (historyBox) historyBox.textContent = "尚無藥師關懷紀錄。";
         if (countBox) countBox.textContent = "0 筆";
         return;
       }
 
+      latestBox.innerHTML = `
+        <div class="text-slate-400">
+          <i class="fa-solid fa-spinner fa-spin mr-1"></i> 讀取關懷紀錄中...
+        </div>
+      `;
+
+      if (historyBox) {
+        historyBox.innerHTML = `
+          <div class="text-slate-400">
+            <i class="fa-solid fa-spinner fa-spin mr-1"></i> 讀取完整關懷紀錄中...
+          </div>
+        `;
+      }
+
       try {
-        const res = await fetch(`${API_BASE}/pharmacy/patient/${encodeURIComponent(currentPatientId)}/interventions`);
+        const url = `${API_BASE}/pharmacy/patient/${encodeURIComponent(currentPatientId)}/interventions`;
+        const res = await fetch(url);
         const data = await res.json();
-        if (!res.ok || data.status !== "success") throw new Error(data.message || "關懷紀錄讀取失敗");
+
+        if (!res.ok || data.status !== "success") {
+          throw new Error(data.message || data.detail || `HTTP ${res.status}`);
+        }
 
         const records = Array.isArray(data.records) ? data.records : [];
         if (countBox) countBox.textContent = `${records.length} 筆`;
 
         if (!records.length) {
-          latestBox.textContent = "目前尚無藥師關懷紀錄。";
-          historyBox.textContent = "目前尚無藥師關懷紀錄。";
+          latestBox.innerHTML = `
+            <p class="text-slate-500">目前尚無藥師關懷紀錄。</p>
+          `;
+          if (historyBox) {
+            historyBox.innerHTML = `
+              <div class="border border-dashed border-slate-200 rounded-xl p-4 text-center text-slate-400">
+                這位民眾目前沒有已儲存到資料庫的關懷紀錄。
+              </div>
+            `;
+          }
           return;
         }
 
-        const methodMap = { LINE: "LINE 線上關懷", PHONE: "電話關懷", IN_STORE: "到藥局複測", MEDICAL: "建議就醫" };
-        const actionMap = { OBSERVE: "持續觀察", RETEST: "重新量測", FOLLOW_UP: "安排追蹤", REFER: "轉介醫療院所" };
+        const methodMap = {
+          LINE: "LINE 線上關懷",
+          PHONE: "電話關懷",
+          IN_STORE: "到藥局複測",
+          MEDICAL: "建議就醫"
+        };
 
-        const r = records[0];
+        const actionMap = {
+          OBSERVE: "持續觀察",
+          RETEST: "重新量測",
+          FOLLOW_UP: "安排追蹤",
+          REFER: "轉介醫療院所"
+        };
+
+        const referralMap = {
+          NONE: "未轉介",
+          REFERRED: "已轉介醫院",
+          HOSPITAL_COMPLETED: "醫院已完成處置"
+        };
+
+        const latest = records[0];
+
         latestBox.innerHTML = `
           <div class="space-y-1.5">
-            <p><strong>時間：</strong>${escapeHTML(formatTaiwanTime(r.created_at))}</p>
-            <p><strong>關懷方式：</strong>${escapeHTML(methodMap[r.care_method] || r.care_method || "--")}</p>
-            <p><strong>民眾狀況：</strong>${escapeHTML(r.symptoms || "未記錄")}</p>
-            <p><strong>血壓：</strong>${escapeHTML(r.systolic_bp ?? "--")} / ${escapeHTML(r.diastolic_bp ?? "--")} mmHg　<strong>脈搏：</strong>${escapeHTML(r.pulse ?? "--")} BPM</p>
-            <p><strong>處理結果：</strong>${escapeHTML(actionMap[r.action_result] || "--")}</p>
-            <p><strong>藥師備註：</strong>${escapeHTML(r.pharmacist_note || "無")}</p>
-            <p><strong>下次追蹤：</strong>${escapeHTML(r.followup_date || "未設定")}</p>
-          </div>`;
-
-        historyBox.innerHTML = records.map((item, index) => `
-          <div class="border border-emerald-100 bg-emerald-50/40 rounded-xl p-3 space-y-1.5">
-            <div class="flex flex-wrap items-center justify-between gap-2">
-              <div class="flex items-center gap-2">
-                <span class="inline-flex px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 font-bold">${index === 0 ? "最新" : "關懷紀錄"}</span>
-                <span class="font-semibold text-emerald-900">${escapeHTML(methodMap[item.care_method] || item.care_method || "--")}</span>
-              </div>
-              <span class="text-slate-400">${escapeHTML(formatTaiwanTime(item.created_at))}</span>
+            <div class="flex flex-wrap items-center gap-2 mb-1">
+              <span class="inline-flex px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 font-bold">
+                最新關懷
+              </span>
+              <span class="text-slate-400">${escapeHTML(formatTaiwanTime(latest.created_at))}</span>
             </div>
-            <p><strong>民眾狀況：</strong>${escapeHTML(item.symptoms || "未記錄")}</p>
-            <p><strong>血壓：</strong>${escapeHTML(item.systolic_bp ?? "--")} / ${escapeHTML(item.diastolic_bp ?? "--")} mmHg　<strong>脈搏：</strong>${escapeHTML(item.pulse ?? "--")} BPM</p>
-            <p><strong>處理結果：</strong>${escapeHTML(actionMap[item.action_result] || "--")}</p>
-            <p><strong>藥師備註：</strong>${escapeHTML(item.pharmacist_note || "無")}</p>
-            <p><strong>下次追蹤：</strong>${escapeHTML(item.followup_date || "未設定")}　<strong>轉介狀態：</strong>${escapeHTML(item.referral_status || "NONE")}</p>
+            <p><strong>關懷方式：</strong>${escapeHTML(methodMap[latest.care_method] || latest.care_method || "--")}</p>
+            <p><strong>民眾狀況：</strong>${escapeHTML(latest.symptoms || "未記錄")}</p>
+            <p><strong>血壓：</strong>${escapeHTML(latest.systolic_bp ?? "--")} / ${escapeHTML(latest.diastolic_bp ?? "--")} mmHg
+              　<strong>脈搏：</strong>${escapeHTML(latest.pulse ?? "--")} BPM</p>
+            <p><strong>處理結果：</strong>${escapeHTML(actionMap[latest.action_result] || "--")}</p>
+            <p><strong>藥師備註：</strong>${escapeHTML(latest.pharmacist_note || "無")}</p>
+            <p><strong>下次追蹤：</strong>${escapeHTML(latest.followup_date || "未設定")}</p>
+            <p><strong>轉介狀態：</strong>${escapeHTML(referralMap[latest.referral_status] || latest.referral_status || "未轉介")}</p>
           </div>
-        `).join("");
+        `;
+
+        if (historyBox) {
+          historyBox.innerHTML = records.map((item, index) => `
+            <div class="border border-emerald-100 bg-emerald-50/40 rounded-xl p-3 space-y-1.5">
+              <div class="flex flex-wrap justify-between items-center gap-2">
+                <div class="flex items-center gap-2">
+                  <span class="inline-flex px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 font-bold">
+                    ${index === 0 ? "最新" : `第 ${records.length - index} 筆`}
+                  </span>
+                  <span class="font-semibold text-emerald-900">
+                    ${escapeHTML(methodMap[item.care_method] || item.care_method || "--")}
+                  </span>
+                </div>
+                <span class="text-slate-400">
+                  ${escapeHTML(formatTaiwanTime(item.created_at))}
+                </span>
+              </div>
+
+              <p><strong>民眾狀況：</strong>${escapeHTML(item.symptoms || "未記錄")}</p>
+
+              <p>
+                <strong>血壓：</strong>
+                ${escapeHTML(item.systolic_bp ?? "--")} /
+                ${escapeHTML(item.diastolic_bp ?? "--")} mmHg
+                　<strong>脈搏：</strong>
+                ${escapeHTML(item.pulse ?? "--")} BPM
+              </p>
+
+              <p>
+                <strong>處理結果：</strong>
+                ${escapeHTML(actionMap[item.action_result] || "--")}
+              </p>
+
+              <p>
+                <strong>藥師備註：</strong>
+                ${escapeHTML(item.pharmacist_note || "無")}
+              </p>
+
+              <p>
+                <strong>下次追蹤：</strong>
+                ${escapeHTML(item.followup_date || "未設定")}
+              </p>
+
+              <p>
+                <strong>轉介狀態：</strong>
+                ${escapeHTML(referralMap[item.referral_status] || item.referral_status || "未轉介")}
+              </p>
+            </div>
+          `).join("");
+        }
+
       } catch (err) {
         console.error("Fetch Intervention Error:", err);
-        latestBox.textContent = "關懷紀錄讀取失敗。";
-        historyBox.innerHTML = `<p class="text-red-500">完整關懷紀錄讀取失敗：${escapeHTML(err.message)}</p>`;
+
+        latestBox.innerHTML = `
+          <p class="text-red-500">
+            關懷紀錄讀取失敗：${escapeHTML(err.message)}
+          </p>
+        `;
+
+        if (historyBox) {
+          historyBox.innerHTML = `
+            <div class="border border-red-100 bg-red-50 rounded-xl p-3 text-red-600">
+              完整關懷紀錄讀取失敗：${escapeHTML(err.message)}
+            </div>
+          `;
+        }
+
+        if (countBox) countBox.textContent = "讀取失敗";
       }
     }
+
 
     function startIntervention(lineId, recordId) {
       currentPatientId = lineId;
