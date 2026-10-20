@@ -6,8 +6,8 @@
     <title>PharmPulse 生理量測</title>
     <!-- LINE LIFF SDK -->
     <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
-    <!-- MediaPipe Face Mesh SDK -->
-    <script id="mediapipe-face-mesh-sdk" src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
+    <!-- MediaPipe Face Mesh is loaded dynamically after the camera is ready.
+         This avoids LINE WebView caching a half-loaded SDK and lets us retry with another asset host. -->
     <!-- QRCode.js CDN -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <!-- Chart.js CDN -->
@@ -459,10 +459,53 @@
             requestAnimationFrame(loop);
         }
 
-        function loadExternalScript(src, timeoutMs = 10000) {
+        const FACE_MESH_VERSION = "0.4.1633559619";
+        const FACE_MESH_SOURCES = [
+            {
+                name: "jsDelivr",
+                script: `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@${FACE_MESH_VERSION}/face_mesh.js`,
+                assets: `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@${FACE_MESH_VERSION}`
+            },
+            {
+                name: "unpkg",
+                script: `https://unpkg.com/@mediapipe/face_mesh@${FACE_MESH_VERSION}/face_mesh.js`,
+                assets: `https://unpkg.com/@mediapipe/face_mesh@${FACE_MESH_VERSION}`
+            }
+        ];
+
+        let faceMeshSdkLoaded = false;
+        let faceMeshLastError = "";
+
+        function setModuleStatus(message) {
+            const node = document.getElementById("status-text");
+            if (node) node.innerText = message;
+        }
+
+        function withTimeout(promise, timeoutMs, label) {
+            let timer = null;
+            const timeout = new Promise((_, reject) => {
+                timer = setTimeout(
+                    () => reject(new Error(`${label}逾時（${Math.round(timeoutMs / 1000)} 秒）`)),
+                    timeoutMs
+                );
+            });
+
+            return Promise.race([promise, timeout]).finally(() => {
+                if (timer) clearTimeout(timer);
+            });
+        }
+
+        function removeFaceMeshSdkScripts() {
+            document.querySelectorAll("script[data-pharmpulse-facemesh='1']").forEach(node => {
+                try { node.remove(); } catch (_) {}
+            });
+        }
+
+        function loadExternalScript(src, timeoutMs = 15000) {
             return new Promise((resolve, reject) => {
-                // 已經有同來源 script 時，若 FaceMesh 已存在就直接完成。
-                if (typeof window.FaceMesh !== "undefined") {
+                // 如果同一版本 constructor 已經成功建立，不需重載 JS；
+                // 後續仍會逐一測試不同 assets host。
+                if (faceMeshSdkLoaded && typeof window.FaceMesh === "function") {
                     resolve(true);
                     return;
                 }
@@ -470,24 +513,28 @@
                 const script = document.createElement("script");
                 script.src = src;
                 script.async = true;
-                script.referrerPolicy = "no-referrer-when-downgrade";
+                script.crossOrigin = "anonymous";
+                script.setAttribute("data-pharmpulse-facemesh", "1");
 
                 let settled = false;
                 const timer = setTimeout(() => {
                     if (settled) return;
                     settled = true;
-                    script.remove();
-                    reject(new Error(`SDK 載入逾時：${src}`));
+                    try { script.remove(); } catch (_) {}
+                    reject(new Error(`SDK 下載逾時：${src}`));
                 }, timeoutMs);
 
                 script.onload = () => {
                     if (settled) return;
                     settled = true;
                     clearTimeout(timer);
-                    if (typeof window.FaceMesh !== "undefined") {
+
+                    if (typeof window.FaceMesh === "function") {
+                        faceMeshSdkLoaded = true;
                         resolve(true);
                     } else {
-                        reject(new Error(`SDK 已下載但 FaceMesh 未建立：${src}`));
+                        try { script.remove(); } catch (_) {}
+                        reject(new Error(`SDK 已下載，但 window.FaceMesh 未建立：${src}`));
                     }
                 };
 
@@ -495,65 +542,120 @@
                     if (settled) return;
                     settled = true;
                     clearTimeout(timer);
-                    script.remove();
-                    reject(new Error(`SDK 載入失敗：${src}`));
+                    try { script.remove(); } catch (_) {}
+                    reject(new Error(`SDK 下載失敗：${src}`));
                 };
 
                 document.head.appendChild(script);
             });
         }
 
-        async function ensureFaceMeshSdk() {
-            if (typeof window.FaceMesh !== "undefined") {
+        async function ensureFaceMeshConstructor(forceReload = false) {
+            if (!forceReload && faceMeshSdkLoaded && typeof window.FaceMesh === "function") {
                 return true;
             }
 
-            const sources = [
-                {
-                    script: "https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js",
-                    assets: "https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh"
-                },
-                {
-                    script: "https://unpkg.com/@mediapipe/face_mesh/face_mesh.js",
-                    assets: "https://unpkg.com/@mediapipe/face_mesh"
-                },
-                {
-                    script: "https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/face_mesh.js",
-                    assets: "https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619"
+            if (forceReload) {
+                faceMeshSdkLoaded = false;
+                removeFaceMeshSdkScripts();
+                // window.FaceMesh 無法可靠 delete；若舊 constructor 仍存在，可以繼續用它
+                // 搭配下一階段不同 assets host 進行初始化。
+                if (typeof window.FaceMesh === "function") {
+                    faceMeshSdkLoaded = true;
+                    return true;
                 }
-            ];
+            }
 
             let lastError = null;
 
-            for (const source of sources) {
+            for (let i = 0; i < FACE_MESH_SOURCES.length; i++) {
+                const source = FACE_MESH_SOURCES[i];
+                setModuleStatus(
+                    `⏳ 正在下載臉部分析引擎（${i + 1}/${FACE_MESH_SOURCES.length}：${source.name}）...`
+                );
+
                 try {
-                    document.getElementById("status-text").innerText =
-                        "⏳ 正在載入臉部分析模組...";
-                    await loadExternalScript(source.script);
-                    if (typeof window.FaceMesh !== "undefined") {
-                        faceMeshAssetBase = source.assets;
+                    await loadExternalScript(source.script, 15000);
+                    if (typeof window.FaceMesh === "function") {
+                        faceMeshSdkLoaded = true;
                         return true;
                     }
                 } catch (err) {
-                    console.warn("FaceMesh SDK fallback failed:", source.script, err);
+                    console.warn("FaceMesh constructor load failed:", source.name, err);
                     lastError = err;
                 }
             }
 
-            throw lastError || new Error("MediaPipe FaceMesh SDK 無法載入");
+            throw lastError || new Error("FaceMesh JavaScript 引擎無法載入");
+        }
+
+        async function destroyFaceMeshInstance(instance) {
+            if (!instance) return;
+            try {
+                if (typeof instance.close === "function") {
+                    await withTimeout(Promise.resolve(instance.close()), 2500, "關閉舊模型");
+                }
+            } catch (err) {
+                console.warn("Ignore FaceMesh close error:", err);
+            }
+        }
+
+        async function buildFaceMeshWithAssetHost(source, attemptIndex) {
+            setModuleStatus(
+                `⏳ 正在載入臉部模型與 WASM（${attemptIndex + 1}/${FACE_MESH_SOURCES.length}：${source.name}）...`
+            );
+
+            const candidate = new window.FaceMesh({
+                locateFile: (file) => {
+                    const assetUrl = `${source.assets}/${file}`;
+                    console.debug("[FaceMesh asset]", assetUrl);
+                    return assetUrl;
+                }
+            });
+
+            candidate.setOptions({
+                maxNumFaces: 1,
+                refineLandmarks: true,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5
+            });
+
+            candidate.onResults(onFaceMeshResults);
+
+            // LINE WebView 中資源錯誤有時不會立即 reject，所以一定加 timeout。
+            if (videoElement.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+                await withTimeout(
+                    new Promise((resolve) => {
+                        const handler = () => {
+                            videoElement.removeEventListener("loadeddata", handler);
+                            resolve(true);
+                        };
+                        videoElement.addEventListener("loadeddata", handler, { once: true });
+                    }),
+                    5000,
+                    "等待相機畫面"
+                );
+            }
+
+            await withTimeout(
+                candidate.send({ image: videoElement }),
+                20000,
+                `${source.name} 臉部模型初始化`
+            );
+
+            return candidate;
         }
 
         async function initFaceMesh(forceRetry = false) {
-            if (faceMesh && !forceRetry) {
+            if (faceMesh && faceMeshReady && !forceRetry) {
                 return true;
             }
 
-            if (faceMeshInitPromise && !forceRetry) {
+            if (faceMeshInitPromise) {
                 return faceMeshInitPromise;
             }
 
             faceMeshInitPromise = (async () => {
-                // 先開相機，確保 SDK 載入期間仍有預覽。
                 try {
                     await startNativeCamera();
                 } catch (err) {
@@ -561,71 +663,75 @@
 
                     let msg = "❌ 無法啟動相機。";
                     if (err?.name === "NotAllowedError") {
-                        msg += " 請允許瀏覽器 / LINE 使用相機權限後重新整理。";
+                        msg += " 請允許 LINE / 瀏覽器使用相機權限後再試。";
                     } else if (err?.name === "NotFoundError") {
                         msg += " 找不到可用的前鏡頭。";
                     } else if (err?.name === "NotReadableError") {
                         msg += " 相機可能正被其他 App 使用，請關閉其他相機程式後重試。";
                     } else {
-                        msg += ` ${err?.message || "請確認使用 HTTPS 與相機權限。"}`;
+                        msg += ` ${err?.message || "請確認 HTTPS 與相機權限。"}`;
                     }
 
-                    document.getElementById("status-text").innerText = msg;
+                    setModuleStatus(msg);
                     throw err;
                 }
+
+                // 重試時先停止舊 loop，避免舊 instance 同時 send。
+                cameraLoopRunning = false;
+                faceMeshBusy = false;
+                faceMeshReady = false;
+
+                const oldInstance = faceMesh;
+                faceMesh = null;
+                await destroyFaceMeshInstance(oldInstance);
 
                 try {
-                    await ensureFaceMeshSdk();
-
-                    // forceRetry 時先丟掉舊 instance，重新建立。
-                    if (forceRetry) {
-                        faceMesh = null;
-                        faceMeshReady = false;
-                    }
-
-                    if (!faceMesh) {
-                        faceMesh = new window.FaceMesh({
-                            locateFile: (file) => `${faceMeshAssetBase}/${file}`
-                        });
-
-                        faceMesh.setOptions({
-                            maxNumFaces: 1,
-                            refineLandmarks: true,
-                            minDetectionConfidence: 0.5,
-                            minTrackingConfidence: 0.5
-                        });
-
-                        faceMesh.onResults(onFaceMeshResults);
-                    }
-
-                    startFaceMeshLoop();
-
-                    // 主動送一幀做 warm-up。send 成功代表模型資源可正常載入。
-                    if (videoElement.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-                        try {
-                            await faceMesh.send({ image: videoElement });
-                            faceMeshReady = true;
-                        } catch (warmErr) {
-                            console.warn("FaceMesh warm-up failed:", warmErr);
-                            // 如果主要 CDN 的模型資源有問題，讓下一次按鈕可以重新初始化。
-                            faceMeshReady = false;
-                            throw warmErr;
-                        }
-                    }
-
-                    document.getElementById("status-text").innerText =
-                        "✅ 相機與臉部分析模組已就緒，請將臉部置於圓框中央。";
-
-                    return true;
-
+                    await ensureFaceMeshConstructor(forceRetry);
                 } catch (err) {
-                    console.error("MediaPipe 初始化失敗:", err);
-                    faceMesh = null;
-                    faceMeshReady = false;
-                    document.getElementById("status-text").innerText =
-                        "⚠️ 相機可用，但臉部分析模組尚未載入成功；點『開始量測』會自動重試。";
+                    faceMeshLastError = err?.message || String(err);
+                    setModuleStatus(`❌ 臉部分析引擎下載失敗：${faceMeshLastError}`);
                     throw err;
                 }
+
+                let lastError = null;
+
+                // 關鍵修正：
+                // SDK constructor 只需下載一次，但 WASM / data / model 會逐一測試不同 CDN。
+                // 以前 forceRetry 看到 window.FaceMesh 已存在就直接返回，實際上仍沿用壞掉的 assets host。
+                for (let i = 0; i < FACE_MESH_SOURCES.length; i++) {
+                    const source = FACE_MESH_SOURCES[i];
+                    let candidate = null;
+
+                    try {
+                        candidate = await buildFaceMeshWithAssetHost(source, i);
+                        faceMesh = candidate;
+                        faceMeshAssetBase = source.assets;
+                        faceMeshReady = true;
+                        faceMeshLastError = "";
+
+                        setModuleStatus(
+                            `✅ 相機與臉部分析模組已就緒（${source.name}），請將臉部置於圓框中央。`
+                        );
+
+                        startFaceMeshLoop();
+                        return true;
+
+                    } catch (err) {
+                        console.warn(
+                            `FaceMesh assets failed (${source.name}):`,
+                            err
+                        );
+                        lastError = err;
+                        faceMeshLastError = `${source.name}: ${err?.message || err}`;
+                        await destroyFaceMeshInstance(candidate);
+                    }
+                }
+
+                const finalError = lastError || new Error("FaceMesh 模型 / WASM 無法初始化");
+                setModuleStatus(
+                    `❌ 臉部分析模組初始化失敗：${faceMeshLastError || finalError.message}`
+                );
+                throw finalError;
             })();
 
             try {
@@ -741,9 +847,19 @@
         }
 
         window.onload = async function() {
-            // LIFF 與相機彼此獨立初始化；其中一個失敗不應讓另一個完全停止。
+            // LINE WebView 先讓頁面與相機完成初始化，再載入較大的 WASM/model，
+            // 可降低同時下載多個 SDK 導致 FaceMesh 初始化失敗的機率。
             initLiff().catch(err => console.error("LIFF startup error:", err));
-            initFaceMesh().catch(err => console.error("FaceMesh startup error:", err));
+
+            try {
+                await startNativeCamera();
+                setModuleStatus("⏳ 相機已啟動，正在準備臉部分析模組...");
+                await new Promise(resolve => setTimeout(resolve, 350));
+                await initFaceMesh(false);
+            } catch (err) {
+                console.error("FaceMesh startup error:", err);
+                // 保留相機預覽；開始量測按鈕會再次強制初始化。
+            }
         };
 
         // LINE WebView 切到背景再回來時，部分手機會暫停 camera track；回到頁面時自動恢復。
@@ -768,15 +884,15 @@
             }
 
             if (!faceMesh || !faceMeshReady) {
-                document.getElementById("status-text").innerText =
-                    "⏳ 臉部分析模組尚未就緒，正在自動重新載入...";
+                setModuleStatus("⏳ 臉部分析模組尚未就緒，正在自動重新初始化...");
                 try {
                     await initFaceMesh(true);
                 } catch (err) {
+                    const detail = faceMeshLastError || err?.message || "MediaPipe 載入失敗";
                     alert(
-                        "臉部分析模組仍無法啟動。\n" +
-                        "請確認網路連線後再試一次。\n\n" +
-                        (err?.message || "MediaPipe 載入失敗")
+                        "臉部分析模組仍無法啟動。\n\n" +
+                        `錯誤：${detail}\n\n` +
+                        "相機本身已正常；請切換 Wi‑Fi / 行動網路後再按一次量測。"
                     );
                     return;
                 }
