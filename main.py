@@ -4,6 +4,10 @@ import json
 import re
 import time
 import random
+import hashlib
+import hmac
+import secrets
+import base64
 import requests
 import numpy as np
 from datetime import datetime, timezone, timedelta
@@ -11,9 +15,9 @@ from typing import List, Optional, Union, Dict, Any
 from contextlib import asynccontextmanager
 from scipy.signal import butter, filtfilt, find_peaks, hilbert
 
-from fastapi import FastAPI, HTTPException, Request, Depends, BackgroundTasks, Header
+from fastapi import FastAPI, HTTPException, Request, Response, Depends, BackgroundTasks, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Text, Boolean, text, or_
 from sqlalchemy.orm import DeclarativeBase, sessionmaker, Session
@@ -38,6 +42,22 @@ LINE_CHANNEL_ID = os.getenv("LINE_CHANNEL_ID", "").strip()
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "").strip()
 LIFF_URL = os.getenv("LIFF_URL", "").strip()
+
+# Staff authentication settings (藥師 / 醫師)
+PHARMACIST_USERNAME = os.getenv("PHARMACIST_USERNAME", "pharmacist01").strip()
+PHARMACIST_PASSWORD = os.getenv("PHARMACIST_PASSWORD", "").strip()
+PHARMACIST_DISPLAY_NAME = os.getenv("PHARMACIST_DISPLAY_NAME", "藥師").strip() or "藥師"
+DOCTOR_USERNAME = os.getenv("DOCTOR_USERNAME", "doctor01").strip()
+DOCTOR_PASSWORD = os.getenv("DOCTOR_PASSWORD", "").strip()
+DOCTOR_DISPLAY_NAME = os.getenv("DOCTOR_DISPLAY_NAME", "醫師").strip() or "醫師"
+STAFF_SESSION_SECRET = os.getenv("STAFF_SESSION_SECRET", "").strip()
+STAFF_SESSION_HOURS = int(os.getenv("STAFF_SESSION_HOURS", "8"))
+STAFF_COOKIE_NAME = "pharmpulse_staff_session"
+
+if not STAFF_SESSION_SECRET:
+    # Local fallback only. Render should set STAFF_SESSION_SECRET so sessions survive restarts.
+    STAFF_SESSION_SECRET = secrets.token_urlsafe(32)
+    print("[Staff Auth Warning] 未設定 STAFF_SESSION_SECRET，本次啟動使用暫時 Session Secret；重新部署後需重新登入。")
 
 # AI 模型 Key 設定
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
@@ -242,6 +262,20 @@ class PatientChronicProfile(Base):
     )
 
 
+class StaffUser(Base):
+    __tablename__ = "staff_users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(100), unique=True, index=True, nullable=False)
+    password_hash = Column(Text, nullable=False)
+    display_name = Column(String(120), nullable=False)
+    # PHARMACIST / DOCTOR
+    role = Column(String(30), index=True, nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    last_login_at = Column(DateTime(timezone=True), nullable=True)
+
+
 Base.metadata.create_all(bind=engine)
 
 # ----------------------------------------------------
@@ -296,9 +330,148 @@ def auto_migrate_db():
         except Exception as e:
             print(f"[Migration Warning] SQLite advanced metrics migration: {e}")
 
+
+PBKDF2_ITERATIONS = 310_000
+
+
+def hash_staff_password(password: str) -> str:
+    """PBKDF2-HMAC-SHA256 password hash; no plaintext password is stored."""
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt,
+        PBKDF2_ITERATIONS
+    )
+    return "pbkdf2_sha256${}${}${}".format(
+        PBKDF2_ITERATIONS,
+        base64.urlsafe_b64encode(salt).decode("ascii"),
+        base64.urlsafe_b64encode(digest).decode("ascii")
+    )
+
+
+def verify_staff_password(password: str, stored_hash: str) -> bool:
+    try:
+        algorithm, iterations_text, salt_text, digest_text = stored_hash.split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        iterations = int(iterations_text)
+        salt = base64.urlsafe_b64decode(salt_text.encode("ascii"))
+        expected = base64.urlsafe_b64decode(digest_text.encode("ascii"))
+        actual = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt,
+            iterations
+        )
+        return hmac.compare_digest(actual, expected)
+    except Exception:
+        return False
+
+
+def _base64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _base64url_decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode((value + padding).encode("ascii"))
+
+
+def create_staff_session_token(staff: StaffUser) -> str:
+    payload = {
+        "uid": staff.id,
+        "role": staff.role,
+        "exp": int((datetime.now(timezone.utc) + timedelta(hours=STAFF_SESSION_HOURS)).timestamp())
+    }
+    payload_b64 = _base64url_encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    signature = hmac.new(
+        STAFF_SESSION_SECRET.encode("utf-8"),
+        payload_b64.encode("ascii"),
+        hashlib.sha256
+    ).digest()
+    return f"{payload_b64}.{_base64url_encode(signature)}"
+
+
+def decode_staff_session_token(token: str) -> Optional[dict]:
+    if not token or "." not in token:
+        return None
+    try:
+        payload_b64, signature_b64 = token.split(".", 1)
+        expected_sig = hmac.new(
+            STAFF_SESSION_SECRET.encode("utf-8"),
+            payload_b64.encode("ascii"),
+            hashlib.sha256
+        ).digest()
+        supplied_sig = _base64url_decode(signature_b64)
+        if not hmac.compare_digest(expected_sig, supplied_sig):
+            return None
+
+        payload = json.loads(_base64url_decode(payload_b64).decode("utf-8"))
+        if int(payload.get("exp", 0)) <= int(datetime.now(timezone.utc).timestamp()):
+            return None
+        if payload.get("role") not in {"PHARMACIST", "DOCTOR"}:
+            return None
+        return payload
+    except Exception:
+        return None
+
+
+def get_staff_user_from_request(request: Request, db: Session) -> Optional[StaffUser]:
+    payload = decode_staff_session_token(request.cookies.get(STAFF_COOKIE_NAME, ""))
+    if not payload:
+        return None
+    staff = db.query(StaffUser).filter(StaffUser.id == payload.get("uid")).first()
+    if not staff or not staff.is_active or staff.role != payload.get("role"):
+        return None
+    return staff
+
+
+def bootstrap_staff_accounts():
+    """Create/update staff accounts from Render/.env environment variables."""
+    configs = [
+        (PHARMACIST_USERNAME, PHARMACIST_PASSWORD, PHARMACIST_DISPLAY_NAME, "PHARMACIST"),
+        (DOCTOR_USERNAME, DOCTOR_PASSWORD, DOCTOR_DISPLAY_NAME, "DOCTOR")
+    ]
+
+    db = SessionLocal()
+    try:
+        for username, password, display_name, role in configs:
+            if not password:
+                print(f"[Staff Auth Warning] 尚未設定 {role} 密碼環境變數，{role} 登入帳號不會自動建立。")
+                continue
+
+            staff = db.query(StaffUser).filter(StaffUser.username == username).first()
+            if not staff:
+                staff = StaffUser(
+                    username=username,
+                    password_hash=hash_staff_password(password),
+                    display_name=display_name,
+                    role=role,
+                    is_active=True
+                )
+                db.add(staff)
+                print(f"[Staff Auth] ✅ 已建立 {role} 帳號：{username}")
+            else:
+                staff.display_name = display_name
+                staff.role = role
+                staff.is_active = True
+                # Render env password is the bootstrap source of truth.
+                if not verify_staff_password(password, staff.password_hash):
+                    staff.password_hash = hash_staff_password(password)
+                    print(f"[Staff Auth] 🔄 已更新 {role} 帳號密碼：{username}")
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        print(f"[Staff Auth Error] 建立工作人員帳號失敗: {exc}")
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     auto_migrate_db()
+    bootstrap_staff_accounts()
     yield
 
 # ----------------------------------------------------
@@ -1117,10 +1290,16 @@ def send_line_doctor_decision_message(
         return {"status": "failed", "detail": str(e)}
 
 
+class StaffLoginRequest(BaseModel):
+    username: str
+    password: str
+    role: str
+
+
 # ----------------------------------------------------
 # 8. FastAPI 應用程式與安全 CORS 設定
 # ----------------------------------------------------
-app = FastAPI(title="PharmPulse Backend API", version="1.4.0", lifespan=lifespan)
+app = FastAPI(title="PharmPulse Backend API", version="1.5.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -1137,8 +1316,141 @@ def get_db():
     finally:
         db.close()
 
+
+@app.middleware("http")
+async def staff_access_guard(request: Request, call_next):
+    """Protect pharmacy/hospital pages and APIs with role-based staff authentication."""
+    path = request.url.path
+    normalized = path.rstrip("/") or "/"
+
+    required_role = None
+    login_path = None
+
+    if normalized == "/pharmacy" or path.startswith("/api/v1/pharmacy/") or normalized == "/api/v1/pharmacy":
+        required_role = "PHARMACIST"
+        login_path = "/pharmacy/login"
+    elif normalized == "/hospital" or path.startswith("/api/v1/hospital/") or normalized == "/api/v1/hospital":
+        required_role = "DOCTOR"
+        login_path = "/hospital/login"
+
+    if not required_role:
+        return await call_next(request)
+
+    db = SessionLocal()
+    try:
+        staff = get_staff_user_from_request(request, db)
+    finally:
+        db.close()
+
+    if not staff:
+        if path.startswith("/api/"):
+            return JSONResponse(
+                status_code=401,
+                content={"status": "error", "detail": "Staff login required"}
+            )
+        return RedirectResponse(url=login_path, status_code=303)
+
+    if staff.role != required_role:
+        if path.startswith("/api/"):
+            return JSONResponse(
+                status_code=403,
+                content={"status": "error", "detail": "Insufficient staff role"}
+            )
+        return RedirectResponse(url=f"{login_path}?role_error=1", status_code=303)
+
+    request.state.staff_user = staff
+    return await call_next(request)
+
 # ----------------------------------------------------
-# 9. 靜態頁面與 LINE Webhook 入口
+# 9. Staff login / logout (藥師與醫院端)
+# ----------------------------------------------------
+@app.get("/pharmacy/login")
+def serve_pharmacy_login():
+    if os.path.exists("staff_login.html"):
+        return FileResponse("staff_login.html", headers=NO_CACHE_HEADERS if "NO_CACHE_HEADERS" in globals() else None)
+    raise HTTPException(status_code=404, detail="staff_login.html not found")
+
+
+@app.get("/hospital/login")
+def serve_hospital_login():
+    if os.path.exists("staff_login.html"):
+        return FileResponse("staff_login.html", headers=NO_CACHE_HEADERS if "NO_CACHE_HEADERS" in globals() else None)
+    raise HTTPException(status_code=404, detail="staff_login.html not found")
+
+
+@app.post("/api/v1/staff/login")
+def staff_login(req: StaffLoginRequest, request: Request, db: Session = Depends(get_db)):
+    requested_role = (req.role or "").strip().upper()
+    if requested_role not in {"PHARMACIST", "DOCTOR"}:
+        raise HTTPException(status_code=400, detail="Invalid staff role")
+
+    username = (req.username or "").strip()
+    staff = db.query(StaffUser).filter(StaffUser.username == username).first()
+
+    # Same response for unknown username/wrong password to avoid account enumeration.
+    if (
+        not staff
+        or not staff.is_active
+        or staff.role != requested_role
+        or not verify_staff_password(req.password or "", staff.password_hash)
+    ):
+        raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
+
+    staff.last_login_at = datetime.now(timezone.utc)
+    db.commit()
+
+    token = create_staff_session_token(staff)
+    response = JSONResponse({
+        "status": "success",
+        "staff": {
+            "id": staff.id,
+            "username": staff.username,
+            "display_name": staff.display_name,
+            "role": staff.role
+        }
+    })
+    response.set_cookie(
+        key=STAFF_COOKIE_NAME,
+        value=token,
+        max_age=STAFF_SESSION_HOURS * 3600,
+        httponly=True,
+        secure=(request.url.scheme == "https"),
+        samesite="lax",
+        path="/"
+    )
+    return response
+
+
+@app.get("/api/v1/staff/me")
+def staff_me(request: Request, db: Session = Depends(get_db)):
+    staff = get_staff_user_from_request(request, db)
+    if not staff:
+        raise HTTPException(status_code=401, detail="Staff login required")
+    return {
+        "status": "success",
+        "staff": {
+            "id": staff.id,
+            "username": staff.username,
+            "display_name": staff.display_name,
+            "role": staff.role,
+            "last_login_at": utc_iso(staff.last_login_at)
+        }
+    }
+
+
+@app.post("/api/v1/staff/logout")
+def staff_logout():
+    response = JSONResponse({"status": "success", "message": "已登出"})
+    response.delete_cookie(
+        key=STAFF_COOKIE_NAME,
+        path="/",
+        samesite="lax"
+    )
+    return response
+
+
+# ----------------------------------------------------
+# 10. 靜態頁面與 LINE Webhook 入口
 # ----------------------------------------------------
 NO_CACHE_HEADERS = {
     "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",

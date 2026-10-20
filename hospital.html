@@ -19,16 +19,24 @@
         </div>
       </div>
 
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2 flex-wrap justify-end">
+        <div class="hidden sm:flex items-center gap-2 bg-sky-900/70 px-3 py-2 rounded-lg text-xs">
+          <i class="fa-solid fa-user-doctor text-sky-200"></i>
+          <span id="staff-display-name">醫師</span>
+        </div>
         <a href="/pharmacy"
            class="bg-sky-700 hover:bg-sky-600 text-white text-sm px-3 py-2 rounded-lg transition">
           <i class="fa-solid fa-prescription-bottle-medical mr-1"></i>
-          藥局端
+          藥局端登入
         </a>
         <button onclick="refreshHospital()"
                 class="bg-sky-950 hover:bg-slate-900 text-sky-100 text-sm px-3 py-2 rounded-lg transition">
           <i class="fa-solid fa-rotate-right mr-1"></i>
           重新整理
+        </button>
+        <button onclick="staffLogout()"
+                class="bg-slate-900/40 hover:bg-slate-900/60 text-white text-sm px-3 py-2 rounded-lg transition">
+          <i class="fa-solid fa-right-from-bracket mr-1"></i>登出
         </button>
       </div>
     </div>
@@ -100,6 +108,35 @@
   </main>
 
 <script>
+  async function loadStaffIdentity() {
+    try {
+      const res = await fetch('/api/v1/staff/me');
+      if (!res.ok) {
+        window.location.replace('/hospital/login');
+        return false;
+      }
+      const data = await res.json();
+      if (data.staff?.role !== 'DOCTOR') {
+        window.location.replace('/hospital/login?role_error=1');
+        return false;
+      }
+      const node = document.getElementById('staff-display-name');
+      if (node) node.textContent = data.staff.display_name || data.staff.username || '醫師';
+      return true;
+    } catch (err) {
+      console.error('Staff identity error:', err);
+      window.location.replace('/hospital/login');
+      return false;
+    }
+  }
+
+  async function staffLogout() {
+    try {
+      await fetch('/api/v1/staff/logout', { method: 'POST' });
+    } finally {
+      window.location.replace('/hospital/login');
+    }
+  }
   const API_BASE = "/api/v1";
   let referralData = [];
   let modeFilter = "ALL";
@@ -506,7 +543,10 @@
     }
   }
 
-  window.onload = refreshHospital;
+  window.onload = async () => {
+    const ok = await loadStaffIdentity();
+    if (ok) await refreshHospital();
+  };
 </script>
 
 </body>

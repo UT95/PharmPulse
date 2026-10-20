@@ -22,12 +22,19 @@
           <p class="text-xs text-emerald-100">社區藥局生理即時追蹤與照護平台</p>
         </div>
       </div>
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2 flex-wrap justify-end">
+        <div class="hidden sm:flex items-center gap-2 bg-emerald-800/70 px-3 py-1.5 rounded-lg text-xs">
+          <i class="fa-solid fa-user-shield text-emerald-200"></i>
+          <span id="staff-display-name">藥師</span>
+        </div>
         <a href="/hospital" class="bg-emerald-600 hover:bg-emerald-500 text-white text-sm px-3 py-1.5 rounded-lg transition flex items-center gap-1.5">
-          <i class="fa-solid fa-hospital-user"></i> 醫院端
+          <i class="fa-solid fa-hospital-user"></i> 醫院端登入
         </a>
         <button onclick="refreshDashboard()" class="bg-emerald-800 hover:bg-emerald-900 text-emerald-100 text-sm px-3 py-1.5 rounded-lg transition flex items-center gap-1.5">
           <i class="fa-solid fa-rotate-right"></i> 重新整理
+        </button>
+        <button onclick="staffLogout()" class="bg-slate-900/35 hover:bg-slate-900/55 text-white text-sm px-3 py-1.5 rounded-lg transition flex items-center gap-1.5">
+          <i class="fa-solid fa-right-from-bracket"></i> 登出
         </button>
       </div>
     </div>
@@ -400,6 +407,35 @@
   </div>
 
   <script>
+    async function loadStaffIdentity() {
+      try {
+        const res = await fetch('/api/v1/staff/me');
+        if (!res.ok) {
+          window.location.replace('/pharmacy/login');
+          return false;
+        }
+        const data = await res.json();
+        if (data.staff?.role !== 'PHARMACIST') {
+          window.location.replace('/pharmacy/login?role_error=1');
+          return false;
+        }
+        const node = document.getElementById('staff-display-name');
+        if (node) node.textContent = data.staff.display_name || data.staff.username || '藥師';
+        return true;
+      } catch (err) {
+        console.error('Staff identity error:', err);
+        window.location.replace('/pharmacy/login');
+        return false;
+      }
+    }
+
+    async function staffLogout() {
+      try {
+        await fetch('/api/v1/staff/logout', { method: 'POST' });
+      } finally {
+        window.location.replace('/pharmacy/login');
+      }
+    }
     const API_BASE = "/api/v1";
     let modalChartInstance = null;
     let currentHistory = [];
@@ -1434,7 +1470,10 @@
       }
     });
 
-    window.onload = refreshDashboard;
+    window.onload = async () => {
+      const ok = await loadStaffIdentity();
+      if (ok) await refreshDashboard();
+    };
   </script>
 </body>
 </html>
