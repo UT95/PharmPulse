@@ -24,11 +24,6 @@
           <i class="fa-solid fa-user-doctor text-sky-200"></i>
           <span id="staff-display-name">醫師</span>
         </div>
-        <a href="/pharmacy"
-           class="bg-sky-700 hover:bg-sky-600 text-white text-sm px-3 py-2 rounded-lg transition">
-          <i class="fa-solid fa-prescription-bottle-medical mr-1"></i>
-          藥局端登入
-        </a>
         <button onclick="refreshHospital()"
                 class="bg-sky-950 hover:bg-slate-900 text-sky-100 text-sm px-3 py-2 rounded-lg transition">
           <i class="fa-solid fa-rotate-right mr-1"></i>
@@ -112,12 +107,12 @@
     try {
       const res = await fetch('/api/v1/staff/me');
       if (!res.ok) {
-        window.location.replace('/hospital/login');
+        window.location.replace('/staff/login');
         return false;
       }
       const data = await res.json();
       if (data.staff?.role !== 'DOCTOR') {
-        window.location.replace('/hospital/login?role_error=1');
+        window.location.replace('/staff/login?role_error=1');
         return false;
       }
       const node = document.getElementById('staff-display-name');
@@ -125,7 +120,7 @@
       return true;
     } catch (err) {
       console.error('Staff identity error:', err);
-      window.location.replace('/hospital/login');
+      window.location.replace('/staff/login');
       return false;
     }
   }
@@ -134,7 +129,7 @@
     try {
       await fetch('/api/v1/staff/logout', { method: 'POST' });
     } finally {
-      window.location.replace('/hospital/login');
+      window.location.replace('/staff/login');
     }
   }
   const API_BASE = "/api/v1";

@@ -1293,7 +1293,6 @@ def send_line_doctor_decision_message(
 class StaffLoginRequest(BaseModel):
     username: str
     password: str
-    role: str
 
 
 # ----------------------------------------------------
@@ -1324,14 +1323,12 @@ async def staff_access_guard(request: Request, call_next):
     normalized = path.rstrip("/") or "/"
 
     required_role = None
-    login_path = None
+    login_path = "/staff/login"
 
     if normalized == "/pharmacy" or path.startswith("/api/v1/pharmacy/") or normalized == "/api/v1/pharmacy":
         required_role = "PHARMACIST"
-        login_path = "/pharmacy/login"
     elif normalized == "/hospital" or path.startswith("/api/v1/hospital/") or normalized == "/api/v1/hospital":
         required_role = "DOCTOR"
-        login_path = "/hospital/login"
 
     if not required_role:
         return await call_next(request)
@@ -1364,26 +1361,28 @@ async def staff_access_guard(request: Request, call_next):
 # ----------------------------------------------------
 # 9. Staff login / logout (藥師與醫院端)
 # ----------------------------------------------------
-@app.get("/pharmacy/login")
-def serve_pharmacy_login():
+@app.get("/staff/login")
+def serve_staff_login():
     if os.path.exists("staff_login.html"):
-        return FileResponse("staff_login.html", headers=NO_CACHE_HEADERS if "NO_CACHE_HEADERS" in globals() else None)
+        return FileResponse(
+            "staff_login.html",
+            headers=NO_CACHE_HEADERS if "NO_CACHE_HEADERS" in globals() else None
+        )
     raise HTTPException(status_code=404, detail="staff_login.html not found")
+
+
+@app.get("/pharmacy/login")
+def legacy_pharmacy_login():
+    return RedirectResponse(url="/staff/login", status_code=303)
 
 
 @app.get("/hospital/login")
-def serve_hospital_login():
-    if os.path.exists("staff_login.html"):
-        return FileResponse("staff_login.html", headers=NO_CACHE_HEADERS if "NO_CACHE_HEADERS" in globals() else None)
-    raise HTTPException(status_code=404, detail="staff_login.html not found")
+def legacy_hospital_login():
+    return RedirectResponse(url="/staff/login", status_code=303)
 
 
 @app.post("/api/v1/staff/login")
 def staff_login(req: StaffLoginRequest, request: Request, db: Session = Depends(get_db)):
-    requested_role = (req.role or "").strip().upper()
-    if requested_role not in {"PHARMACIST", "DOCTOR"}:
-        raise HTTPException(status_code=400, detail="Invalid staff role")
-
     username = (req.username or "").strip()
     staff = db.query(StaffUser).filter(StaffUser.username == username).first()
 
@@ -1391,10 +1390,12 @@ def staff_login(req: StaffLoginRequest, request: Request, db: Session = Depends(
     if (
         not staff
         or not staff.is_active
-        or staff.role != requested_role
+        or staff.role not in {"PHARMACIST", "DOCTOR"}
         or not verify_staff_password(req.password or "", staff.password_hash)
     ):
         raise HTTPException(status_code=401, detail="帳號或密碼錯誤")
+
+    destination = "/pharmacy" if staff.role == "PHARMACIST" else "/hospital"
 
     staff.last_login_at = datetime.now(timezone.utc)
     db.commit()
@@ -1402,6 +1403,7 @@ def staff_login(req: StaffLoginRequest, request: Request, db: Session = Depends(
     token = create_staff_session_token(staff)
     response = JSONResponse({
         "status": "success",
+        "destination": destination,
         "staff": {
             "id": staff.id,
             "username": staff.username,

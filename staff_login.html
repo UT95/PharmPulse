@@ -11,25 +11,25 @@
 <body class="min-h-screen bg-slate-100 flex items-center justify-center p-4 text-slate-800">
   <main class="w-full max-w-md">
     <div class="bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
-      <div id="login-header" class="bg-emerald-700 text-white px-6 py-6">
+      <div id="login-header" class="bg-slate-800 text-white px-6 py-6">
         <div class="flex items-center gap-3">
           <div class="w-11 h-11 rounded-xl bg-white/15 flex items-center justify-center">
-            <i id="role-icon" class="fa-solid fa-prescription-bottle-medical text-xl"></i>
+            <i id="role-icon" class="fa-solid fa-user-shield text-xl"></i>
           </div>
           <div>
             <p class="text-xs text-white/75">PharmPulse Staff Portal</p>
-            <h1 id="role-title" class="text-xl font-bold">藥師登入</h1>
+            <h1 id="role-title" class="text-xl font-bold">工作人員登入</h1>
           </div>
         </div>
       </div>
 
       <div class="p-6 space-y-5">
         <div id="role-warning" class="hidden text-xs bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-3">
-          目前登入的角色沒有此系統權限，請使用正確角色帳號登入。
+          目前帳號沒有此頁面權限，系統會依您的角色自動分流至正確工作台。
         </div>
 
         <div class="text-sm text-slate-500 leading-relaxed">
-          此登入僅提供藥師與醫師工作人員使用。民眾端維持 LINE LIFF 身分登入，不需要建立 PharmPulse 密碼。
+          藥師與醫師共用此登入入口。登入成功後，系統會依帳號角色自動進入藥局端或醫院端；民眾端仍使用 LINE LIFF，不需要 PharmPulse 密碼。
         </div>
 
         <form id="login-form" class="space-y-4">
@@ -38,7 +38,7 @@
             <div class="relative">
               <i class="fa-solid fa-user absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"></i>
               <input id="username" autocomplete="username" required
-                     class="w-full pl-10 pr-3 py-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                     class="w-full pl-10 pr-3 py-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-500"
                      placeholder="請輸入工作人員帳號">
             </div>
           </div>
@@ -48,7 +48,7 @@
             <div class="relative">
               <i class="fa-solid fa-lock absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"></i>
               <input id="password" type="password" autocomplete="current-password" required
-                     class="w-full pl-10 pr-11 py-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                     class="w-full pl-10 pr-11 py-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-500"
                      placeholder="請輸入密碼">
               <button type="button" onclick="togglePassword()" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700" aria-label="顯示或隱藏密碼">
                 <i id="password-eye" class="fa-solid fa-eye"></i>
@@ -59,9 +59,9 @@
           <div id="login-error" class="hidden text-sm bg-red-50 border border-red-200 text-red-700 rounded-lg p-3"></div>
 
           <button id="login-btn" type="submit"
-                  class="w-full bg-emerald-700 hover:bg-emerald-800 text-white font-bold py-3 rounded-xl transition flex items-center justify-center gap-2">
+                  class="w-full bg-slate-800 hover:bg-slate-900 text-white font-bold py-3 rounded-xl transition flex items-center justify-center gap-2">
             <i class="fa-solid fa-right-to-bracket"></i>
-            <span>登入藥局端</span>
+            <span>登入 PharmPulse</span>
           </button>
         </form>
       </div>
@@ -71,27 +71,6 @@
   </main>
 
 <script>
-  const isHospital = window.location.pathname.startsWith('/hospital');
-  const config = isHospital
-    ? { role: 'DOCTOR', title: '醫師登入', destination: '/hospital', button: '登入醫院端', header: 'bg-sky-800', ring: 'focus:ring-sky-500', icon: 'fa-hospital-user' }
-    : { role: 'PHARMACIST', title: '藥師登入', destination: '/pharmacy', button: '登入藥局端', header: 'bg-emerald-700', ring: 'focus:ring-emerald-500', icon: 'fa-prescription-bottle-medical' };
-
-  function configurePage() {
-    document.title = `PharmPulse ${config.title}`;
-    document.getElementById('role-title').textContent = config.title;
-    document.getElementById('role-icon').className = `fa-solid ${config.icon} text-xl`;
-    document.getElementById('login-header').className = `${config.header} text-white px-6 py-6`;
-    document.getElementById('login-btn').querySelector('span').textContent = config.button;
-
-    if (isHospital) {
-      document.getElementById('login-btn').className = 'w-full bg-sky-800 hover:bg-sky-900 text-white font-bold py-3 rounded-xl transition flex items-center justify-center gap-2';
-    }
-
-    if (new URLSearchParams(location.search).get('role_error') === '1') {
-      document.getElementById('role-warning').classList.remove('hidden');
-    }
-  }
-
   function togglePassword() {
     const input = document.getElementById('password');
     const eye = document.getElementById('password-eye');
@@ -99,8 +78,21 @@
     eye.className = input.type === 'password' ? 'fa-solid fa-eye' : 'fa-solid fa-eye-slash';
   }
 
+  function destinationForRole(role) {
+    if (role === 'PHARMACIST') return '/pharmacy';
+    if (role === 'DOCTOR') return '/hospital';
+    return null;
+  }
+
+  function showRoleWarningIfNeeded() {
+    if (new URLSearchParams(location.search).get('role_error') === '1') {
+      document.getElementById('role-warning').classList.remove('hidden');
+    }
+  }
+
   document.getElementById('login-form').addEventListener('submit', async (event) => {
     event.preventDefault();
+
     const btn = document.getElementById('login-btn');
     const errorBox = document.getElementById('login-error');
     errorBox.classList.add('hidden');
@@ -115,8 +107,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           username: document.getElementById('username').value.trim(),
-          password: document.getElementById('password').value,
-          role: config.role
+          password: document.getElementById('password').value
         })
       });
 
@@ -125,7 +116,13 @@
         throw new Error(data.detail || '登入失敗');
       }
 
-      window.location.replace(config.destination);
+      const destination = data.destination || destinationForRole(data.staff?.role);
+      if (!destination) {
+        throw new Error('此帳號沒有可用的工作台角色');
+      }
+
+      window.location.replace(destination);
+
     } catch (error) {
       errorBox.textContent = error.message || '登入失敗，請稍後再試。';
       errorBox.classList.remove('hidden');
@@ -138,14 +135,16 @@
     try {
       const response = await fetch('/api/v1/staff/me');
       if (!response.ok) return;
+
       const data = await response.json();
-      if (data.staff?.role === config.role) {
-        window.location.replace(config.destination);
+      const destination = destinationForRole(data.staff?.role);
+      if (destination) {
+        window.location.replace(destination);
       }
     } catch (_) {}
   }
 
-  configurePage();
+  showRoleWarningIfNeeded();
   redirectIfAlreadyLoggedIn();
 </script>
 </body>

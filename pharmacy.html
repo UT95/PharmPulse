@@ -27,9 +27,6 @@
           <i class="fa-solid fa-user-shield text-emerald-200"></i>
           <span id="staff-display-name">藥師</span>
         </div>
-        <a href="/hospital" class="bg-emerald-600 hover:bg-emerald-500 text-white text-sm px-3 py-1.5 rounded-lg transition flex items-center gap-1.5">
-          <i class="fa-solid fa-hospital-user"></i> 醫院端登入
-        </a>
         <button onclick="refreshDashboard()" class="bg-emerald-800 hover:bg-emerald-900 text-emerald-100 text-sm px-3 py-1.5 rounded-lg transition flex items-center gap-1.5">
           <i class="fa-solid fa-rotate-right"></i> 重新整理
         </button>
@@ -411,12 +408,12 @@
       try {
         const res = await fetch('/api/v1/staff/me');
         if (!res.ok) {
-          window.location.replace('/pharmacy/login');
+          window.location.replace('/staff/login');
           return false;
         }
         const data = await res.json();
         if (data.staff?.role !== 'PHARMACIST') {
-          window.location.replace('/pharmacy/login?role_error=1');
+          window.location.replace('/staff/login?role_error=1');
           return false;
         }
         const node = document.getElementById('staff-display-name');
@@ -424,7 +421,7 @@
         return true;
       } catch (err) {
         console.error('Staff identity error:', err);
-        window.location.replace('/pharmacy/login');
+        window.location.replace('/staff/login');
         return false;
       }
     }
@@ -433,7 +430,7 @@
       try {
         await fetch('/api/v1/staff/logout', { method: 'POST' });
       } finally {
-        window.location.replace('/pharmacy/login');
+        window.location.replace('/staff/login');
       }
     }
     const API_BASE = "/api/v1";
