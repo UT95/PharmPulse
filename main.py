@@ -3080,6 +3080,128 @@ def get_pharmacy_interventions(user_line_id: str, db: Session = Depends(get_db))
         return {"status": "error", "user_line_id": user_line_id, "records": [], "message": str(e)}
 
 
+
+@app.get("/api/v1/hospital/patient/{user_line_id}/care-history")
+def get_hospital_patient_care_history(
+    user_line_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    醫師端使用：查看指定轉介民眾的完整藥師關懷歷史。
+    此路徑位於 /api/v1/hospital/，因此會由 staff_access_guard 限制為 DOCTOR。
+    """
+    try:
+        records = (
+            db.query(PharmacyIntervention)
+            .filter(PharmacyIntervention.user_line_id == user_line_id)
+            .order_by(
+                PharmacyIntervention.created_at.desc(),
+                PharmacyIntervention.id.desc()
+            )
+            .all()
+        )
+
+        result = []
+
+        for r in records:
+            source_rppg = None
+
+            if r.rppg_record_id:
+                source_rppg = (
+                    db.query(RPPGRecord)
+                    .filter(RPPGRecord.id == r.rppg_record_id)
+                    .first()
+                )
+
+            if not source_rppg:
+                source_rppg = (
+                    db.query(RPPGRecord)
+                    .filter(
+                        or_(
+                            RPPGRecord.user_line_id == user_line_id,
+                            RPPGRecord.user_uuid == user_line_id
+                        )
+                    )
+                    .order_by(
+                        RPPGRecord.created_at.desc(),
+                        RPPGRecord.id.desc()
+                    )
+                    .first()
+                )
+
+            profile = (
+                db.query(PatientChronicProfile)
+                .filter(PatientChronicProfile.user_line_id == user_line_id)
+                .first()
+            )
+
+            mode = normalize_monitoring_mode(
+                profile.monitoring_mode
+                if profile and profile.monitoring_mode
+                else (
+                    source_rppg.monitoring_mode
+                    if source_rppg
+                    else "GENERAL"
+                )
+            )
+
+            result.append({
+                "id": r.id,
+                "user_line_id": r.user_line_id,
+                "rppg_record_id": r.rppg_record_id,
+
+                "care_method": r.care_method,
+                "symptoms": r.symptoms,
+
+                "systolic_bp": r.systolic_bp,
+                "diastolic_bp": r.diastolic_bp,
+                "pulse": r.pulse,
+
+                "pharmacist_note": r.pharmacist_note,
+                "action_result": r.action_result,
+
+                "followup_date": (
+                    r.followup_date.strftime("%Y-%m-%d")
+                    if r.followup_date
+                    else None
+                ),
+
+                "referral_status": r.referral_status,
+                "created_at": utc_iso(r.created_at),
+
+                "monitoring_mode": mode,
+                "monitoring_mode_label": MONITORING_MODES[mode]["label"],
+                "chronic_conditions": (
+                    profile.chronic_conditions if profile else None
+                ),
+
+                "source_health_light": (
+                    source_rppg.health_light if source_rppg else None
+                ),
+                "source_created_at": (
+                    utc_iso(source_rppg.created_at)
+                    if source_rppg
+                    else None
+                )
+            })
+
+        return {
+            "status": "success",
+            "user_line_id": user_line_id,
+            "count": len(result),
+            "records": result
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "user_line_id": user_line_id,
+            "count": 0,
+            "records": [],
+            "message": str(e)
+        }
+
+
 # ----------------------------------------------------
 # 15. 醫院端轉介 API
 # ----------------------------------------------------
