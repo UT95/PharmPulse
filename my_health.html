@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>我的健康紀錄｜PharmPulse</title>
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    *{box-sizing:border-box} body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",sans-serif;background:#f5f7f9;color:#1f2937;font-size:18px}
+    .page{max-width:760px;margin:0 auto;padding:18px 16px 42px}.hero{background:linear-gradient(135deg,#0f766e,#16a34a);color:#fff;border-radius:18px;padding:20px;box-shadow:0 8px 24px rgba(15,118,110,.18)}
+    .hero h1{margin:0;font-size:26px}.hero p{margin:8px 0 0;font-size:15px;line-height:1.55}.card{background:#fff;border-radius:16px;margin-top:14px;padding:18px;border:1px solid #e5e7eb}.section-title{font-size:20px;font-weight:800;margin-bottom:12px}
+    .status-box{border-radius:16px;padding:18px;text-align:center;margin-top:10px}.status-green{background:#ecfdf5;border:2px solid #86efac}.status-yellow{background:#fffbeb;border:2px solid #fde68a}.status-red{background:#fef2f2;border:2px solid #fecaca}.status-main{font-size:26px;font-weight:900}.status-sub{margin-top:8px;font-size:15px;line-height:1.6;color:#475569}
+    .metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:12px}.metric{background:#f8fafc;border-radius:14px;padding:14px;text-align:center}.metric .label{font-size:14px;color:#64748b;margin-bottom:5px}.metric .value{font-size:23px;font-weight:900}.metric .unit{font-size:12px;font-weight:500;color:#64748b}
+    .personal-box{background:#eef6ff;border:1px solid #bfdbfe;border-radius:14px;padding:15px;line-height:1.65}.personal-title{font-size:18px;font-weight:800;color:#1d4ed8;margin-bottom:6px}.small-note{font-size:13px;color:#64748b;line-height:1.6;margin-top:10px}
+    .record{border-top:1px solid #e5e7eb;padding:14px 0}.record:first-child{border-top:none}.record-head{display:flex;justify-content:space-between;gap:8px;align-items:center}.pill{display:inline-block;border-radius:999px;padding:5px 10px;font-size:13px;font-weight:800}.pill-green{background:#dcfce7;color:#166534}.pill-yellow{background:#fef3c7;color:#92400e}.pill-red{background:#fee2e2;color:#991b1b}.record-time{font-size:13px;color:#94a3b8}.record-values{margin-top:8px;font-size:15px;line-height:1.65;color:#475569}
+    .actions{display:grid;grid-template-columns:1fr;gap:10px;margin-top:14px}.btn{width:100%;min-height:54px;border:0;border-radius:14px;font-size:18px;font-weight:800;cursor:pointer;padding:12px 14px}.btn-primary{background:#0f766e;color:#fff}.btn-light{background:#fff;color:#0f766e;border:2px solid #99f6e4}.loading,.empty,.error{text-align:center;padding:26px 10px;color:#64748b;line-height:1.7}.error{color:#b91c1c}canvas{max-height:250px}
+  </style>
+</head>
+<body>
+<main class="page">
+  <section class="hero"><h1>📋 我的健康紀錄</h1><p>查看最近量測結果與健康趨勢。這裡只顯示您的資料。</p></section>
+  <section id="loading-card" class="card loading">正在讀取您的健康紀錄...</section>
+  <section id="content" style="display:none">
+    <section class="card">
+      <div class="section-title">今天的健康狀況</div>
+      <div id="status-box" class="status-box status-green"><div id="status-main" class="status-main">🟢 狀況穩定</div><div id="status-sub" class="status-sub">請持續維持規律量測。</div></div>
+      <div class="metrics">
+        <div class="metric"><div class="label">❤️ 心跳</div><div class="value"><span id="hr">--</span> <span class="unit">BPM</span></div></div>
+        <div class="metric"><div class="label">🫁 呼吸</div><div class="value"><span id="rr">--</span> <span class="unit">次/分</span></div></div>
+        <div class="metric"><div class="label">📊 生理壓力</div><div class="value"><span id="stress">--</span> <span class="unit">/100</span></div></div>
+        <div class="metric"><div class="label">📶 量測品質</div><div class="value"><span id="quality">--</span> <span class="unit">/100</span></div></div>
+      </div>
+    </section>
+    <section class="card">
+      <div class="section-title">👤 個人化健康分析</div>
+      <div class="personal-box"><div id="personal-title" class="personal-title">個人基準建立中</div><div id="personal-summary">持續固定時間量測，系統會逐步建立您的個人健康基準。</div><div id="personal-meta" class="small-note"></div></div>
+    </section>
+    <section class="card"><div class="section-title">📈 最近 7 天心跳趨勢</div><canvas id="trend-chart"></canvas><div class="small-note">趨勢圖用於日常追蹤，不取代醫療診斷。</div></section>
+    <section class="card"><div class="section-title">🗓️ 最近量測紀錄</div><div id="records"></div></section>
+    <section class="actions"><button class="btn btn-primary" onclick="goMeasure()">❤️ 再量一次</button><button class="btn btn-light" onclick="closeLiff()">完成，回到 LINE</button></section>
+  </section>
+</main>
+<script>
+const LIFF_ID="2011686844-4moxcFdy";let currentUserId="";let chartInstance=null;
+function escapeHTML(value){return String(value??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#039;")}
+function parseServerDate(value){if(!value)return null;const normalized=/(?:Z|[+-]\d\d:\d\d)$/.test(value)?value:`${value}Z`;const d=new Date(normalized);return Number.isNaN(d.getTime())?null:d}
+function formatTaiwanTime(value){const d=parseServerDate(value);if(!d)return"未知時間";return d.toLocaleString("zh-TW",{timeZone:"Asia/Taipei",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false})}
+function lightInfo(light){if(light==="RED")return{cls:"status-red",main:"🔴 建議聯絡藥師",sub:"這次量測需要進一步確認。若有明顯不適，請依醫療建議尋求協助。",pill:"pill-red",label:"RED"};if(light==="YELLOW")return{cls:"status-yellow",main:"🟡 建議再量一次",sub:"請先休息幾分鐘，再重新量測一次並觀察變化。",pill:"pill-yellow",label:"YELLOW"};return{cls:"status-green",main:"🟢 狀況穩定",sub:"目前沒有明顯警示，請持續維持規律量測。",pill:"pill-green",label:"GREEN"}}
+async function initPage(){const loading=document.getElementById("loading-card");try{await liff.init({liffId:LIFF_ID});if(!liff.isLoggedIn()){liff.login();return}const profile=await liff.getProfile();currentUserId=profile.userId;const idToken=liff.getIDToken();const res=await fetch("/api/v1/user/my-history",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({user_line_id:currentUserId,id_token:idToken||null,days:7})});const data=await res.json();if(!res.ok||data.status!=="success")throw new Error(data.detail||data.message||"紀錄讀取失敗");renderHealth(data.records||[]);loading.style.display="none";document.getElementById("content").style.display="block"}catch(err){console.error(err);loading.className="card error";loading.innerHTML=`健康紀錄讀取失敗<br><span style="font-size:13px;">${escapeHTML(err.message)}</span>`}}
+function renderHealth(records){if(!records.length){document.getElementById("status-main").textContent="尚無量測紀錄";document.getElementById("status-sub").textContent="請先完成第一次健康量測。";document.getElementById("records").innerHTML=`<div class="empty">目前沒有量測紀錄。</div>`;renderTrend([]);return}const latest=records[0],info=lightInfo(latest.health_light),statusBox=document.getElementById("status-box");statusBox.className=`status-box ${info.cls}`;document.getElementById("status-main").textContent=info.main;document.getElementById("status-sub").textContent=info.sub;document.getElementById("hr").textContent=latest.heart_rate??"--";document.getElementById("rr").textContent=latest.respiratory_rate??"--";document.getElementById("stress").textContent=latest.stress_score??"--";document.getElementById("quality").textContent=latest.signal_quality??"--";const pa=latest.personalized_analysis||{};document.getElementById("personal-title").textContent=pa.status_label||"個人基準建立中";document.getElementById("personal-summary").textContent=pa.summary||"持續固定情境量測，系統會逐步建立您的個人健康基準。";document.getElementById("personal-meta").textContent=`14 天個人基準：${latest.personal_baseline_count??0} 筆｜分析可信度：${latest.personal_confidence??"--"} / 100`;renderTrend(records);renderRecords(records)}
+function renderTrend(records){const canvas=document.getElementById("trend-chart");const ordered=[...records].filter(r=>r.created_at&&r.heart_rate!=null).sort((a,b)=>parseServerDate(a.created_at)-parseServerDate(b.created_at));const labels=ordered.map(r=>{const d=parseServerDate(r.created_at);return d?d.toLocaleDateString("zh-TW",{timeZone:"Asia/Taipei",month:"2-digit",day:"2-digit"}):""});const values=ordered.map(r=>r.heart_rate);if(chartInstance)chartInstance.destroy();chartInstance=new Chart(canvas,{type:"line",data:{labels,datasets:[{label:"心跳 BPM",data:values,tension:.3,pointRadius:4,borderWidth:3}]},options:{responsive:true,plugins:{legend:{display:false}},scales:{y:{beginAtZero:false,title:{display:true,text:"BPM"}}}}})}
+function renderRecords(records){document.getElementById("records").innerHTML=records.map(r=>{const info=lightInfo(r.health_light);return`<div class="record"><div class="record-head"><span class="pill ${info.pill}">${escapeHTML(info.label)}</span><span class="record-time">${escapeHTML(formatTaiwanTime(r.created_at))}</span></div><div class="record-values">❤️ 心跳：<strong>${escapeHTML(r.heart_rate??"--")} BPM</strong><br>🫁 呼吸：<strong>${escapeHTML(r.respiratory_rate??"--")} 次/分</strong><br>📊 生理壓力：<strong>${escapeHTML(r.stress_score??"--")} / 100</strong></div></div>`}).join("")}
+function goMeasure(){window.location.href="/liff"}function closeLiff(){if(typeof liff!=="undefined"&&liff.isInClient())liff.closeWindow();else window.location.href="/liff"}initPage();
+</script>
+</body>
+</html>

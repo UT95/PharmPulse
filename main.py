@@ -1851,6 +1851,17 @@ def serve_liff():
         )
     return {"status": "online", "message": "PharmPulse API Service is running"}
 
+@app.get("/my-health")
+def serve_my_health():
+    """民眾本人健康紀錄頁，LINE LIFF 使用。"""
+    if os.path.exists("my_health.html"):
+        return FileResponse(
+            "my_health.html",
+            headers=NO_CACHE_HEADERS
+        )
+    raise HTTPException(status_code=404, detail="my_health.html not found")
+
+
 @app.get("/pharmacy")
 def serve_pharmacy():
     """提供藥局端管理後台靜態頁面"""
@@ -1905,6 +1916,11 @@ class ConsentRequest(BaseModel):
     id_token: Optional[str] = None
     terms_version: str = "v1.0"
 
+class MyHistoryRequest(BaseModel):
+    user_line_id: str
+    id_token: Optional[str] = None
+    days: int = 7
+
 class AIChatRequest(BaseModel):
     user_line_id: str
     id_token: Optional[str] = None
@@ -1939,6 +1955,71 @@ class PharmacyInterventionRequest(BaseModel):
 # ----------------------------------------------------
 # 11. 使用者同意與生理分析 API
 # ----------------------------------------------------
+
+@app.post("/api/v1/user/my-history")
+def get_my_health_history(req: MyHistoryRequest, db: Session = Depends(get_db)):
+    """民眾本人近 N 天健康紀錄。LIFF 有 id_token 時會驗證 LINE 身分。"""
+    try:
+        if req.id_token and not verify_line_id_token(req.id_token, req.user_line_id):
+            raise HTTPException(status_code=401, detail="LINE 身分驗證失敗")
+
+        days = max(1, min(int(req.days or 7), 30))
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+
+        records = (
+            db.query(RPPGRecord)
+            .filter(
+                or_(
+                    RPPGRecord.user_line_id == req.user_line_id,
+                    RPPGRecord.user_uuid == req.user_line_id
+                ),
+                RPPGRecord.created_at >= since
+            )
+            .order_by(RPPGRecord.created_at.desc(), RPPGRecord.id.desc())
+            .all()
+        )
+
+        result = []
+        for r in records:
+            personal = personal_record_fields(r)
+            result.append({
+                "id": r.id,
+                "heart_rate": r.heart_rate,
+                "hrv_sdnn": r.hrv_sdnn,
+                "hrv_rmssd": r.hrv_rmssd,
+                "respiratory_rate": r.respiratory_rate,
+                "stress_score": r.stress_score,
+                "signal_quality": r.signal_quality,
+                "signal_quality_label": r.signal_quality_label,
+                "health_light": r.health_light,
+                "monitoring_mode": r.monitoring_mode,
+                "monitoring_mode_label": r.monitoring_mode_label,
+                "mode_alert_reasons": r.mode_alert_reasons,
+                "personal_baseline_count": personal.get("personal_baseline_count"),
+                "personal_confidence": personal.get("personal_confidence"),
+                "personal_risk_score": personal.get("personal_risk_score"),
+                "personal_status": personal.get("personal_status"),
+                "personalized_analysis": personal.get("personalized_analysis"),
+                "created_at": utc_iso(r.created_at)
+            })
+
+        return {
+            "status": "success",
+            "days": days,
+            "count": len(result),
+            "records": result
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {
+            "status": "error",
+            "count": 0,
+            "records": [],
+            "message": str(e)
+        }
+
 
 @app.get("/api/v1/user/chronic-profile/{user_line_id}")
 def get_chronic_profile(user_line_id: str, db: Session = Depends(get_db)):
