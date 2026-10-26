@@ -372,6 +372,20 @@
               </p>
             </div>
 
+            ${r.personal_status ? `
+              <div class="bg-blue-50 border border-blue-100 rounded-xl p-3">
+                <p class="text-xs font-bold text-blue-700">👤 個人化健康分析</p>
+                <p class="text-sm mt-1 text-blue-900">
+                  ${escapeHTML(r.personalized_analysis?.status_label || r.personal_status)}
+                  ｜可信度 ${escapeHTML(r.personal_confidence ?? "--")}/100
+                  ｜14天基準 ${escapeHTML(r.personal_baseline_count ?? 0)} 筆
+                </p>
+                <p class="text-xs mt-1 text-blue-700 leading-relaxed">
+                  ${escapeHTML(r.personalized_analysis?.summary || "")}
+                </p>
+              </div>
+            ` : ""}
+
             <div>
               <p class="text-xs font-bold text-slate-600">AI / 系統摘要</p>
               <p class="text-sm mt-1 text-slate-700 leading-relaxed">

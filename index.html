@@ -163,6 +163,47 @@
             font-size: 12px;
             line-height: 1.55;
         }
+        .personalized-panel {
+            margin-top: 12px;
+            padding: 13px;
+            border-radius: 12px;
+            background: #eff6ff;
+            border: 1px solid #bfdbfe;
+            color: #1e3a8a;
+            text-align: left;
+        }
+        .personalized-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            font-weight: 800;
+        }
+        .personalized-badge {
+            padding: 3px 7px;
+            border-radius: 999px;
+            background: #dbeafe;
+            color: #1d4ed8;
+            font-size: 10px;
+            font-weight: 800;
+            white-space: nowrap;
+        }
+        .personalized-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 7px;
+            margin-top: 9px;
+        }
+        .personalized-stat {
+            background: rgba(255,255,255,0.78);
+            border-radius: 9px;
+            padding: 8px;
+        }
+        .personalized-stat span { display:block; font-size:9px; color:#64748b; }
+        .personalized-stat strong { display:block; font-size:14px; color:#1e3a8a; margin-top:2px; }
+        .personalized-lines { margin-top:9px; font-size:11px; line-height:1.55; color:#334155; }
+        .personalized-summary { margin-top:8px; font-size:11px; line-height:1.5; color:#1e40af; font-weight:600; }
         .clinical-note {
             margin-top: 10px;
             border-radius: 9px;
@@ -267,6 +308,21 @@
             </div>
 
             <div id="report-clinical-note" class="clinical-note"></div>
+
+            <div id="report-personalized" class="personalized-panel" style="display:none;">
+                <div class="personalized-header">
+                    <span>👤 個人化健康分析</span>
+                    <span id="personalized-status" class="personalized-badge">基準建立中</span>
+                </div>
+                <div class="personalized-grid">
+                    <div class="personalized-stat"><span>14天基準</span><strong id="personalized-baseline">0 筆</strong></div>
+                    <div class="personalized-stat"><span>分析可信度</span><strong id="personalized-confidence">--</strong></div>
+                    <div class="personalized-stat"><span>個人偏差分數</span><strong id="personalized-risk">--</strong></div>
+                </div>
+                <div id="personalized-lines" class="personalized-lines"></div>
+                <div id="personalized-summary" class="personalized-summary"></div>
+                <div style="font-size:9px;color:#64748b;margin-top:7px;line-height:1.45;">可信度代表本次訊號品質與個人歷史資料充分度，不是醫療診斷準確率。</div>
+            </div>
 
             <hr style="margin: 12px 0 8px; border: none; border-top: 1px solid rgba(0,0,0,0.1);">
             <div id="report-summary" class="report-section"></div>
@@ -1057,6 +1113,29 @@
             `;
         }
 
+        function renderPersonalizedAnalysis(personal) {
+            const panel = document.getElementById("report-personalized");
+            if (!panel) return;
+            if (!personal) {
+                panel.style.display = "none";
+                return;
+            }
+
+            panel.style.display = "block";
+            document.getElementById("personalized-status").textContent = personal.status_label || "個人化分析";
+            document.getElementById("personalized-baseline").textContent = `${personal.baseline_count ?? 0} 筆`;
+            document.getElementById("personalized-confidence").textContent = `${personal.confidence ?? "--"} / 100`;
+            document.getElementById("personalized-risk").textContent = `${personal.risk_score ?? "--"} / 100`;
+
+            const lines = Array.isArray(personal.comparison_lines) ? personal.comparison_lines : [];
+            const reasons = Array.isArray(personal.reasons) ? personal.reasons : [];
+            const displayLines = lines.length ? lines : reasons;
+            document.getElementById("personalized-lines").innerHTML = displayLines.length
+                ? displayLines.map(line => `• ${escapeHTML(line)}`).join("<br>")
+                : "個人基準仍在建立中。";
+            document.getElementById("personalized-summary").textContent = personal.summary || "";
+        }
+
         function renderModeSpecificResult(data) {
             const mode = data.monitoring_mode || getMonitoringMode() || "GENERAL";
             const info = monitoringModeInfo[mode] || monitoringModeInfo.GENERAL;
@@ -1137,6 +1216,7 @@
             if (primary) primary.innerHTML = primaryCards.join("");
             if (secondary) secondary.textContent = secondaryLines.join("\n");
             if (clinical) clinical.textContent = clinicalNote;
+            renderPersonalizedAnalysis(data.personalized_analysis);
         }
 
 
@@ -1365,6 +1445,7 @@
                                 ${lightIcon} 心率: ${item.heart_rate} BPM | 呼吸: ${item.respiratory_rate ?? "--"} 次/分 | RMSSD: ${item.hrv_rmssd ?? "--"} ms | 品質: ${item.signal_quality ?? "--"}/100 | 壓力: ${item.stress_score} / 100
                             </div>
                             <div style="font-size:12px; color:#555; margin-top:4px;">${item.summary || ''}</div>
+                            ${item.personal_status ? `<div style="font-size:11px;color:#2563eb;margin-top:4px;">👤 ${item.personalized_analysis?.status_label || item.personal_status}｜可信度 ${item.personal_confidence ?? "--"}/100｜基準 ${item.personal_baseline_count ?? 0} 筆</div>` : ""}
                         `;
                         historyList.appendChild(div);
                     });

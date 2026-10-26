@@ -150,6 +150,15 @@ class RPPGRecord(Base):
     monitoring_mode = Column(String(30), nullable=False, default="GENERAL")
     monitoring_mode_label = Column(String(80), nullable=True)
     mode_alert_reasons = Column(Text, nullable=True)
+
+    # 個人化健康分析（以過去高品質量測建立 14 天 robust baseline）
+    personal_baseline_count = Column(Integer, nullable=True)
+    personal_baseline_window_days = Column(Integer, nullable=True)
+    personal_confidence = Column(Integer, nullable=True)
+    personal_risk_score = Column(Integer, nullable=True)
+    personal_status = Column(String(30), nullable=True)
+    personal_analysis = Column(Text, nullable=True)
+
     stress_score = Column(Integer, nullable=False)
     health_light = Column(String(20), nullable=False)
     is_resolved = Column(Boolean, default=False)
@@ -300,7 +309,13 @@ def auto_migrate_db():
                     ("spo2_experimental", "DOUBLE PRECISION"),
                     ("monitoring_mode", "VARCHAR(30) DEFAULT 'GENERAL'"),
                     ("monitoring_mode_label", "VARCHAR(80)"),
-                    ("mode_alert_reasons", "TEXT")
+                    ("mode_alert_reasons", "TEXT"),
+                    ("personal_baseline_count", "INTEGER"),
+                    ("personal_baseline_window_days", "INTEGER"),
+                    ("personal_confidence", "INTEGER"),
+                    ("personal_risk_score", "INTEGER"),
+                    ("personal_status", "VARCHAR(30)"),
+                    ("personal_analysis", "TEXT")
                 ]
                 for col_name, col_type in columns_to_add:
                     try:
@@ -323,6 +338,12 @@ def auto_migrate_db():
                     "monitoring_mode": "VARCHAR(30) DEFAULT 'GENERAL'",
                     "monitoring_mode_label": "VARCHAR(80)",
                     "mode_alert_reasons": "TEXT",
+                    "personal_baseline_count": "INTEGER",
+                    "personal_baseline_window_days": "INTEGER",
+                    "personal_confidence": "INTEGER",
+                    "personal_risk_score": "INTEGER",
+                    "personal_status": "VARCHAR(30)",
+                    "personal_analysis": "TEXT",
                 }
                 for col_name, col_type in sqlite_columns.items():
                     if col_name not in existing:
@@ -672,7 +693,345 @@ def evaluate_monitoring_mode(mode: str, heart_rate: int, stress_score: int, metr
         "reasons": reasons
     }
 
-def generate_gemini_health_advice(heart_rate: int, sdnn: float, stress_score: int, health_light: str, monitoring_mode: str = "GENERAL", respiratory_rate=None, irregular_pulse_score=None) -> Optional[dict]:
+
+PERSONAL_BASELINE_WINDOW_DAYS = 14
+PERSONAL_BASELINE_MIN_RECORDS = 3
+PERSONAL_BASELINE_TARGET_RECORDS = 7
+PERSONAL_SIGNAL_QUALITY_MIN = 60
+
+PERSONAL_STATUS_LABELS = {
+    "LOW_QUALITY": "量測品質不足",
+    "BUILDING": "個人基準建立中",
+    "STABLE": "接近個人基準",
+    "WATCH": "出現輕度個人偏差",
+    "DEVIATION": "出現明顯個人偏差",
+}
+
+PERSONAL_METRIC_LABELS = {
+    "heart_rate": "心率",
+    "hrv_sdnn": "HRV SDNN",
+    "hrv_rmssd": "HRV RMSSD",
+    "respiratory_rate": "呼吸頻率",
+    "stress_score": "壓力指數",
+    "irregular_pulse_score": "脈搏不規則風險",
+}
+
+
+def _safe_number(value):
+    try:
+        if value is None:
+            return None
+        value = float(value)
+        if not math.isfinite(value):
+            return None
+        return value
+    except Exception:
+        return None
+
+
+def _median_and_mad(values):
+    clean = np.asarray([float(v) for v in values if v is not None], dtype=float)
+    if clean.size == 0:
+        return None, None
+    med = float(np.median(clean))
+    mad = float(np.median(np.abs(clean - med)))
+    return med, mad
+
+
+def _trend_info(values):
+    clean = [float(v) for v in values if v is not None]
+    if len(clean) < 3:
+        return {"direction": "INSUFFICIENT", "pct_per_measurement": None}
+    arr = np.asarray(clean[-6:], dtype=float)
+    x = np.arange(arr.size, dtype=float)
+    slope = float(np.polyfit(x, arr, 1)[0])
+    base = max(abs(float(np.median(arr))), 1e-6)
+    pct = float((slope / base) * 100.0)
+    if pct >= 2.0:
+        direction = "UP"
+    elif pct <= -2.0:
+        direction = "DOWN"
+    else:
+        direction = "STABLE"
+    return {"direction": direction, "pct_per_measurement": round(pct, 1)}
+
+
+def _metric_comparison(metric_key, current_value, history_values):
+    current = _safe_number(current_value)
+    history = [_safe_number(v) for v in history_values]
+    history = [v for v in history if v is not None]
+    if current is None or len(history) < PERSONAL_BASELINE_MIN_RECORDS:
+        return None
+
+    med, mad = _median_and_mad(history)
+    if med is None:
+        return None
+
+    deviation_pct = None
+    if abs(med) > 1e-6:
+        deviation_pct = ((current - med) / abs(med)) * 100.0
+
+    robust_z = None
+    if mad is not None and mad > 1e-6:
+        robust_z = 0.6745 * (current - med) / mad
+
+    recent = history[-5:] + [current]
+    trend = _trend_info(recent)
+
+    return {
+        "metric": metric_key,
+        "label": PERSONAL_METRIC_LABELS.get(metric_key, metric_key),
+        "current": round(current, 1),
+        "baseline_median": round(med, 1),
+        "baseline_mad": round(mad, 2) if mad is not None else None,
+        "deviation_pct": round(deviation_pct, 1) if deviation_pct is not None else None,
+        "robust_z": round(float(robust_z), 2) if robust_z is not None else None,
+        "trend": trend,
+        "history_count": len(history),
+    }
+
+
+def _comparison_is_concerning(metric_key, comp):
+    if not comp:
+        return False, 0
+    dev = comp.get("deviation_pct")
+    z = comp.get("robust_z")
+    if dev is None:
+        return False, 0
+
+    # 這些門檻只用來做「相較個人基準需重新確認」提示，不直接作疾病診斷。
+    if metric_key == "heart_rate":
+        concerning = abs(dev) >= 18 and (z is None or abs(z) >= 2.0 or abs(dev) >= 25)
+        return concerning, 24 if concerning else 0
+    if metric_key in {"hrv_sdnn", "hrv_rmssd"}:
+        concerning = dev <= -25 and (z is None or z <= -2.0 or dev <= -35)
+        return concerning, 18 if concerning else 0
+    if metric_key == "respiratory_rate":
+        concerning = abs(dev) >= 22 and (z is None or abs(z) >= 2.0 or abs(dev) >= 30)
+        return concerning, 28 if concerning else 0
+    if metric_key == "stress_score":
+        concerning = dev >= 30 and (z is None or z >= 2.0 or dev >= 40)
+        return concerning, 16 if concerning else 0
+    if metric_key == "irregular_pulse_score":
+        concerning = dev >= 35 and (z is None or z >= 2.0 or dev >= 50)
+        return concerning, 22 if concerning else 0
+    return False, 0
+
+
+def _personal_reason(metric_key, comp):
+    if not comp or comp.get("deviation_pct") is None:
+        return None
+    dev = comp["deviation_pct"]
+    label = comp.get("label") or PERSONAL_METRIC_LABELS.get(metric_key, metric_key)
+    direction = "高" if dev > 0 else "低"
+    if metric_key in {"hrv_sdnn", "hrv_rmssd"} and dev < 0:
+        return f"{label} 較個人 14 天基準低 {abs(dev):.0f}%"
+    return f"{label} 較個人 14 天基準{direction} {abs(dev):.0f}%"
+
+
+def build_personalized_health_analysis(
+    db: Session,
+    user_line_id: str,
+    monitoring_mode: str,
+    heart_rate: int,
+    hrv_sdnn: float,
+    stress_score: int,
+    metrics: dict,
+):
+    """
+    個人化健康分析引擎：
+    - 14 天高品質量測 robust baseline（Median + MAD）
+    - 個人偏差百分比 + robust z-score
+    - 近期方向趨勢
+    - 分析可信度（不是醫療準確率）
+    - 個人偏差只可將 GREEN 提升為 YELLOW「需重新確認」，不單獨產生 RED
+    """
+    mode = normalize_monitoring_mode(monitoring_mode)
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=PERSONAL_BASELINE_WINDOW_DAYS)
+    current_quality = _safe_number(metrics.get("signal_quality"))
+
+    history = (
+        db.query(RPPGRecord)
+        .filter(
+            or_(
+                RPPGRecord.user_line_id == user_line_id,
+                RPPGRecord.user_uuid == user_line_id,
+            )
+        )
+        .filter(RPPGRecord.created_at >= cutoff)
+        .filter(RPPGRecord.signal_quality.isnot(None))
+        .filter(RPPGRecord.signal_quality >= PERSONAL_SIGNAL_QUALITY_MIN)
+        .order_by(RPPGRecord.created_at.asc(), RPPGRecord.id.asc())
+        .limit(60)
+        .all()
+    )
+
+    baseline_count = len(history)
+    unique_days = len({(r.created_at.date() if r.created_at else None) for r in history if r.created_at})
+
+    current_values = {
+        "heart_rate": heart_rate,
+        "hrv_sdnn": hrv_sdnn,
+        "hrv_rmssd": metrics.get("hrv_rmssd"),
+        "respiratory_rate": metrics.get("respiratory_rate"),
+        "stress_score": stress_score,
+        "irregular_pulse_score": metrics.get("irregular_pulse_score"),
+    }
+
+    mode_metrics = {
+        "GENERAL": ["heart_rate", "hrv_sdnn", "stress_score"],
+        "CARDIO": ["heart_rate", "hrv_sdnn", "hrv_rmssd", "irregular_pulse_score", "stress_score"],
+        "RESPIRATORY": ["respiratory_rate", "heart_rate", "stress_score", "hrv_rmssd"],
+    }[mode]
+
+    comparisons = {}
+    available_focus_metrics = 0
+    for metric_key, current in current_values.items():
+        hist_values = [getattr(r, metric_key, None) for r in history]
+        comp = _metric_comparison(metric_key, current, hist_values)
+        if comp:
+            comparisons[metric_key] = comp
+            if metric_key in mode_metrics:
+                available_focus_metrics += 1
+
+    quality_score = int(round(current_quality)) if current_quality is not None else 0
+    baseline_coverage = min(100, round((baseline_count / PERSONAL_BASELINE_TARGET_RECORDS) * 100))
+    day_coverage = min(100, round((unique_days / 5) * 100))
+    metric_coverage = round((available_focus_metrics / max(len(mode_metrics), 1)) * 100)
+    confidence = int(round(
+        0.50 * quality_score +
+        0.25 * baseline_coverage +
+        0.15 * day_coverage +
+        0.10 * metric_coverage
+    ))
+
+    reasons = []
+    risk_score = 0
+    concerning_metrics = []
+
+    if current_quality is None or current_quality < PERSONAL_SIGNAL_QUALITY_MIN:
+        status = "LOW_QUALITY"
+        confidence = min(confidence, 45)
+        reasons.append("本次訊號品質不足，暫不使用個人基準做風險升級")
+    elif baseline_count < PERSONAL_BASELINE_MIN_RECORDS:
+        status = "BUILDING"
+        confidence = min(confidence, 55)
+        reasons.append(f"目前只有 {baseline_count} 筆高品質歷史量測，至少累積 {PERSONAL_BASELINE_MIN_RECORDS} 筆後啟用個人偏差判讀")
+    else:
+        for metric_key in mode_metrics:
+            comp = comparisons.get(metric_key)
+            concerning, points = _comparison_is_concerning(metric_key, comp)
+            if not concerning:
+                continue
+            risk_score += points
+            concerning_metrics.append(metric_key)
+            reason = _personal_reason(metric_key, comp)
+            if reason:
+                reasons.append(reason)
+
+            trend = (comp or {}).get("trend") or {}
+            trend_dir = trend.get("direction")
+            # 趨勢若與風險方向一致，僅小幅加權。
+            if metric_key in {"heart_rate", "respiratory_rate", "stress_score", "irregular_pulse_score"} and trend_dir == "UP":
+                risk_score += 6
+            elif metric_key in {"hrv_sdnn", "hrv_rmssd"} and trend_dir == "DOWN":
+                risk_score += 6
+
+        risk_score = int(min(100, risk_score))
+        if risk_score >= 40:
+            status = "DEVIATION"
+        elif risk_score >= 20:
+            status = "WATCH"
+        else:
+            status = "STABLE"
+
+        if not reasons:
+            reasons.append("本次主要指標接近個人 14 天基準")
+
+    risk_score = int(min(100, risk_score))
+    eligible = (
+        current_quality is not None and current_quality >= PERSONAL_SIGNAL_QUALITY_MIN
+        and baseline_count >= PERSONAL_BASELINE_MIN_RECORDS
+    )
+    should_escalate = bool(eligible and confidence >= 65 and risk_score >= 40)
+
+    comparison_lines = []
+    for metric_key in mode_metrics:
+        comp = comparisons.get(metric_key)
+        if not comp:
+            continue
+        dev = comp.get("deviation_pct")
+        trend = comp.get("trend") or {}
+        trend_map = {"UP": "近期上升", "DOWN": "近期下降", "STABLE": "近期穩定", "INSUFFICIENT": "趨勢資料不足"}
+        dev_text = f"{dev:+.1f}%" if dev is not None else "--"
+        comparison_lines.append(
+            f"{comp['label']}：本次 {comp['current']} / 個人基準 {comp['baseline_median']}（{dev_text}，{trend_map.get(trend.get('direction'), '趨勢資料不足')}）"
+        )
+
+    if status == "LOW_QUALITY":
+        summary = "本次量測品質不足，系統不以此筆資料做個人化風險判讀，建議保持穩定後重新量測。"
+    elif status == "BUILDING":
+        summary = f"正在建立您的個人健康基準；目前累積 {baseline_count} 筆高品質紀錄，持續固定情境量測可提升個人化分析可靠度。"
+    elif status == "DEVIATION":
+        summary = "本次部分指標相較您自己的 14 天基準出現明顯偏差，建議休息後重新量測並觀察是否持續。"
+    elif status == "WATCH":
+        summary = "本次部分指標較個人基準有輕度變化，建議持續觀察近期趨勢。"
+    else:
+        summary = "本次主要指標大致接近您的 14 天個人基準。"
+
+    return {
+        "version": "personal-v1",
+        "status": status,
+        "status_label": PERSONAL_STATUS_LABELS[status],
+        "baseline_window_days": PERSONAL_BASELINE_WINDOW_DAYS,
+        "baseline_count": baseline_count,
+        "baseline_unique_days": unique_days,
+        "confidence": max(0, min(100, confidence)),
+        "confidence_note": "此分數代表本次個人化分析資料充分度與訊號品質，不代表醫療診斷準確率。",
+        "risk_score": risk_score,
+        "eligible": eligible,
+        "should_escalate": should_escalate,
+        "reasons": reasons[:4],
+        "concerning_metrics": concerning_metrics,
+        "comparisons": comparisons,
+        "comparison_lines": comparison_lines[:5],
+        "summary": summary,
+    }
+
+
+def personalized_prompt_context(personalized_analysis: Optional[dict]) -> str:
+    if not personalized_analysis:
+        return "尚無個人化基準資料。"
+    reasons = "；".join(personalized_analysis.get("reasons") or [])
+    comparisons = "；".join(personalized_analysis.get("comparison_lines") or [])
+    return (
+        f"個人化狀態: {personalized_analysis.get('status_label')}\n"
+        f"14天高品質基準筆數: {personalized_analysis.get('baseline_count')}\n"
+        f"分析可信度: {personalized_analysis.get('confidence')}/100（不是醫療準確率）\n"
+        f"個人偏差風險分數: {personalized_analysis.get('risk_score')}/100\n"
+        f"個人化原因: {reasons or '無'}\n"
+        f"基準比較: {comparisons or '資料建立中'}"
+    )
+
+
+def personal_record_fields(record: RPPGRecord) -> dict:
+    parsed = None
+    if record.personal_analysis:
+        try:
+            parsed = json.loads(record.personal_analysis)
+        except Exception:
+            parsed = None
+    return {
+        "personal_baseline_count": record.personal_baseline_count,
+        "personal_baseline_window_days": record.personal_baseline_window_days,
+        "personal_confidence": record.personal_confidence,
+        "personal_risk_score": record.personal_risk_score,
+        "personal_status": record.personal_status,
+        "personalized_analysis": parsed,
+    }
+
+def generate_gemini_health_advice(heart_rate: int, sdnn: float, stress_score: int, health_light: str, monitoring_mode: str = "GENERAL", respiratory_rate=None, irregular_pulse_score=None, personalized_analysis: Optional[dict] = None) -> Optional[dict]:
     """根據生理數據產生專業且溫暖的藥局衛教摘要與建議"""
     prompt = f"""
 你是一位 PharmPulse 社區智慧藥局系統的「AI 臨床衛教藥師」。
@@ -686,6 +1045,11 @@ def generate_gemini_health_advice(heart_rate: int, sdnn: float, stress_score: in
 - 慢性病監測模式: {MONITORING_MODES.get(normalize_monitoring_mode(monitoring_mode), MONITORING_MODES["GENERAL"])["label"]}
 - 呼吸頻率: {respiratory_rate if respiratory_rate is not None else "未取得"} 次/分
 - 脈搏不規則風險分數: {irregular_pulse_score if irregular_pulse_score is not None else "未取得"} / 100
+
+【個人化健康分析】
+{personalized_prompt_context(personalized_analysis)}
+
+請把「是否偏離這位使用者自己的基準」和「一般風險門檻」分開說明。個人偏差只能作為重新量測/追蹤提示，不可直接下疾病診斷。
 
 【輸出要求】
 請務必以繁體中文 (台灣醫療衛教用語) 並且回傳「標準 JSON 格式」，包含以下兩個欄位：
@@ -729,6 +1093,10 @@ def generate_ai_chat_response(db: Session, user_line_id: str, question: str, rec
 - SpO₂ 實驗性估值: {record.spo2_experimental if record.spo2_experimental is not None else '未取得'} %（未校正、不可作診斷）
 - 壓力指數: {record.stress_score} / 100
 - 健康燈號: {record.health_light}
+- 個人化狀態: {personal_record_fields(record).get("personalized_analysis", {}).get("status_label", "基準建立中") if personal_record_fields(record).get("personalized_analysis") else "基準建立中"}
+- 個人化分析可信度: {record.personal_confidence if record.personal_confidence is not None else "未建立"} / 100（代表資料充分度與訊號品質，不是診斷準確率）
+- 個人14天基準筆數: {record.personal_baseline_count if record.personal_baseline_count is not None else 0}
+- 個人化摘要: {personal_record_fields(record).get("personalized_analysis", {}).get("summary", "尚未建立完整個人基準") if personal_record_fields(record).get("personalized_analysis") else "尚未建立完整個人基準"}
 - 檢測時間: {created_str}
 """
 
@@ -1037,7 +1405,7 @@ def calculate_advanced_rppg_metrics(red_signal, green_signal, fps: float, hr: in
 # ----------------------------------------------------
 def build_flex_message(heart_rate: int, stress_score: int, health_light: str, summary: str, advice: str,
                        hrv_rmssd=None, respiratory_rate=None, irregular_pulse_score=None,
-                       signal_quality=None, spo2_experimental=None):
+                       signal_quality=None, spo2_experimental=None, personalized_analysis=None):
     color_map = {
         "GREEN": "#1DB954",
         "YELLOW": "#FFB800",
@@ -1045,6 +1413,14 @@ def build_flex_message(heart_rate: int, stress_score: int, health_light: str, su
     }
     header_color = color_map.get(health_light, "#1DB954")
     light_text = "良好 🟢" if health_light == "GREEN" else ("輕微偏高 🟡" if health_light == "YELLOW" else "需要注意 🔴")
+
+    p = personalized_analysis or {}
+    p_reasons = "、".join((p.get("reasons") or [])[:2])
+    personal_text = (
+        f"👤 個人化分析：{p.get('status_label', '基準建立中')}\n"
+        f"14天基準：{p.get('baseline_count', 0)} 筆  ·  分析可信度：{p.get('confidence', '--')}/100\n"
+        f"{p_reasons or '持續量測可建立更完整的個人基準'}"
+    )
 
     flex_contents = {
         "type": "bubble",
@@ -1112,6 +1488,8 @@ def build_flex_message(heart_rate: int, stress_score: int, health_light: str, su
                     "margin": "md"
                 },
                 {"type": "text", "text": "※ SpO₂ 與脈搏不規則分數僅供研究/趨勢參考，不作診斷。", "size": "xxs", "color": "#999999", "wrap": True, "margin": "xs"},
+                {"type": "text", "text": personal_text, "size": "xs", "color": "#2563EB", "wrap": True, "margin": "md"},
+                {"type": "text", "text": "※ 個人化可信度代表訊號品質與歷史資料充分度，不是醫療診斷準確率。", "size": "xxs", "color": "#999999", "wrap": True, "margin": "xs"},
                 {"type": "separator", "margin": "lg"},
                 {
                     "type": "text",
@@ -1176,7 +1554,8 @@ def build_flex_message(heart_rate: int, stress_score: int, health_light: str, su
     }
 
 def send_line_push_message(user_id: str, heart_rate: int, stress_score: int, health_light: str, summary: str, advice: str,
-                           hrv_rmssd=None, respiratory_rate=None, irregular_pulse_score=None, signal_quality=None, spo2_experimental=None):
+                           hrv_rmssd=None, respiratory_rate=None, irregular_pulse_score=None, signal_quality=None, spo2_experimental=None,
+                           personalized_analysis=None):
     token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
     if not token or token.startswith("你的") or token == "YOUR_LINE_CHANNEL_ACCESS_TOKEN":
         print("[LINE Push Warning] 未設定正確的 LINE_CHANNEL_ACCESS_TOKEN，跳過推播。")
@@ -1188,7 +1567,7 @@ def send_line_push_message(user_id: str, heart_rate: int, stress_score: int, hea
 
     flex_payload = build_flex_message(
         heart_rate, stress_score, health_light, summary, advice,
-        hrv_rmssd, respiratory_rate, irregular_pulse_score, signal_quality, spo2_experimental
+        hrv_rmssd, respiratory_rate, irregular_pulse_score, signal_quality, spo2_experimental, personalized_analysis
     )
 
     headers = {
@@ -1814,12 +2193,31 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
         mode_alert_reasons = mode_eval["reasons"]
         light = mode_eval["light"]
 
-        # AI 生成衛教分析 (優先使用 LLM 模組，失敗自動轉為範本保底)
+        # 個人化健康分析：使用本次量測前的 14 天高品質紀錄建立 robust baseline。
+        personalized_analysis = build_personalized_health_analysis(
+            db=db,
+            user_line_id=req.user_line_id,
+            monitoring_mode=monitoring_mode,
+            heart_rate=hr,
+            hrv_sdnn=sdnn,
+            stress_score=stress,
+            metrics=advanced_metrics,
+        )
+
+        # 個人偏差只可將 GREEN 升級成 YELLOW「建議重新確認」；不單獨產生 RED。
+        if personalized_analysis.get("should_escalate") and light == "GREEN":
+            light = "YELLOW"
+            mode_alert_reasons = [
+                "相較個人 14 天基準出現明顯變化，建議休息後重新量測"
+            ] + list(mode_alert_reasons)
+
+        # AI 只負責衛教文字，不負責決定燈號。
         ai_res = generate_gemini_health_advice(
             heart_rate=hr, sdnn=sdnn, stress_score=stress, health_light=light,
             monitoring_mode=monitoring_mode,
             respiratory_rate=advanced_metrics.get("respiratory_rate"),
-            irregular_pulse_score=advanced_metrics.get("irregular_pulse_score")
+            irregular_pulse_score=advanced_metrics.get("irregular_pulse_score"),
+            personalized_analysis=personalized_analysis,
         )
 
         if ai_res:
@@ -1850,6 +2248,20 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
                     "2. 建議每日同一時間持續進行生理量測記錄。"
                 )
 
+        # 若沒有 LLM，仍用 deterministic 個人化引擎補上個人基準脈絡。
+        if not ai_res:
+            p_status = personalized_analysis.get("status")
+            if p_status in {"DEVIATION", "WATCH"} and light != "RED":
+                summary = personalized_analysis.get("summary") or summary
+                advice = (
+                    "👤 【個人化追蹤建議】\n"
+                    "1. 請先休息 10 分鐘並在相同姿勢、光線下重新量測。\n"
+                    "2. 若相較個人基準的偏差連續出現，建議由藥師協助確認血壓、用藥與近期生活狀況。\n"
+                    "3. 若伴隨明顯不適或數值快速惡化，請依醫療專業建議就醫。"
+                )
+            elif p_status == "BUILDING" and light == "GREEN":
+                summary = personalized_analysis.get("summary") or summary
+
         # 寫入資料庫
         record = RPPGRecord(
             user_uuid=req.user_line_id,
@@ -1865,6 +2277,12 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
             monitoring_mode=monitoring_mode,
             monitoring_mode_label=monitoring_mode_label,
             mode_alert_reasons="；".join(mode_alert_reasons),
+            personal_baseline_count=personalized_analysis.get("baseline_count"),
+            personal_baseline_window_days=personalized_analysis.get("baseline_window_days"),
+            personal_confidence=personalized_analysis.get("confidence"),
+            personal_risk_score=personalized_analysis.get("risk_score"),
+            personal_status=personalized_analysis.get("status"),
+            personal_analysis=json.dumps(personalized_analysis, ensure_ascii=False),
             stress_score=stress,
             health_light=light,
             is_resolved=False,
@@ -1889,7 +2307,8 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
             respiratory_rate=advanced_metrics.get("respiratory_rate"),
             irregular_pulse_score=advanced_metrics.get("irregular_pulse_score"),
             signal_quality=advanced_metrics.get("signal_quality"),
-            spo2_experimental=advanced_metrics.get("spo2_experimental")
+            spo2_experimental=advanced_metrics.get("spo2_experimental"),
+            personalized_analysis=personalized_analysis
         )
 
         return {
@@ -1908,6 +2327,11 @@ def analyze_rppg(req: AnalyzeRequest, background_tasks: BackgroundTasks, db: Ses
                 "monitoring_mode_label": monitoring_mode_label,
                 "monitoring_mode_note": monitoring_mode_note,
                 "mode_alert_reasons": mode_alert_reasons,
+                "personalized_analysis": personalized_analysis,
+                "personal_baseline_count": personalized_analysis.get("baseline_count"),
+                "personal_confidence": personalized_analysis.get("confidence"),
+                "personal_risk_score": personalized_analysis.get("risk_score"),
+                "personal_status": personalized_analysis.get("status"),
                 "stress_score": stress,
                 "health_light": light,
                 "summary": summary,
@@ -1977,6 +2401,7 @@ def get_user_history(user_line_id: str, limit: int = 10, db: Session = Depends(g
                 "monitoring_mode": r.monitoring_mode or "GENERAL",
                 "monitoring_mode_label": r.monitoring_mode_label or MONITORING_MODES["GENERAL"]["label"],
                 "mode_alert_reasons": r.mode_alert_reasons,
+                **personal_record_fields(r),
                 "stress_score": r.stress_score,
                 "health_light": r.health_light,
                 "summary": r.summary,
@@ -2081,6 +2506,7 @@ def get_pharmacy_alerts(light: Optional[str] = None, db: Session = Depends(get_d
                 "profile_monitoring_mode_label": MONITORING_MODES[normalize_monitoring_mode(profile.monitoring_mode)]["label"] if profile else (r.monitoring_mode_label or MONITORING_MODES["GENERAL"]["label"]),
                 "chronic_conditions": profile.chronic_conditions if profile else None,
                 "mode_alert_reasons": r.mode_alert_reasons,
+                **personal_record_fields(r),
                 "stress_score": r.stress_score,
                 "health_light": r.health_light,
                 "summary": r.summary,
@@ -2310,6 +2736,7 @@ def get_patient_7day_history(user_line_id: str, db: Session = Depends(get_db)):
                 "monitoring_mode": r.monitoring_mode or "GENERAL",
                 "monitoring_mode_label": r.monitoring_mode_label or MONITORING_MODES["GENERAL"]["label"],
                 "mode_alert_reasons": r.mode_alert_reasons,
+                **personal_record_fields(r),
                 "stress_score": r.stress_score,
                 "health_light": r.health_light,
                 "summary": r.summary,
@@ -2670,6 +3097,7 @@ def get_hospital_referrals(db: Session = Depends(get_db)):
                     "stress_score": rppg.stress_score,
                     "health_light": rppg.health_light,
                     "mode_alert_reasons": rppg.mode_alert_reasons,
+                    **personal_record_fields(rppg),
                     "summary": rppg.summary,
                     "action_advice": rppg.action_advice,
                     "created_at": utc_iso(rppg.created_at)
