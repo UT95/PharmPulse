@@ -6,3 +6,10 @@ __pycache__/
 .env
 *.db
 __pycache__/
+
+# Python virtual environment
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.env
