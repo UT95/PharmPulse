@@ -690,7 +690,9 @@
         const data = await res.json();
         if (seq !== alertRequestSeq) return; // 已有更新的請求，丟棄這次舊結果
 
-        if (data.status !== "success") throw new Error(data.message || "載入失敗");
+        if (!res.ok || data.status !== "success") {
+          throw new Error(data.message || data.detail || `HTTP ${res.status}：載入失敗`);
+        }
 
         alertData = Array.isArray(data.alerts) ? data.alerts : [];
 

@@ -1,4 +1,5 @@
 import os
+import logging
 import math
 import json
 import re
@@ -33,6 +34,8 @@ except ImportError:
 # ✅ 新版 Google Gemini SDK & OpenAI SDK
 from google import genai
 from openai import OpenAI
+
+logger = logging.getLogger('pharmpulse')
 
 # ----------------------------------------------------
 # 1. 環境變數與 AI 模型 / 資料庫設定
@@ -109,12 +112,30 @@ else:
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-connect_args = {"check_same_thread": False} if "sqlite" in DATABASE_URL or not DATABASE_URL else {}
+_effective_database_url = DATABASE_URL if DATABASE_URL else "sqlite:///./pharmpulse.db"
+_is_sqlite = _effective_database_url.startswith("sqlite")
+connect_args = {"check_same_thread": False, "timeout": 30} if _is_sqlite else {}
 engine = create_engine(
-    DATABASE_URL if DATABASE_URL else "sqlite:///./pharmpulse.db",
+    _effective_database_url,
     pool_pre_ping=True,
+    pool_recycle=1800,
     connect_args=connect_args
 )
+
+# SQLite may receive several concurrent requests when dashboards refresh multiple APIs.
+# Increase lock wait time and use WAL to reduce transient "database is locked" failures.
+if _is_sqlite:
+    from sqlalchemy import event
+
+    @event.listens_for(engine, "connect")
+    def _configure_sqlite_connection(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA busy_timeout=30000")
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+        finally:
+            cursor.close()
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -1892,14 +1913,14 @@ def serve_my_health():
 def serve_pharmacy():
     """提供藥局端管理後台靜態頁面"""
     if os.path.exists("pharmacy.html"):
-        return FileResponse("pharmacy.html")
+        return FileResponse("pharmacy.html", headers=NO_CACHE_HEADERS)
     return {"status": "error", "message": "pharmacy.html not found"}
 
 @app.get("/hospital")
 def serve_hospital():
     """提供醫院端轉介個案管理頁面"""
     if os.path.exists("hospital.html"):
-        return FileResponse("hospital.html")
+        return FileResponse("hospital.html", headers=NO_CACHE_HEADERS)
     return {"status": "error", "message": "hospital.html not found"}
 
 if handler and MessageEvent:
@@ -2646,6 +2667,8 @@ def get_pharmacy_alerts(light: Optional[str] = None, db: Session = Depends(get_d
             "alerts": result
         }
     except Exception as e:
+        db.rollback()
+        logger.exception("藥局警示清單查詢失敗")
         return {"status": "error", "alerts": [], "message": str(e)}
 
 @app.get("/api/v1/pharmacy/dashboard")
@@ -3345,6 +3368,8 @@ def get_all_pharmacy_interventions(db: Session = Depends(get_db)):
         }
 
     except Exception as e:
+        db.rollback()
+        logger.exception("藥局關懷資料庫查詢失敗")
         return {
             "status": "error",
             "records": [],
@@ -3862,6 +3887,8 @@ def get_hospital_care_database(db: Session = Depends(get_db)):
         return {"status": "success", "count": len(result), "records": result}
 
     except Exception as e:
+        db.rollback()
+        logger.exception("醫師處置資料庫查詢失敗")
         return {"status": "error", "count": 0, "records": [], "message": str(e)}
 
 
