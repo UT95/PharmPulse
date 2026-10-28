@@ -1770,7 +1770,7 @@ async def staff_access_guard(request: Request, call_next):
                 status_code=401,
                 content={"status": "error", "detail": "Staff login required"}
             )
-        return RedirectResponse(url=login_path, status_code=303)
+        return RedirectResponse(url=f"{login_path}?role={required_role}", status_code=303)
 
     if staff.role != required_role:
         if path.startswith("/api/"):
@@ -1778,7 +1778,7 @@ async def staff_access_guard(request: Request, call_next):
                 status_code=403,
                 content={"status": "error", "detail": "Insufficient staff role"}
             )
-        return RedirectResponse(url=f"{login_path}?role_error=1", status_code=303)
+        return RedirectResponse(url=f"{login_path}?role={required_role}&role_error=1", status_code=303)
 
     request.state.staff_user = staff
     return await call_next(request)

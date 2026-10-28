@@ -132,14 +132,21 @@
   });
 
   async function redirectIfAlreadyLoggedIn() {
+    // Only check the role that led the user to this login page. Never let a
+    // valid cookie for the other role redirect this tab to the other portal.
+    const requestedRole = new URLSearchParams(location.search).get('role');
+    if (!['PHARMACIST', 'DOCTOR'].includes(requestedRole)) return;
+
     try {
-      const response = await fetch('/api/v1/staff/me');
+      const response = await fetch('/api/v1/staff/me?role=' + encodeURIComponent(requestedRole), {
+        cache: 'no-store'
+      });
       if (!response.ok) return;
 
       const data = await response.json();
-      const destination = destinationForRole(data.staff?.role);
-      if (destination) {
-        window.location.replace(destination);
+      if (data.staff?.role === requestedRole) {
+        const destination = destinationForRole(requestedRole);
+        if (destination) window.location.replace(destination);
       }
     } catch (_) {}
   }

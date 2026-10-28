@@ -440,7 +440,7 @@
       const isApi = url.startsWith("/api/");
       const res = await __nativeFetch(input, isApi ? { cache: "no-store", ...init } : init);
       if (isApi && res.status === 401 && !url.startsWith("/api/v1/staff/")) {
-        window.location.replace("/staff/login");
+        window.location.replace("/staff/login?role=PHARMACIST");
       }
       return res;
     };
@@ -449,12 +449,12 @@
       try {
         const res = await fetch('/api/v1/staff/me?role=PHARMACIST');
         if (!res.ok) {
-          window.location.replace('/staff/login');
+          window.location.replace('/staff/login?role=PHARMACIST');
           return false;
         }
         const data = await res.json();
         if (data.staff?.role !== 'PHARMACIST') {
-          window.location.replace('/staff/login?role_error=1');
+          window.location.replace('/staff/login?role=PHARMACIST&role_error=1');
           return false;
         }
         const node = document.getElementById('staff-display-name');
@@ -462,7 +462,7 @@
         return true;
       } catch (err) {
         console.error('Staff identity error:', err);
-        window.location.replace('/staff/login');
+        window.location.replace('/staff/login?role=PHARMACIST');
         return false;
       }
     }
@@ -471,7 +471,7 @@
       try {
         await fetch('/api/v1/staff/logout?role=PHARMACIST', { method: 'POST' });
       } finally {
-        window.location.replace('/staff/login');
+        window.location.replace('/staff/login?role=PHARMACIST');
       }
     }
     const API_BASE = "/api/v1";
