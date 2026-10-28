@@ -558,7 +558,7 @@ def verify_line_id_token(id_token: str, expected_user_id: str) -> bool:
 
         payload = res.json()
         token_sub = payload.get("sub", "")
-        
+
         if token_sub.strip().lower() != expected_user_id.strip().lower():
             print(f"[Auth Error] token_sub ({token_sub}) 與宣稱的 user_id ({expected_user_id}) 不符！")
             return False
@@ -1763,13 +1763,24 @@ async def staff_access_guard(request: Request, call_next):
             )
         return RedirectResponse(url=login_path, status_code=303)
 
-    if staff.role != required_role:
+    staff_role = str(getattr(staff, "role", "") or "").strip().upper()
+    expected_role = str(required_role or "").strip().upper()
+
+    if staff_role != expected_role:
         if path.startswith("/api/"):
             return JSONResponse(
                 status_code=403,
-                content={"status": "error", "detail": "Insufficient staff role"}
+                content={
+                    "status": "error",
+                    "detail": "Insufficient staff role",
+                    "expected_role": expected_role,
+                    "actual_role": staff_role
+                }
             )
-        return RedirectResponse(url=f"{login_path}?role_error=1", status_code=303)
+        return RedirectResponse(
+            url=f"{login_path}?role_error=1",
+            status_code=303
+        )
 
     request.state.staff_user = staff
     return await call_next(request)
@@ -1937,7 +1948,7 @@ if handler and MessageEvent:
         db = SessionLocal()
         try:
             reply_text = generate_ai_chat_response(db, user_line_id=user_id, question=user_text)
-            
+
             line_bot_api.reply_message(
                 event.reply_token,
                 TextSendMessage(text=reply_text)
@@ -2209,7 +2220,7 @@ def save_consent(req: ConsentRequest, db: Session = Depends(get_db)):
         else:
             record.agreed = "true"
             record.terms_version = req.terms_version
-        
+
         db.commit()
         return {"status": "success", "message": "Consent recorded"}
     except Exception as e:
@@ -2218,7 +2229,7 @@ def save_consent(req: ConsentRequest, db: Session = Depends(get_db)):
 
 @app.post("/callback")
 async def callback(
-    request: Request, 
+    request: Request,
     x_line_signature: str = Header(None, alias="X-Line-Signature")
 ):
     """LINE Messaging API Webhook 入口"""
@@ -2533,7 +2544,7 @@ def get_user_history(user_line_id: str, limit: int = 10, db: Session = Depends(g
                     .order_by(RPPGRecord.created_at.desc())\
                     .limit(limit)\
                     .all()
-        
+
         result = []
         for r in records:
             result.append({
@@ -2627,7 +2638,7 @@ def get_pharmacy_alerts(light: Optional[str] = None, db: Session = Depends(get_d
             )
         else:
             records = _current_pending_alerts(db)
-        
+
         user_ids = [r.user_line_id or r.user_uuid for r in records if (r.user_line_id or r.user_uuid)]
         profiles = db.query(PatientChronicProfile).filter(
             PatientChronicProfile.user_line_id.in_(user_ids)
@@ -2870,7 +2881,7 @@ def get_patient_7day_history(user_line_id: str, db: Session = Depends(get_db)):
                     .filter(RPPGRecord.created_at >= seven_days_ago)\
                     .order_by(RPPGRecord.created_at.desc())\
                     .all()
-        
+
         result = []
         for r in records:
             result.append({
