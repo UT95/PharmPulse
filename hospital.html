@@ -24,10 +24,16 @@
           <i class="fa-solid fa-user-doctor text-sky-200"></i>
           <span id="staff-display-name">醫師</span>
         </div>
-        <button onclick="refreshHospital()"
-                class="bg-sky-950 hover:bg-slate-900 text-sky-100 text-sm px-3 py-2 rounded-lg transition">
-          <i class="fa-solid fa-rotate-right mr-1"></i>
-          重新整理
+        <button onclick="openDoctorDatabase()"
+                class="bg-white/15 hover:bg-white/25 text-white text-sm px-3 py-2 rounded-lg transition border border-white/20">
+          <i class="fa-solid fa-database mr-1"></i>
+          處置資料庫
+        </button>
+        <span id="last-updated" class="hidden md:inline text-[11px] text-sky-100/80"></span>
+        <button id="refresh-btn" onclick="refreshHospital(true)"
+                class="bg-sky-950 hover:bg-slate-900 disabled:opacity-60 disabled:cursor-wait text-sky-100 text-sm px-3 py-2 rounded-lg transition">
+          <i id="refresh-icon" class="fa-solid fa-rotate-right mr-1"></i>
+          <span id="refresh-label">重新整理</span>
         </button>
         <button onclick="staffLogout()"
                 class="bg-slate-900/40 hover:bg-slate-900/60 text-white text-sm px-3 py-2 rounded-lg transition">
@@ -103,7 +109,7 @@
   </main>
 
   <!-- Doctor view: pharmacist care history -->
-  <div id="doctor-care-modal" class="fixed inset-0 bg-slate-900/65 backdrop-blur-sm z-50 hidden items-center justify-center p-3 sm:p-5">
+  <div id="doctor-care-modal" class="fixed inset-0 bg-slate-900/65 backdrop-blur-sm z-[70] hidden items-center justify-center p-3 sm:p-5">
     <div class="bg-white max-w-4xl w-full max-h-[92vh] rounded-2xl shadow-2xl overflow-hidden flex flex-col border border-slate-100">
 
       <div class="bg-sky-800 text-white px-5 py-4 flex items-center justify-between gap-3">
@@ -144,7 +150,119 @@
     </div>
   </div>
 
+  <!-- Doctor database modal -->
+  <div id="doctor-db-modal" class="fixed inset-0 bg-slate-900/65 backdrop-blur-sm z-[60] hidden items-center justify-center p-3 sm:p-5">
+    <div class="bg-white max-w-6xl w-full max-h-[94vh] rounded-2xl shadow-2xl overflow-hidden flex flex-col border border-slate-100">
+
+      <div class="bg-sky-800 text-white px-5 sm:px-6 py-4 flex items-center justify-between gap-3">
+        <div>
+          <h3 class="text-lg font-bold flex items-center gap-2">
+            <i class="fa-solid fa-database text-sky-200"></i>
+            醫師處置資料庫
+          </h3>
+          <p class="text-xs text-sky-100 mt-1">
+            所有藥局轉介與醫師處置紀錄（含已完成、藥師撤回），最新在前；處置選錯可在此更正。
+          </p>
+        </div>
+        <button onclick="closeDoctorDatabase()" class="w-9 h-9 rounded-full hover:bg-sky-900/60 flex items-center justify-center">
+          <i class="fa-solid fa-xmark text-xl"></i>
+        </button>
+      </div>
+
+      <div class="p-4 sm:p-5 border-b border-slate-100 bg-slate-50 space-y-3">
+        <div class="flex flex-col lg:flex-row lg:items-center gap-3">
+          <div class="relative flex-1">
+            <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i>
+            <input id="db-search" oninput="renderDoctorDatabase()" type="text"
+                   placeholder="搜尋個案 ID / 症狀 / 藥師備註 / 醫師備註 / 處置..."
+                   class="w-full pl-9 pr-3 py-2.5 text-sm bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500">
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <span id="db-count" class="text-xs font-semibold bg-sky-100 text-sky-700 px-3 py-2 rounded-lg">--</span>
+            <button id="db-refresh-btn" onclick="fetchDoctorDatabase()"
+                    class="bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 text-xs px-3 py-2 rounded-lg font-semibold transition disabled:opacity-60">
+              <i id="db-refresh-icon" class="fa-solid fa-rotate-right mr-1"></i>重新整理
+            </button>
+          </div>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="text-xs font-semibold text-slate-500">狀態：</span>
+          <button onclick="setDbStatus('ALL')" data-db-status="ALL" class="db-status-btn bg-sky-800 text-white text-xs px-3 py-1.5 rounded-lg">全部</button>
+          <button onclick="setDbStatus('WAITING')" data-db-status="WAITING" class="db-status-btn bg-white border border-slate-200 text-slate-600 text-xs px-3 py-1.5 rounded-lg">待處理</button>
+          <button onclick="setDbStatus('COMPLETED')" data-db-status="COMPLETED" class="db-status-btn bg-white border border-slate-200 text-slate-600 text-xs px-3 py-1.5 rounded-lg">已完成</button>
+          <button onclick="setDbStatus('CANCELLED')" data-db-status="CANCELLED" class="db-status-btn bg-white border border-slate-200 text-slate-600 text-xs px-3 py-1.5 rounded-lg">藥師已撤回</button>
+          <span class="text-[11px] text-slate-400 ml-2">監測分類沿用主頁目前的選擇</span>
+        </div>
+      </div>
+
+      <div class="overflow-y-auto p-4 sm:p-5">
+        <div id="db-list" class="space-y-3">
+          <div class="text-center py-8 text-slate-400">
+            <i class="fa-solid fa-spinner fa-spin mr-1 text-sky-600"></i>正在載入處置紀錄...
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Edit decision modal -->
+  <div id="decision-edit-modal" class="fixed inset-0 bg-slate-900/65 backdrop-blur-sm z-[80] hidden items-center justify-center p-4">
+    <div class="bg-white max-w-lg w-full rounded-2xl shadow-2xl overflow-hidden border border-slate-100">
+      <div class="bg-sky-800 text-white px-5 py-4 flex items-center justify-between">
+        <div>
+          <h3 class="font-bold flex items-center gap-2"><i class="fa-solid fa-pen-to-square"></i> 更正醫師處置</h3>
+          <p id="decision-edit-label" class="text-xs text-sky-100 mt-1">--</p>
+        </div>
+        <button onclick="closeDecisionEdit()" class="w-8 h-8 rounded-full hover:bg-sky-900/60 flex items-center justify-center">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+
+      <form onsubmit="submitDecisionEdit(event)" class="p-5 space-y-4">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+          <label class="border border-sky-100 rounded-lg p-3 flex gap-2 items-center cursor-pointer"><input type="radio" name="edit-decision" value="HOME_OBSERVE" required> 持續居家觀察</label>
+          <label class="border border-sky-100 rounded-lg p-3 flex gap-2 items-center cursor-pointer"><input type="radio" name="edit-decision" value="ROUTINE_VISIT"> 安排一般門診</label>
+          <label class="border border-sky-100 rounded-lg p-3 flex gap-2 items-center cursor-pointer"><input type="radio" name="edit-decision" value="PRIORITY_VISIT"> 建議優先門診</label>
+          <label class="border border-sky-100 rounded-lg p-3 flex gap-2 items-center cursor-pointer"><input type="radio" name="edit-decision" value="URGENT_CARE"> 建議儘速就醫</label>
+        </div>
+
+        <div>
+          <label class="block text-xs font-bold text-slate-700 mb-1">醫師備註</label>
+          <textarea id="edit-doctor-note" rows="3" class="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-sky-500"></textarea>
+        </div>
+
+        <div>
+          <label class="block text-xs font-bold text-slate-700 mb-1">修改原因（選填，會留在修改紀錄）</label>
+          <input id="edit-decision-reason" type="text" maxlength="200" placeholder="例如：按錯處置選項"
+                 class="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500">
+        </div>
+
+        <label class="flex items-start gap-2 text-xs text-slate-600 bg-amber-50 border border-amber-100 rounded-lg p-3 cursor-pointer">
+          <input id="edit-notify" type="checkbox" class="mt-0.5">
+          <span>同步用 LINE 通知民眾這是「更正後」的處置。<br><span class="text-slate-400">民眾先前已收到舊的處置通知時建議勾選。</span></span>
+        </label>
+
+        <div class="flex justify-end gap-2 pt-1">
+          <button type="button" onclick="closeDecisionEdit()" class="px-4 py-2 text-xs bg-slate-100 hover:bg-slate-200 rounded-lg">取消</button>
+          <button id="decision-edit-submit" type="submit" class="px-5 py-2 text-xs bg-sky-700 hover:bg-sky-800 disabled:opacity-60 text-white rounded-lg font-semibold">儲存更正</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
 <script>
+  // 所有 /api/ 請求：不使用瀏覽器快取；登入逾時時回登入頁
+  const __nativeFetch = window.fetch.bind(window);
+  window.fetch = async (input, init = {}) => {
+    const url = typeof input === "string" ? input : (input && input.url) || "";
+    const isApi = url.startsWith("/api/");
+    const res = await __nativeFetch(input, isApi ? { cache: "no-store", ...init } : init);
+    if (isApi && res.status === 401 && !url.startsWith("/api/v1/staff/")) {
+      window.location.replace("/staff/login");
+    }
+    return res;
+  };
+
   async function loadStaffIdentity() {
     try {
       const res = await fetch('/api/v1/staff/me');
@@ -177,6 +295,12 @@
   const API_BASE = "/api/v1";
   let referralData = [];
   let modeFilter = "ALL";
+  let dbRecords = [];
+  let dbStatusFilter = "ALL";
+  let editingDecision = null;
+  let refreshInFlight = false;
+  let referralRequestSeq = 0;
+  const drafts = {};   // 醫師尚未送出的處置草稿：{referralId: {decision, note}}
 
   function escapeHTML(value) {
     return String(value ?? "")
@@ -251,7 +375,32 @@
       ).length;
   }
 
+  // 搜尋 / 篩選 / 重新整理會重畫卡片，先把醫師已選的處置與打到一半的備註存起來，畫完再放回去
+  function captureDrafts() {
+    document.querySelectorAll("#referral-list form[data-referral-id]").forEach(form => {
+      const id = form.dataset.referralId;
+      const checked = form.querySelector('input[type="radio"]:checked');
+      const note = form.querySelector("textarea")?.value || "";
+      if (checked || note) drafts[id] = { decision: checked ? checked.value : null, note };
+      else delete drafts[id];
+    });
+  }
+
+  function restoreDrafts() {
+    Object.entries(drafts).forEach(([id, d]) => {
+      const form = document.querySelector(`#referral-list form[data-referral-id="${id}"]`);
+      if (!form) return;
+      if (d.decision) {
+        const radio = form.querySelector(`input[type="radio"][value="${d.decision}"]`);
+        if (radio) radio.checked = true;
+      }
+      const ta = form.querySelector("textarea");
+      if (ta) ta.value = d.note || "";
+    });
+  }
+
   function renderReferrals() {
+    captureDrafts();
     const box = document.getElementById("referral-list");
     const search = document.getElementById("search-input").value.trim().toLowerCase();
 
@@ -301,7 +450,7 @@
           : "--";
 
       return `
-        <article class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+        <article id="referral-${Number(item.referral_id)}" class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
           <div class="p-4 border-b border-slate-100">
             <div class="flex justify-between items-start gap-3">
               <div>
@@ -444,7 +593,7 @@
               </button>
             </div>
 
-            <form onsubmit="submitDoctorDecision(event, ${Number(item.referral_id)})"
+            <form data-referral-id="${Number(item.referral_id)}" onsubmit="submitDoctorDecision(event, ${Number(item.referral_id)})"
                   class="border border-sky-100 bg-sky-50/60 rounded-xl p-4 space-y-3">
               <div>
                 <p class="text-sm font-bold text-sky-900 flex items-center gap-2">
@@ -499,6 +648,7 @@
         </article>
       `;
     }).join("");
+    restoreDrafts();
   }
 
   async function openDoctorCareHistory(userLineId) {
@@ -656,7 +806,9 @@
 
     modal.classList.add("hidden");
     modal.classList.remove("flex");
-    document.body.classList.remove("overflow-hidden");
+    if (document.getElementById("doctor-db-modal").classList.contains("hidden")) {
+      document.body.classList.remove("overflow-hidden");
+    }
   }
 
 
@@ -707,6 +859,7 @@
             ? "醫師處置已儲存；LINE 因設定或使用者 ID 條件未發送。"
             : "醫師處置已儲存；LINE 通知未成功，請稍後確認。";
 
+      delete drafts[referralId];
       alert(`醫師處置已完成。\n${lineText}`);
 
       await refreshHospital();
@@ -723,21 +876,41 @@
   }
 
 
-  async function refreshHospital() {
+  function setRefreshing(on) {
+    const btn = document.getElementById("refresh-btn");
+    const icon = document.getElementById("refresh-icon");
+    const label = document.getElementById("refresh-label");
+    if (btn) btn.disabled = on;
+    if (icon) icon.classList.toggle("fa-spin", on);
+    if (label) label.textContent = on ? "更新中…" : "重新整理";
+  }
+
+  function markUpdated() {
+    const node = document.getElementById("last-updated");
+    if (node) node.textContent = "更新於 " + new Date().toLocaleTimeString("zh-TW", { timeZone: "Asia/Taipei", hour12: false });
+  }
+
+  async function loadReferrals() {
     const box = document.getElementById("referral-list");
-    box.innerHTML = `
-      <div class="xl:col-span-2 bg-white rounded-xl border border-slate-200 p-10 text-center text-slate-400">
-        <i class="fa-solid fa-spinner fa-spin text-2xl text-sky-600 mb-3"></i>
-        <p>正在讀取轉介個案...</p>
-      </div>
-    `;
+    const seq = ++referralRequestSeq;
+
+    // 已經有資料時不清空畫面，避免閃爍與打到一半的處置被洗掉；第一次載入才顯示轉圈
+    if (!referralData.length) {
+      box.innerHTML = `
+        <div class="xl:col-span-2 bg-white rounded-xl border border-slate-200 p-10 text-center text-slate-400">
+          <i class="fa-solid fa-spinner fa-spin text-2xl text-sky-600 mb-3"></i>
+          <p>正在讀取轉介個案...</p>
+        </div>
+      `;
+    }
 
     try {
       const res = await fetch(`${API_BASE}/hospital/referrals`);
       const data = await res.json();
+      if (seq !== referralRequestSeq) return;   // 有更新的請求，丟棄舊結果
 
       if (!res.ok || data.status !== "success") {
-        throw new Error(data.message || "取得醫院轉介清單失敗");
+        throw new Error(data.message || data.detail || "取得醫院轉介清單失敗");
       }
 
       referralData = Array.isArray(data.records) ? data.records : [];
@@ -746,6 +919,7 @@
 
     } catch (err) {
       console.error("Hospital referrals error:", err);
+      if (seq !== referralRequestSeq) return;
 
       document.getElementById("kpi-total").textContent = "--";
       document.getElementById("kpi-red").textContent = "--";
@@ -757,14 +931,267 @@
           <i class="fa-solid fa-triangle-exclamation text-2xl mb-2"></i>
           <p class="font-semibold">讀取醫院轉介失敗</p>
           <p class="text-xs mt-1">${escapeHTML(err.message)}</p>
+          <button onclick="refreshHospital(true)" class="mt-3 text-xs bg-red-50 hover:bg-red-100 border border-red-200 px-3 py-1.5 rounded-lg">再試一次</button>
         </div>
       `;
     }
   }
 
+  async function refreshHospital() {
+    if (refreshInFlight) return;
+    refreshInFlight = true;
+    setRefreshing(true);
+    try {
+      const tasks = [loadReferrals()];
+      if (!document.getElementById("doctor-db-modal").classList.contains("hidden")) {
+        tasks.push(fetchDoctorDatabase());
+      }
+      await Promise.all(tasks);
+      markUpdated();
+    } finally {
+      refreshInFlight = false;
+      setRefreshing(false);
+    }
+  }
+
+  // ----------------------------------------------------
+  // 醫師處置資料庫
+  // ----------------------------------------------------
+  const CARE_METHOD_MAP = { LINE: "LINE 線上關懷", PHONE: "電話關懷", IN_STORE: "到藥局複測", MEDICAL: "建議就醫" };
+
+  async function openDoctorDatabase() {
+    const modal = document.getElementById("doctor-db-modal");
+    modal.classList.remove("hidden");
+    modal.classList.add("flex");
+    document.body.classList.add("overflow-hidden");
+    await fetchDoctorDatabase();
+  }
+
+  function closeDoctorDatabase() {
+    const modal = document.getElementById("doctor-db-modal");
+    modal.classList.add("hidden");
+    modal.classList.remove("flex");
+    document.body.classList.remove("overflow-hidden");
+  }
+
+  function setDbStatus(status) {
+    dbStatusFilter = status;
+    document.querySelectorAll(".db-status-btn").forEach(btn => {
+      const active = btn.dataset.dbStatus === status;
+      btn.className = active
+        ? "db-status-btn bg-sky-800 text-white text-xs px-3 py-1.5 rounded-lg"
+        : "db-status-btn bg-white border border-slate-200 text-slate-600 text-xs px-3 py-1.5 rounded-lg";
+    });
+    renderDoctorDatabase();
+  }
+
+  async function fetchDoctorDatabase() {
+    const box = document.getElementById("db-list");
+    const btn = document.getElementById("db-refresh-btn");
+    const icon = document.getElementById("db-refresh-icon");
+    if (btn) btn.disabled = true;
+    if (icon) icon.classList.add("fa-spin");
+
+    try {
+      const res = await fetch(`${API_BASE}/hospital/care-database`);
+      const data = await res.json();
+      if (!res.ok || data.status !== "success") {
+        throw new Error(data.message || data.detail || `HTTP ${res.status}`);
+      }
+      dbRecords = Array.isArray(data.records) ? data.records : [];
+      renderDoctorDatabase();
+    } catch (err) {
+      console.error("Doctor database error:", err);
+      document.getElementById("db-count").textContent = "讀取失敗";
+      box.innerHTML = `<div class="border border-red-100 bg-red-50 rounded-xl p-4 text-red-600 text-sm">處置資料庫載入失敗：${escapeHTML(err.message)}</div>`;
+    } finally {
+      if (btn) btn.disabled = false;
+      if (icon) icon.classList.remove("fa-spin");
+    }
+  }
+
+  function renderDoctorDatabase() {
+    const box = document.getElementById("db-list");
+    const search = document.getElementById("db-search").value.trim().toLowerCase();
+
+    const rows = dbRecords.filter(item => {
+      const matchesStatus = dbStatusFilter === "ALL" || item.status === dbStatusFilter;
+      const matchesMode = modeFilter === "ALL" || item.monitoring_mode === modeFilter;
+      const haystack = [
+        item.user_line_id, item.monitoring_mode_label, item.chronic_conditions,
+        item.symptoms, item.pharmacist_note, item.decision_label, item.doctor_note,
+        CARE_METHOD_MAP[item.care_method], item.source_health_light
+      ].join(" ").toLowerCase();
+      return matchesStatus && matchesMode && (!search || haystack.includes(search));
+    });
+
+    document.getElementById("db-count").textContent = `${rows.length} 筆`;
+
+    if (!rows.length) {
+      box.innerHTML = `<div class="border border-dashed border-slate-200 rounded-xl py-8 text-center text-sm text-slate-400">目前沒有符合條件的處置紀錄。</div>`;
+      return;
+    }
+
+    const statusBadge = {
+      WAITING: ["待醫師處理", "bg-violet-50 text-violet-700 border-violet-100"],
+      COMPLETED: ["醫師已處置", "bg-sky-50 text-sky-700 border-sky-100"],
+      CANCELLED: ["藥師已撤回", "bg-slate-100 text-slate-500 border-slate-200"]
+    };
+
+    box.innerHTML = rows.map(item => {
+      const light = item.source_health_light || "--";
+      const lightClass = light === "RED" ? "bg-red-100 text-red-700"
+        : light === "YELLOW" ? "bg-amber-100 text-amber-700"
+        : light === "GREEN" ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-600";
+      const [stText, stClass] = statusBadge[item.status] || [item.status, "bg-slate-100 text-slate-600 border-slate-200"];
+      const bp = item.systolic_bp != null && item.diastolic_bp != null ? `${item.systolic_bp} / ${item.diastolic_bp}` : "--";
+
+      const editedTip = [
+        item.last_edited_at ? "最後修改：" + formatTaiwanTime(item.last_edited_at) : "",
+        item.last_edited_by ? "修改者：" + item.last_edited_by : "",
+        item.last_edit_reason ? "原因：" + item.last_edit_reason : ""
+      ].filter(Boolean).join("\n");
+
+      const decisionBlock = item.status === "COMPLETED" ? `
+        <div class="md:col-span-2 bg-sky-50/70 border border-sky-100 rounded-lg p-3 space-y-1">
+          <p><strong class="text-sky-800">醫師處置：</strong>${escapeHTML(item.decision_label || "--")}
+             <span class="text-slate-400 ml-2">${escapeHTML(formatTaiwanTime(item.decided_at))}</span></p>
+          <p><strong class="text-sky-800">醫師備註：</strong>${escapeHTML(item.doctor_note || "無")}</p>
+        </div>` : "";
+
+      let actions = `
+        <button onclick="openDoctorCareHistory('${escapeHTML(item.user_line_id)}')"
+                class="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 text-xs px-3 py-2 rounded-lg font-medium">
+          <i class="fa-solid fa-notes-medical mr-1"></i>藥師關懷資料
+        </button>`;
+      if (item.status === "COMPLETED" && item.decision_id) {
+        actions += `
+        <button onclick="openDecisionEdit(${Number(item.decision_id)})"
+                class="bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 text-xs px-3 py-2 rounded-lg font-medium">
+          <i class="fa-solid fa-pen-to-square mr-1"></i>更正處置
+        </button>`;
+      }
+      if (item.status === "WAITING") {
+        actions += `
+        <button onclick="goToReferral(${Number(item.referral_id)})"
+                class="bg-sky-700 hover:bg-sky-800 text-white text-xs px-3 py-2 rounded-lg font-medium">
+          <i class="fa-solid fa-user-doctor mr-1"></i>前往處置
+        </button>`;
+      }
+
+      return `
+        <div class="border border-slate-200 rounded-xl p-4 hover:shadow-sm transition">
+          <div class="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
+            <div class="space-y-1">
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="font-mono text-xs text-slate-700" title="${escapeHTML(item.user_line_id)}">${escapeHTML(maskLineId(item.user_line_id))}</span>
+                <span class="text-[11px] px-2 py-1 rounded-full border ${stClass}">${escapeHTML(stText)}</span>
+                <span class="text-[11px] px-2 py-1 rounded-full ${lightClass}">${escapeHTML(light)}</span>
+                <span class="text-[11px] px-2 py-1 rounded-full bg-sky-50 text-sky-700">${escapeHTML(item.monitoring_mode_label || "一般健康監測")}</span>
+                ${item.edit_count ? `<span class="text-[11px] px-2 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-100" title="${escapeHTML(editedTip)}"><i class="fa-solid fa-pen mr-1"></i>處置已更正 ${escapeHTML(item.edit_count)} 次</span>` : ""}
+              </div>
+              <p class="text-[11px] text-slate-400">Referral #${escapeHTML(item.referral_id)}　轉介時間：${escapeHTML(formatTaiwanTime(item.referred_at))}</p>
+            </div>
+            <div class="flex flex-wrap gap-2">${actions}</div>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2 mt-3 text-xs text-slate-600">
+            <p><strong>關懷方式：</strong>${escapeHTML(CARE_METHOD_MAP[item.care_method] || item.care_method || "--")}</p>
+            <p><strong>慢性病：</strong>${escapeHTML(item.chronic_conditions || "未記錄")}</p>
+            <p><strong>民眾症狀：</strong>${escapeHTML(item.symptoms || "未記錄")}</p>
+            <p><strong>血壓 / 脈搏：</strong>${escapeHTML(bp)} mmHg ／ ${escapeHTML(item.pulse ?? "--")} BPM</p>
+            <p class="md:col-span-2"><strong>藥師備註：</strong>${escapeHTML(item.pharmacist_note || "無")}</p>
+            ${decisionBlock}
+          </div>
+        </div>`;
+    }).join("");
+  }
+
+  function goToReferral(referralId) {
+    closeDoctorDatabase();
+    setTimeout(() => {
+      const el = document.getElementById(`referral-${referralId}`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.classList.add("ring-2", "ring-sky-500");
+        setTimeout(() => el.classList.remove("ring-2", "ring-sky-500"), 2500);
+      } else {
+        alert("此個案目前被篩選條件隱藏，請把監測分類切到「全部」並清除搜尋。");
+      }
+    }, 50);
+  }
+
+  // ----------------------------------------------------
+  // 更正醫師處置
+  // ----------------------------------------------------
+  function openDecisionEdit(decisionId) {
+    const item = dbRecords.find(r => r.decision_id === decisionId);
+    if (!item) { alert("找不到這筆處置，請重新整理後再試。"); return; }
+    editingDecision = item;
+
+    document.getElementById("decision-edit-label").textContent =
+      `個案 ${maskLineId(item.user_line_id)}　｜　Referral #${item.referral_id}`;
+    document.querySelectorAll('input[name="edit-decision"]').forEach(r => { r.checked = r.value === item.decision; });
+    document.getElementById("edit-doctor-note").value = item.doctor_note || "";
+    document.getElementById("edit-decision-reason").value = "";
+    document.getElementById("edit-notify").checked = false;
+
+    const modal = document.getElementById("decision-edit-modal");
+    modal.classList.remove("hidden");
+    modal.classList.add("flex");
+  }
+
+  function closeDecisionEdit() {
+    const modal = document.getElementById("decision-edit-modal");
+    modal.classList.add("hidden");
+    modal.classList.remove("flex");
+    editingDecision = null;
+  }
+
+  async function submitDecisionEdit(event) {
+    event.preventDefault();
+    if (!editingDecision) return;
+
+    const selected = document.querySelector('input[name="edit-decision"]:checked');
+    if (!selected) { alert("請選擇處置方式。"); return; }
+
+    const btn = document.getElementById("decision-edit-submit");
+    btn.disabled = true;
+    try {
+      const res = await fetch(`${API_BASE}/hospital/decisions/${editingDecision.decision_id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          decision: selected.value,
+          doctor_note: document.getElementById("edit-doctor-note").value.trim(),
+          edit_reason: document.getElementById("edit-decision-reason").value.trim() || null,
+          notify_patient: document.getElementById("edit-notify").checked
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.status !== "success") {
+        throw new Error(data.detail || data.message || `HTTP ${res.status}`);
+      }
+
+      let msg = data.message;
+      if (data.changed && data.line_notification) {
+        msg += data.line_notification.status === "sent" ? "；LINE 更正通知已送出。" : "；LINE 通知未送出（未設定或失敗）。";
+      }
+      closeDecisionEdit();
+      await refreshHospital();
+      alert(msg);
+    } catch (err) {
+      alert("更正失敗：" + err.message);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
   document.addEventListener("keydown", event => {
     if (event.key === "Escape") {
-      closeDoctorCareHistory();
+      if (!document.getElementById("decision-edit-modal").classList.contains("hidden")) { closeDecisionEdit(); return; }
+      if (!document.getElementById("doctor-care-modal").classList.contains("hidden")) { closeDoctorCareHistory(); return; }
+      closeDoctorDatabase();
     }
   });
 

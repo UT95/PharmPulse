@@ -285,6 +285,22 @@ class StaffUser(Base):
     last_login_at = Column(DateTime(timezone=True), nullable=True)
 
 
+class CareEditLog(Base):
+    """藥師關懷 / 醫師處置的修改紀錄（稽核用）。"""
+    __tablename__ = "care_edit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    # INTERVENTION / DOCTOR_DECISION
+    target_type = Column(String(30), index=True, nullable=False)
+    target_id = Column(Integer, index=True, nullable=False)
+    user_line_id = Column(String(255), index=True, nullable=True)
+    editor_role = Column(String(30), nullable=True)
+    editor_name = Column(String(120), nullable=True)
+    changes = Column(Text, nullable=True)  # JSON：{欄位: [舊值, 新值]}
+    reason = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 Base.metadata.create_all(bind=engine)
 
 # ----------------------------------------------------
@@ -1683,7 +1699,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -1736,6 +1752,16 @@ async def staff_access_guard(request: Request, call_next):
 
     request.state.staff_user = staff
     return await call_next(request)
+
+
+@app.middleware("http")
+async def api_no_store(request: Request, call_next):
+    """API 回應一律 no-store，避免瀏覽器 / 代理快取造成「重新整理」看到舊資料。"""
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+    return response
 
 # ----------------------------------------------------
 # 9. Staff login / logout (藥師與醫院端)
@@ -1939,6 +1965,26 @@ class PatientChronicProfileRequest(BaseModel):
 class HospitalDecisionRequest(BaseModel):
     decision: str
     doctor_note: Optional[str] = None
+
+class PharmacyInterventionUpdateRequest(BaseModel):
+    """編輯藥師關懷紀錄：只會更新前端有送的欄位。"""
+    care_method: Optional[str] = None
+    symptoms: Optional[str] = None
+    systolic_bp: Optional[int] = None
+    diastolic_bp: Optional[int] = None
+    pulse: Optional[int] = None
+    pharmacist_note: Optional[str] = None
+    action_result: Optional[str] = None
+    followup_date: Optional[str] = None  # 空字串 / null 代表清除
+    edit_reason: Optional[str] = None
+
+
+class HospitalDecisionUpdateRequest(BaseModel):
+    decision: Optional[str] = None
+    doctor_note: Optional[str] = None
+    edit_reason: Optional[str] = None
+    notify_patient: bool = False
+
 
 class PharmacyInterventionRequest(BaseModel):
     user_line_id: str
@@ -2832,6 +2878,80 @@ def get_patient_7day_history(user_line_id: str, db: Session = Depends(get_db)):
     except Exception as e:
         return {"status": "error", "records": [], "message": str(e)}
 
+
+# ----------------------------------------------------
+# 藥師關懷 / 醫師處置：編輯與稽核共用工具
+# ----------------------------------------------------
+INTERVENTION_METHODS = {"LINE", "PHONE", "IN_STORE", "MEDICAL"}
+INTERVENTION_RESULTS = {"OBSERVE", "RETEST", "FOLLOW_UP", "REFER"}
+
+
+def _edit_summary_map(db: Session, target_type: str, ids: list) -> dict:
+    """回傳 {target_id: {edit_count, last_edited_at, last_edited_by, last_edit_reason}}。"""
+    if not ids:
+        return {}
+    rows = (
+        db.query(CareEditLog)
+        .filter(CareEditLog.target_type == target_type, CareEditLog.target_id.in_(ids))
+        .order_by(CareEditLog.created_at.desc(), CareEditLog.id.desc())
+        .all()
+    )
+    out = {}
+    for row in rows:
+        info = out.setdefault(row.target_id, {
+            "edit_count": 0,
+            "last_edited_at": None,
+            "last_edited_by": None,
+            "last_edit_reason": None,
+        })
+        info["edit_count"] += 1
+        if info["last_edited_at"] is None:
+            info["last_edited_at"] = utc_iso(row.created_at)
+            info["last_edited_by"] = row.editor_name
+            info["last_edit_reason"] = row.reason
+    return out
+
+
+def _write_edit_log(db: Session, request: Request, target_type: str, target_id: int,
+                    user_line_id: Optional[str], changes: dict, reason: Optional[str]):
+    staff = getattr(request.state, "staff_user", None)
+    db.add(CareEditLog(
+        target_type=target_type,
+        target_id=target_id,
+        user_line_id=user_line_id,
+        editor_role=getattr(staff, "role", None),
+        editor_name=getattr(staff, "display_name", None) or getattr(staff, "username", None),
+        changes=json.dumps(changes, ensure_ascii=False, default=str),
+        reason=reason,
+    ))
+
+
+def _find_source_rppg(db: Session, user_line_id: str, rppg_record_id: Optional[int]):
+    source = None
+    if rppg_record_id:
+        source = db.query(RPPGRecord).filter(RPPGRecord.id == rppg_record_id).first()
+    if not source:
+        source = (
+            db.query(RPPGRecord)
+            .filter(or_(RPPGRecord.user_line_id == user_line_id, RPPGRecord.user_uuid == user_line_id))
+            .order_by(RPPGRecord.created_at.desc(), RPPGRecord.id.desc())
+            .first()
+        )
+    return source
+
+
+def _resolve_patient_mode(db: Session, user_line_id: str, source_rppg) -> str:
+    profile = (
+        db.query(PatientChronicProfile)
+        .filter(PatientChronicProfile.user_line_id == user_line_id)
+        .first()
+    )
+    return normalize_monitoring_mode(
+        profile.monitoring_mode if profile and profile.monitoring_mode
+        else (source_rppg.monitoring_mode if source_rppg else "GENERAL")
+    )
+
+
 @app.post("/api/v1/pharmacy/interventions")
 def create_pharmacy_intervention(
     req: PharmacyInterventionRequest,
@@ -2962,6 +3082,193 @@ def create_pharmacy_intervention(
         raise HTTPException(status_code=500, detail=f"儲存藥師關懷紀錄失敗: {str(e)}")
 
 
+@app.put("/api/v1/pharmacy/interventions/{intervention_id}")
+def update_pharmacy_intervention(
+    intervention_id: int,
+    req: PharmacyInterventionUpdateRequest,
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """
+    修改已儲存的藥師關懷紀錄（含「不小心沒轉介」的補救）。
+    - 改成 REFER：建立 / 重新啟用醫院 WAITING 轉介
+    - REFER 改成其他：若醫師尚未處置，轉介自醫師待處理清單撤回（CANCELLED）
+    - 醫師已完成處置後，不可再變更「是否轉介」，其他欄位仍可修正
+    所有修改都會寫入 care_edit_logs。
+    """
+    item = db.query(PharmacyIntervention).filter(PharmacyIntervention.id == intervention_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="找不到此藥師關懷紀錄")
+
+    fields = req.model_dump(exclude_unset=True) if hasattr(req, "model_dump") else req.dict(exclude_unset=True)
+    reason = (fields.pop("edit_reason", None) or "").strip() or None
+
+    referral = (
+        db.query(HospitalReferral)
+        .filter(HospitalReferral.intervention_id == item.id)
+        .first()
+    )
+    referral_completed = bool(referral and referral.status == "COMPLETED")
+
+    # ---------- 驗證 ----------
+    new_method = fields.get("care_method", item.care_method)
+    if new_method not in INTERVENTION_METHODS:
+        raise HTTPException(status_code=400, detail="Invalid care_method")
+
+    old_result = item.action_result
+    new_result = fields["action_result"] if "action_result" in fields else old_result
+    if "action_result" in fields and new_result not in INTERVENTION_RESULTS:
+        raise HTTPException(status_code=400, detail="Invalid action_result")
+
+    if referral_completed and (new_result == "REFER") != (old_result == "REFER"):
+        raise HTTPException(
+            status_code=409,
+            detail="醫師已完成此轉介的處置，無法再變更「是否轉介」。如需更正請聯絡醫師端。"
+        )
+
+    new_sys = fields["systolic_bp"] if "systolic_bp" in fields else item.systolic_bp
+    new_dia = fields["diastolic_bp"] if "diastolic_bp" in fields else item.diastolic_bp
+    new_pulse = fields["pulse"] if "pulse" in fields else item.pulse
+
+    if new_method == "IN_STORE" and (new_sys is None or new_dia is None):
+        raise HTTPException(status_code=400, detail="到藥局複測時請填寫收縮壓與舒張壓")
+    if new_sys is not None and not (50 <= new_sys <= 300):
+        raise HTTPException(status_code=400, detail="收縮壓需介於 50–300 mmHg")
+    if new_dia is not None and not (30 <= new_dia <= 200):
+        raise HTTPException(status_code=400, detail="舒張壓需介於 30–200 mmHg")
+    if new_pulse is not None and not (20 <= new_pulse <= 250):
+        raise HTTPException(status_code=400, detail="脈搏需介於 20–250 BPM")
+
+    followup_dt = item.followup_date
+    if "followup_date" in fields:
+        raw = (fields["followup_date"] or "").strip()
+        if not raw:
+            followup_dt = None
+        else:
+            try:
+                followup_dt = datetime.strptime(raw, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="followup_date 格式必須為 YYYY-MM-DD")
+
+    def _text(v):
+        return (v or "").strip() or None
+
+    new_values = {
+        "care_method": new_method,
+        "symptoms": _text(fields["symptoms"]) if "symptoms" in fields else item.symptoms,
+        "systolic_bp": new_sys,
+        "diastolic_bp": new_dia,
+        "pulse": new_pulse,
+        "pharmacist_note": _text(fields["pharmacist_note"]) if "pharmacist_note" in fields else item.pharmacist_note,
+        "action_result": new_result,
+        "followup_date": followup_dt,
+    }
+
+    # ---------- 找出差異 ----------
+    def _fmt(v):
+        if isinstance(v, datetime):
+            return v.strftime("%Y-%m-%d")
+        return v
+
+    changes = {}
+    for key, new_v in new_values.items():
+        old_v = getattr(item, key)
+        if _fmt(old_v) != _fmt(new_v):
+            changes[key] = [_fmt(old_v), _fmt(new_v)]
+
+    if not changes:
+        return {
+            "status": "success",
+            "message": "內容沒有變更",
+            "changed": False,
+            "id": item.id,
+            "referral_status": item.referral_status,
+            "referral_effect": None,
+            "hospital_referral_id": referral.id if referral else None,
+        }
+
+    try:
+        for key, new_v in new_values.items():
+            setattr(item, key, new_v)
+
+        # ---------- 同步醫院轉介 ----------
+        referral_effect = None
+        wants_refer = new_result == "REFER"
+
+        if wants_refer:
+            if referral is None:
+                source = _find_source_rppg(db, item.user_line_id, item.rppg_record_id)
+                referral = HospitalReferral(
+                    user_line_id=item.user_line_id,
+                    intervention_id=item.id,
+                    rppg_record_id=source.id if source else item.rppg_record_id,
+                    monitoring_mode=_resolve_patient_mode(db, item.user_line_id, source),
+                    symptoms=item.symptoms,
+                    pharmacist_note=item.pharmacist_note,
+                    systolic_bp=item.systolic_bp,
+                    diastolic_bp=item.diastolic_bp,
+                    pulse=item.pulse,
+                    status="WAITING",
+                )
+                db.add(referral)
+                db.flush()
+                referral_effect = "CREATED"
+            elif referral.status == "CANCELLED":
+                referral.status = "WAITING"
+                referral.symptoms = item.symptoms
+                referral.pharmacist_note = item.pharmacist_note
+                referral.systolic_bp = item.systolic_bp
+                referral.diastolic_bp = item.diastolic_bp
+                referral.pulse = item.pulse
+                referral.created_at = datetime.now(timezone.utc)
+                referral_effect = "REACTIVATED"
+            elif referral.status == "WAITING":
+                referral.symptoms = item.symptoms
+                referral.pharmacist_note = item.pharmacist_note
+                referral.systolic_bp = item.systolic_bp
+                referral.diastolic_bp = item.diastolic_bp
+                referral.pulse = item.pulse
+                referral_effect = "SYNCED"
+            item.referral_status = "HOSPITAL_COMPLETED" if (referral and referral.status == "COMPLETED") else "REFERRED"
+        else:
+            if referral and referral.status == "WAITING":
+                referral.status = "CANCELLED"
+                referral_effect = "CANCELLED"
+            if not (referral and referral.status == "COMPLETED"):
+                item.referral_status = "NONE"
+
+        if referral_effect:
+            changes["_referral"] = referral_effect
+
+        _write_edit_log(db, request, "INTERVENTION", item.id, item.user_line_id, changes, reason)
+        db.commit()
+        db.refresh(item)
+
+        effect_text = {
+            "CREATED": "已補建立醫院轉介，醫師端待處理清單會看到此個案。",
+            "REACTIVATED": "已重新送出醫院轉介，醫師端待處理清單會看到此個案。",
+            "SYNCED": "已同步更新醫師端的轉介資料。",
+            "CANCELLED": "已從醫師端待處理清單撤回此轉介。",
+        }.get(referral_effect)
+
+        return {
+            "status": "success",
+            "message": "藥師關懷紀錄已更新" + ("；" + effect_text if effect_text else ""),
+            "changed": True,
+            "id": item.id,
+            "referral_status": item.referral_status,
+            "referral_effect": referral_effect,
+            "hospital_referral_id": referral.id if referral else None,
+        }
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"更新藥師關懷紀錄失敗: {str(e)}")
+
+
 @app.get("/api/v1/pharmacy/interventions")
 def get_all_pharmacy_interventions(db: Session = Depends(get_db)):
     """藥師主頁使用：取得所有已儲存的關懷紀錄，最新一筆排在最前面。"""
@@ -2973,28 +3280,24 @@ def get_all_pharmacy_interventions(db: Session = Depends(get_db)):
             .all()
         )
 
+        ids = [r.id for r in records]
+        edit_map = _edit_summary_map(db, "INTERVENTION", ids)
+        referral_map = {}
+        decision_map = {}
+        if ids:
+            for ref in db.query(HospitalReferral).filter(HospitalReferral.intervention_id.in_(ids)).all():
+                referral_map[ref.intervention_id] = ref
+            ref_ids = [ref.id for ref in referral_map.values()]
+            if ref_ids:
+                for dec in db.query(HospitalDecision).filter(HospitalDecision.referral_id.in_(ref_ids)).all():
+                    decision_map[dec.referral_id] = dec
+
         result = []
         for r in records:
-            source_rppg = None
-            if r.rppg_record_id:
-                source_rppg = (
-                    db.query(RPPGRecord)
-                    .filter(RPPGRecord.id == r.rppg_record_id)
-                    .first()
-                )
-
-            if not source_rppg:
-                source_rppg = (
-                    db.query(RPPGRecord)
-                    .filter(
-                        or_(
-                            RPPGRecord.user_line_id == r.user_line_id,
-                            RPPGRecord.user_uuid == r.user_line_id
-                        )
-                    )
-                    .order_by(RPPGRecord.created_at.desc(), RPPGRecord.id.desc())
-                    .first()
-                )
+            source_rppg = _find_source_rppg(db, r.user_line_id, r.rppg_record_id)
+            ref = referral_map.get(r.id)
+            dec = decision_map.get(ref.id) if ref else None
+            edit_info = edit_map.get(r.id, {})
 
             profile = (
                 db.query(PatientChronicProfile)
@@ -3025,7 +3328,14 @@ def get_all_pharmacy_interventions(db: Session = Depends(get_db)):
                 "monitoring_mode_label": MONITORING_MODES[mode]["label"],
                 "source_health_light": source_rppg.health_light if source_rppg else None,
                 "source_created_at": utc_iso(source_rppg.created_at) if source_rppg else None,
-                "chronic_conditions": profile.chronic_conditions if profile else None
+                "chronic_conditions": profile.chronic_conditions if profile else None,
+                "hospital_referral_id": ref.id if ref else None,
+                "hospital_referral_status": ref.status if ref else None,
+                "hospital_decision_label": dec.decision_label if dec else None,
+                "edit_count": edit_info.get("edit_count", 0),
+                "last_edited_at": edit_info.get("last_edited_at"),
+                "last_edited_by": edit_info.get("last_edited_by"),
+                "last_edit_reason": edit_info.get("last_edit_reason"),
             })
 
         return {
@@ -3470,6 +3780,156 @@ def get_patient_hospital_decisions(
             "message": str(e)
         }
 
+
+
+@app.get("/api/v1/hospital/care-database")
+def get_hospital_care_database(db: Session = Depends(get_db)):
+    """
+    醫師端「處置資料庫」：所有轉介（待處理 / 已完成 / 藥師已撤回），
+    連同藥師關懷內容與醫師處置，最新在前。
+    """
+    try:
+        referrals = (
+            db.query(HospitalReferral)
+            .order_by(HospitalReferral.created_at.desc(), HospitalReferral.id.desc())
+            .limit(500)
+            .all()
+        )
+
+        ref_ids = [r.id for r in referrals]
+        decisions = {}
+        if ref_ids:
+            for d in db.query(HospitalDecision).filter(HospitalDecision.referral_id.in_(ref_ids)).all():
+                decisions[d.referral_id] = d
+        edit_map = _edit_summary_map(db, "DOCTOR_DECISION", [d.id for d in decisions.values()])
+
+        result = []
+        for ref in referrals:
+            intervention = None
+            if ref.intervention_id:
+                intervention = (
+                    db.query(PharmacyIntervention)
+                    .filter(PharmacyIntervention.id == ref.intervention_id)
+                    .first()
+                )
+            rppg = _find_source_rppg(db, ref.user_line_id, ref.rppg_record_id)
+            profile = (
+                db.query(PatientChronicProfile)
+                .filter(PatientChronicProfile.user_line_id == ref.user_line_id)
+                .first()
+            )
+            mode = normalize_monitoring_mode(
+                profile.monitoring_mode if profile and profile.monitoring_mode else ref.monitoring_mode
+            )
+            dec = decisions.get(ref.id)
+            edit_info = edit_map.get(dec.id, {}) if dec else {}
+
+            result.append({
+                "referral_id": ref.id,
+                "user_line_id": ref.user_line_id,
+                "status": ref.status,
+                "monitoring_mode": mode,
+                "monitoring_mode_label": MONITORING_MODES[mode]["label"],
+                "chronic_conditions": profile.chronic_conditions if profile else None,
+                "referred_at": utc_iso(ref.created_at),
+
+                "source_health_light": rppg.health_light if rppg else None,
+                "heart_rate": rppg.heart_rate if rppg else None,
+
+                "care_method": intervention.care_method if intervention else None,
+                "symptoms": ref.symptoms,
+                "pharmacist_note": ref.pharmacist_note,
+                "systolic_bp": ref.systolic_bp,
+                "diastolic_bp": ref.diastolic_bp,
+                "pulse": ref.pulse,
+                "followup_date": (
+                    intervention.followup_date.strftime("%Y-%m-%d")
+                    if intervention and intervention.followup_date else None
+                ),
+
+                "decision_id": dec.id if dec else None,
+                "decision": dec.decision if dec else None,
+                "decision_label": dec.decision_label if dec else None,
+                "doctor_note": dec.doctor_note if dec else None,
+                "decided_at": utc_iso(dec.created_at) if dec else None,
+
+                "edit_count": edit_info.get("edit_count", 0),
+                "last_edited_at": edit_info.get("last_edited_at"),
+                "last_edited_by": edit_info.get("last_edited_by"),
+                "last_edit_reason": edit_info.get("last_edit_reason"),
+            })
+
+        return {"status": "success", "count": len(result), "records": result}
+
+    except Exception as e:
+        return {"status": "error", "count": 0, "records": [], "message": str(e)}
+
+
+@app.put("/api/v1/hospital/decisions/{decision_id}")
+def update_hospital_decision(
+    decision_id: int,
+    req: HospitalDecisionUpdateRequest,
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """醫師更正已完成的處置（選錯處置選項 / 備註寫錯）。會寫入修改紀錄；可選擇再通知民眾。"""
+    decision = db.query(HospitalDecision).filter(HospitalDecision.id == decision_id).first()
+    if not decision:
+        raise HTTPException(status_code=404, detail="找不到此醫師處置紀錄")
+
+    fields = req.model_dump(exclude_unset=True) if hasattr(req, "model_dump") else req.dict(exclude_unset=True)
+    reason = (fields.get("edit_reason") or "").strip() or None
+
+    changes = {}
+
+    if "decision" in fields and fields["decision"]:
+        key = fields["decision"].strip().upper()
+        if key not in HOSPITAL_DECISION_LABELS:
+            raise HTTPException(status_code=400, detail="無效的醫師處置選項")
+        if key != decision.decision:
+            changes["decision"] = [decision.decision_label, HOSPITAL_DECISION_LABELS[key]]
+            decision.decision = key
+            decision.decision_label = HOSPITAL_DECISION_LABELS[key]
+
+    if "doctor_note" in fields:
+        new_note = (fields["doctor_note"] or "").strip() or None
+        if new_note != decision.doctor_note:
+            changes["doctor_note"] = [decision.doctor_note, new_note]
+            decision.doctor_note = new_note
+
+    if not changes:
+        return {"status": "success", "message": "內容沒有變更", "changed": False}
+
+    try:
+        _write_edit_log(db, request, "DOCTOR_DECISION", decision.id, decision.user_line_id, changes, reason)
+        db.commit()
+        db.refresh(decision)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"更新醫師處置失敗: {str(e)}")
+
+    line_result = None
+    if fields.get("notify_patient"):
+        note = decision.doctor_note or ""
+        line_result = send_line_doctor_decision_message(
+            decision.user_line_id,
+            decision.decision_label,
+            ("【更正通知】" + note).strip()
+        )
+
+    return {
+        "status": "success",
+        "message": "醫師處置已更新",
+        "changed": True,
+        "decision": {
+            "id": decision.id,
+            "referral_id": decision.referral_id,
+            "decision": decision.decision,
+            "decision_label": decision.decision_label,
+            "doctor_note": decision.doctor_note,
+        },
+        "line_notification": line_result,
+    }
 
 
 # ----------------------------------------------------

@@ -30,8 +30,9 @@
         <button onclick="openCareDatabase()" class="bg-white/15 hover:bg-white/25 text-white text-sm px-3 py-1.5 rounded-lg transition flex items-center gap-1.5 border border-white/20">
           <i class="fa-solid fa-database"></i> 關懷資料庫
         </button>
-        <button onclick="refreshDashboard()" class="bg-emerald-800 hover:bg-emerald-900 text-emerald-100 text-sm px-3 py-1.5 rounded-lg transition flex items-center gap-1.5">
-          <i class="fa-solid fa-rotate-right"></i> 重新整理
+        <span id="last-updated" class="hidden md:inline text-[11px] text-emerald-100/80"></span>
+        <button id="refresh-btn" onclick="refreshDashboard(true)" class="bg-emerald-800 hover:bg-emerald-900 disabled:opacity-60 disabled:cursor-wait text-emerald-100 text-sm px-3 py-1.5 rounded-lg transition flex items-center gap-1.5">
+          <i id="refresh-icon" class="fa-solid fa-rotate-right"></i> <span id="refresh-label">重新整理</span>
         </button>
         <button onclick="staffLogout()" class="bg-slate-900/35 hover:bg-slate-900/55 text-white text-sm px-3 py-1.5 rounded-lg transition flex items-center gap-1.5">
           <i class="fa-solid fa-right-from-bracket"></i> 登出
@@ -357,7 +358,7 @@
     <div class="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[92vh] overflow-y-auto">
       <div class="bg-emerald-700 text-white px-6 py-4 flex justify-between items-center">
         <div>
-          <h3 class="font-bold flex items-center gap-2"><i class="fa-solid fa-clipboard-check"></i> 藥師關懷紀錄</h3>
+          <h3 id="intervention-modal-title" class="font-bold flex items-center gap-2"><i class="fa-solid fa-clipboard-check"></i> 藥師關懷紀錄</h3>
           <p id="intervention-patient-label" class="text-xs text-emerald-100 mt-1">---</p>
         </div>
         <button onclick="closeInterventionModal()" class="w-8 h-8 rounded-full hover:bg-emerald-800 flex items-center justify-center">
@@ -400,7 +401,7 @@
 
         <div>
           <label class="block text-xs font-bold text-slate-700 mb-2">本次處理結果</label>
-          <select id="action-result" class="w-full px-3 py-2 text-sm border rounded-lg">
+          <select id="action-result" onchange="updateEditHint()" class="w-full px-3 py-2 text-sm border rounded-lg disabled:bg-slate-100 disabled:text-slate-400">
             <option value="OBSERVE">持續觀察</option>
             <option value="RETEST">請民眾重新量測</option>
             <option value="FOLLOW_UP">安排後續追蹤</option>
@@ -408,14 +409,22 @@
           </select>
         </div>
 
+        <div id="intervention-edit-hint" class="hidden text-xs rounded-lg p-3 border"></div>
+
         <div>
           <label class="block text-xs font-bold text-slate-700 mb-2">下次追蹤日期</label>
           <input id="followup-date" type="date" class="px-3 py-2 text-sm border rounded-lg">
         </div>
 
+        <div id="edit-reason-wrap" class="hidden">
+          <label class="block text-xs font-bold text-slate-700 mb-2">修改原因（選填，會留在修改紀錄）</label>
+          <input id="edit-reason" type="text" maxlength="200" placeholder="例如：原本忘了轉介醫院 / 血壓輸入錯誤"
+                 class="w-full px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500">
+        </div>
+
         <div class="flex justify-end gap-2 pt-2">
           <button type="button" onclick="closeInterventionModal()" class="px-4 py-2 text-xs bg-slate-100 hover:bg-slate-200 rounded-lg">取消</button>
-          <button type="submit" class="px-5 py-2 text-xs bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-semibold">
+          <button id="intervention-submit-btn" type="submit" class="px-5 py-2 text-xs bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white rounded-lg font-semibold">
             儲存並標示已關懷
           </button>
         </div>
@@ -424,6 +433,18 @@
   </div>
 
   <script>
+    // 所有 /api/ 請求：不使用瀏覽器快取（避免「重新整理」看到舊資料）；登入逾時時回登入頁
+    const __nativeFetch = window.fetch.bind(window);
+    window.fetch = async (input, init = {}) => {
+      const url = typeof input === "string" ? input : (input && input.url) || "";
+      const isApi = url.startsWith("/api/");
+      const res = await __nativeFetch(input, isApi ? { cache: "no-store", ...init } : init);
+      if (isApi && res.status === 401 && !url.startsWith("/api/v1/staff/")) {
+        window.location.replace("/staff/login");
+      }
+      return res;
+    };
+
     async function loadStaffIdentity() {
       try {
         const res = await fetch('/api/v1/staff/me');
@@ -493,6 +514,10 @@
     let modeFilter = "ALL";
     let allCareHistory = [];
     let dashboardData = { stats: {}, followups: [] };
+    let editingInterventionId = null;
+    let refreshInFlight = false;
+    let alertRequestSeq = 0;
+    const careRecordMap = {};
 
     const metricConfig = {
       heart_rate: { title: "7 天心率趨勢 (BPM)", label: "心率", unit: "BPM", color: "#059669" },
@@ -619,13 +644,43 @@
       }
     }
 
-    async function refreshDashboard() {
-      await Promise.all([fetchAlerts(), fetchDashboard()]);
+    function setRefreshing(on) {
+      const btn = document.getElementById("refresh-btn");
+      const icon = document.getElementById("refresh-icon");
+      const label = document.getElementById("refresh-label");
+      if (btn) btn.disabled = on;
+      if (icon) icon.classList.toggle("fa-spin", on);
+      if (label) label.textContent = on ? "更新中…" : "重新整理";
+    }
+
+    function markUpdated() {
+      const node = document.getElementById("last-updated");
+      if (!node) return;
+      node.textContent = "更新於 " + new Date().toLocaleTimeString("zh-TW", { timeZone: "Asia/Taipei", hour12: false });
+    }
+
+    async function refreshDashboard(manual = false) {
+      if (refreshInFlight) return;
+      refreshInFlight = true;
+      setRefreshing(true);
+      try {
+        const tasks = [fetchAlerts(), fetchDashboard()];
+        // 關懷資料庫視窗開著時，一併更新
+        if (!document.getElementById("care-database-modal")?.classList.contains("hidden")) {
+          tasks.push(fetchAllCareHistory());
+        }
+        await Promise.all(tasks);
+        markUpdated();
+      } finally {
+        refreshInFlight = false;
+        setRefreshing(false);
+      }
     }
 
     async function fetchAlerts() {
       const container = document.getElementById("alerts-container");
       const countBadge = document.getElementById("alert-count");
+      const seq = ++alertRequestSeq;
       try {
         const endpoint = alertFilter === "GREEN"
           ? `${API_BASE}/pharmacy/alerts?light=GREEN`
@@ -633,6 +688,7 @@
 
         const res = await fetch(endpoint);
         const data = await res.json();
+        if (seq !== alertRequestSeq) return; // 已有更新的請求，丟棄這次舊結果
 
         if (data.status !== "success") throw new Error(data.message || "載入失敗");
 
@@ -742,6 +798,99 @@
       }
     }
 
+    // ---------- 關懷紀錄：狀態標籤 / 修改標記 / 動作按鈕 ----------
+    function referralStatusHTML(item) {
+      const st = item.hospital_referral_status;
+      if (st === "COMPLETED") {
+        return `<span class="text-sky-700 font-semibold">醫師已處置${item.hospital_decision_label ? "：" + escapeHTML(item.hospital_decision_label) : ""}</span>`;
+      }
+      if (st === "WAITING") return `<span class="text-violet-700 font-semibold">已轉介，醫師待處理</span>`;
+      if (st === "CANCELLED") return `<span class="text-slate-500">轉介已撤回</span>`;
+      if (item.referral_status === "HOSPITAL_COMPLETED") return `<span class="text-sky-700 font-semibold">醫院已完成處置</span>`;
+      if (item.referral_status === "REFERRED") return `<span class="text-violet-700 font-semibold">已轉介醫院</span>`;
+      return `<span class="text-slate-600">未轉介</span>`;
+    }
+
+    function editedBadgeHTML(item) {
+      if (!item.edit_count) return "";
+      const tip = [
+        item.last_edited_at ? "最後修改：" + formatTaiwanTime(item.last_edited_at) : "",
+        item.last_edited_by ? "修改者：" + item.last_edited_by : "",
+        item.last_edit_reason ? "原因：" + item.last_edit_reason : ""
+      ].filter(Boolean).join("\n");
+      return `<span class="text-[11px] px-2 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-100" title="${escapeHTML(tip)}">
+                <i class="fa-solid fa-pen mr-1"></i>已編輯 ${escapeHTML(item.edit_count)} 次
+              </span>`;
+    }
+
+    function careActionButtonsHTML(item) {
+      const id = Number(item.id);
+      const completed = item.hospital_referral_status === "COMPLETED" || item.referral_status === "HOSPITAL_COMPLETED";
+      const isRefer = item.action_result === "REFER";
+      let html = "";
+      if (!isRefer && !completed) {
+        html += `<button onclick="quickReferIntervention(${id})"
+                  class="bg-violet-50 hover:bg-violet-100 text-violet-700 border border-violet-200 text-xs px-3 py-2 rounded-lg font-medium">
+                  <i class="fa-solid fa-hospital mr-1"></i>補轉介給醫師
+                </button>`;
+      }
+      if (isRefer && item.hospital_referral_status === "WAITING") {
+        html += `<button onclick="withdrawReferral(${id})"
+                  class="bg-white hover:bg-red-50 text-red-600 border border-red-200 text-xs px-3 py-2 rounded-lg font-medium">
+                  <i class="fa-solid fa-rotate-left mr-1"></i>撤回轉介
+                </button>`;
+      }
+      html += `<button onclick="startEditIntervention(${id})"
+                class="bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 text-xs px-3 py-2 rounded-lg font-medium">
+                <i class="fa-solid fa-pen-to-square mr-1"></i>編輯
+              </button>`;
+      return html;
+    }
+
+    async function putIntervention(id, body) {
+      const res = await fetch(`${API_BASE}/pharmacy/interventions/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.status !== "success") {
+        throw new Error(data.detail || data.message || `HTTP ${res.status}`);
+      }
+      return data;
+    }
+
+    async function afterInterventionChanged() {
+      const tasks = [refreshDashboard()];
+      if (document.getElementById("patient-detail-modal")?.classList.contains("flex")) {
+        tasks.push(renderLatestIntervention());
+      }
+      await Promise.all(tasks);
+    }
+
+    async function quickReferIntervention(id) {
+      const item = careRecordMap[id];
+      if (!confirm("確定要把這筆關懷「補轉介」給醫師嗎？\n醫師端的待處理清單會馬上看到此個案。")) return;
+      try {
+        const data = await putIntervention(id, { action_result: "REFER", edit_reason: "補轉介（原本漏轉）" });
+        await afterInterventionChanged();
+        alert(data.message);
+      } catch (err) {
+        alert("補轉介失敗：" + err.message);
+      }
+    }
+
+    async function withdrawReferral(id) {
+      if (!confirm("確定要撤回這筆轉介嗎？\n撤回後會從醫師待處理清單移除，此關懷的處理結果會改成「持續觀察」，之後仍可再補轉介。")) return;
+      try {
+        const data = await putIntervention(id, { action_result: "OBSERVE", edit_reason: "撤回轉介（誤轉介）" });
+        await afterInterventionChanged();
+        alert(data.message);
+      } catch (err) {
+        alert("撤回轉介失敗：" + err.message);
+      }
+    }
+
     function renderAllCareHistory() {
       const box = document.getElementById("all-care-history-list");
       const countBox = document.getElementById("all-care-history-count");
@@ -802,6 +951,8 @@
         return;
       }
 
+      records.forEach(item => { careRecordMap[item.id] = { ...(careRecordMap[item.id] || {}), ...item }; });
+
       box.innerHTML = records.map(item => {
         const light = item.source_health_light || "--";
         const lightClass = light === "RED"
@@ -838,10 +989,16 @@
               <p><strong>關懷方式：</strong>${escapeHTML(methodMap[item.care_method] || item.care_method || "--")}</p>
               <p><strong>處理結果：</strong>${escapeHTML(actionMap[item.action_result] || item.action_result || "--")}</p>
               <p><strong>民眾狀況：</strong>${escapeHTML(item.symptoms || "未記錄")}</p>
-              <p><strong>轉介狀態：</strong>${escapeHTML(referralMap[item.referral_status] || item.referral_status || "未轉介")}</p>
+              <p><strong>轉介狀態：</strong>${referralStatusHTML(item)}</p>
               <p><strong>血壓：</strong>${escapeHTML(item.systolic_bp ?? "--")} / ${escapeHTML(item.diastolic_bp ?? "--")} mmHg　<strong>脈搏：</strong>${escapeHTML(item.pulse ?? "--")} BPM</p>
               <p><strong>下次追蹤：</strong>${escapeHTML(item.followup_date || "未設定")}</p>
               <p class="md:col-span-2"><strong>藥師備註：</strong>${escapeHTML(item.pharmacist_note || "無")}</p>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-2 mt-3 pt-3 border-t border-slate-100">
+              ${editedBadgeHTML(item)}
+              <span class="flex-1"></span>
+              ${careActionButtonsHTML(item)}
             </div>
           </div>
         `;
@@ -1314,6 +1471,7 @@
           HOSPITAL_COMPLETED: "醫院已完成處置"
         };
 
+        records.forEach(r => { r.user_line_id = r.user_line_id || currentPatientId; careRecordMap[r.id] = { ...(careRecordMap[r.id] || {}), ...r }; });
         const latest = records[0];
 
         latestBox.innerHTML = `
@@ -1332,6 +1490,10 @@
             <p><strong>藥師備註：</strong>${escapeHTML(latest.pharmacist_note || "無")}</p>
             <p><strong>下次追蹤：</strong>${escapeHTML(latest.followup_date || "未設定")}</p>
             <p><strong>轉介狀態：</strong>${escapeHTML(referralMap[latest.referral_status] || latest.referral_status || "未轉介")}</p>
+            <div class="flex justify-end gap-2 pt-1">
+              ${(latest.action_result !== "REFER" && latest.referral_status !== "HOSPITAL_COMPLETED") ? `<button onclick="quickReferIntervention(${Number(latest.id)})" class="bg-violet-50 hover:bg-violet-100 text-violet-700 border border-violet-200 text-xs px-3 py-1.5 rounded-lg font-medium"><i class="fa-solid fa-hospital mr-1"></i>補轉介給醫師</button>` : ""}
+              <button onclick="startEditIntervention(${Number(latest.id)})" class="bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 text-xs px-3 py-1.5 rounded-lg font-medium"><i class="fa-solid fa-pen-to-square mr-1"></i>編輯這筆</button>
+            </div>
           </div>
         `;
 
@@ -1381,6 +1543,10 @@
                 <strong>轉介狀態：</strong>
                 ${escapeHTML(referralMap[item.referral_status] || item.referral_status || "未轉介")}
               </p>
+
+              <div class="flex justify-end">
+                <button onclick="startEditIntervention(${Number(item.id)})" class="bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 text-xs px-3 py-1.5 rounded-lg font-medium"><i class="fa-solid fa-pen-to-square mr-1"></i>編輯</button>
+              </div>
             </div>
           `).join("");
         }
@@ -1407,11 +1573,83 @@
     }
 
 
+    function setInterventionMode(editId) {
+      editingInterventionId = editId;
+      const editing = !!editId;
+      document.getElementById("intervention-modal-title").innerHTML = editing
+        ? `<i class="fa-solid fa-pen-to-square"></i> 編輯藥師關懷紀錄 #${editId}`
+        : `<i class="fa-solid fa-clipboard-check"></i> 藥師關懷紀錄`;
+      document.getElementById("intervention-submit-btn").textContent = editing ? "儲存修改" : "儲存並標示已關懷";
+      document.getElementById("edit-reason-wrap").classList.toggle("hidden", !editing);
+      document.getElementById("action-result").disabled = false;
+      updateEditHint();
+    }
+
+    function updateEditHint() {
+      const hint = document.getElementById("intervention-edit-hint");
+      if (!hint) return;
+      if (!editingInterventionId) { hint.classList.add("hidden"); return; }
+
+      const item = careRecordMap[editingInterventionId];
+      const sel = document.getElementById("action-result");
+      const completed = item && (item.hospital_referral_status === "COMPLETED" || item.referral_status === "HOSPITAL_COMPLETED");
+      const wasRefer = item && item.action_result === "REFER";
+      const nowRefer = sel.value === "REFER";
+
+      let text = "", cls = "";
+      if (completed) {
+        sel.disabled = true;
+        text = "醫師已完成此轉介的處置，「處理結果」無法再變更；其他欄位仍可修正。";
+        cls = "bg-sky-50 border-sky-200 text-sky-800";
+      } else if (!wasRefer && nowRefer) {
+        text = "儲存後會建立醫院轉介，醫師端待處理清單會立即看到此個案。";
+        cls = "bg-violet-50 border-violet-200 text-violet-800";
+      } else if (wasRefer && !nowRefer) {
+        text = "儲存後會自醫師待處理清單撤回此轉介（之後仍可再補轉介）。";
+        cls = "bg-red-50 border-red-200 text-red-700";
+      } else if (wasRefer && nowRefer) {
+        text = "此紀錄已轉介；修改症狀 / 血壓 / 備註會同步更新到醫師端。";
+        cls = "bg-slate-50 border-slate-200 text-slate-600";
+      }
+
+      if (!text) { hint.classList.add("hidden"); return; }
+      hint.className = "text-xs rounded-lg p-3 border " + cls;
+      hint.textContent = text;
+    }
+
     function startIntervention(lineId, recordId) {
       currentPatientId = lineId;
       currentRecordId = recordId;
       document.getElementById("intervention-patient-label").textContent = `個案 ID：${maskLineId(lineId)}`;
       document.getElementById("intervention-form").reset();
+      setInterventionMode(null);
+      const modal = document.getElementById("intervention-modal");
+      modal.classList.remove("hidden");
+      modal.classList.add("flex");
+    }
+
+    function startEditIntervention(id) {
+      const item = careRecordMap[id];
+      if (!item) { alert("找不到這筆關懷紀錄，請重新整理後再試。"); return; }
+
+      currentPatientId = item.user_line_id;
+      currentRecordId = item.rppg_record_id || null;
+      document.getElementById("intervention-patient-label").textContent = `個案 ID：${maskLineId(item.user_line_id)}　｜　${formatTaiwanTime(item.created_at)}`;
+      document.getElementById("intervention-form").reset();
+
+      const radio = document.querySelector(`input[name="care_method"][value="${item.care_method}"]`);
+      if (radio) radio.checked = true;
+      document.getElementById("intervention-symptoms").value = item.symptoms || "";
+      document.getElementById("bp-sys").value = item.systolic_bp ?? "";
+      document.getElementById("bp-dia").value = item.diastolic_bp ?? "";
+      document.getElementById("bp-pulse").value = item.pulse ?? "";
+      document.getElementById("intervention-note").value = item.pharmacist_note || "";
+      document.getElementById("action-result").value = item.action_result || "OBSERVE";
+      document.getElementById("followup-date").value = item.followup_date || "";
+      document.getElementById("edit-reason").value = "";
+
+      setInterventionMode(id);
+
       const modal = document.getElementById("intervention-modal");
       modal.classList.remove("hidden");
       modal.classList.add("flex");
@@ -1426,6 +1664,7 @@
       const modal = document.getElementById("intervention-modal");
       modal.classList.add("hidden");
       modal.classList.remove("flex");
+      editingInterventionId = null;
     }
 
     function closePatientModal() {
@@ -1457,6 +1696,36 @@
 
       if (careMethod === "IN_STORE" && (!sys || !dia)) {
         alert("到藥局複測時，請填寫收縮壓與舒張壓。");
+        return;
+      }
+
+      // ---------- 編輯模式：改走 PUT ----------
+      if (editingInterventionId) {
+        const btn = document.getElementById("intervention-submit-btn");
+        const editBody = {
+          care_method: careMethod,
+          symptoms: symptoms,
+          systolic_bp: sys ? Number(sys) : null,
+          diastolic_bp: dia ? Number(dia) : null,
+          pulse: pulse ? Number(pulse) : null,
+          pharmacist_note: note,
+          followup_date: followup || "",
+          edit_reason: document.getElementById("edit-reason").value.trim() || null
+        };
+        // 醫師已處置時，處理結果被鎖定，不送出
+        if (!document.getElementById("action-result").disabled) editBody.action_result = actionResult;
+
+        btn.disabled = true;
+        try {
+          const data = await putIntervention(editingInterventionId, editBody);
+          closeInterventionModal();
+          await afterInterventionChanged();
+          alert(data.message);
+        } catch (err) {
+          alert("修改失敗：" + err.message);
+        } finally {
+          btn.disabled = false;
+        }
         return;
       }
 
