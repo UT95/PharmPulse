@@ -1,5 +1,4 @@
 import os
-import logging
 import math
 import json
 import re
@@ -35,8 +34,6 @@ except ImportError:
 from google import genai
 from openai import OpenAI
 
-logger = logging.getLogger('pharmpulse')
-
 # ----------------------------------------------------
 # 1. 環境變數與 AI 模型 / 資料庫設定
 # ----------------------------------------------------
@@ -55,7 +52,10 @@ DOCTOR_PASSWORD = os.getenv("DOCTOR_PASSWORD", "").strip()
 DOCTOR_DISPLAY_NAME = os.getenv("DOCTOR_DISPLAY_NAME", "醫師").strip() or "醫師"
 STAFF_SESSION_SECRET = os.getenv("STAFF_SESSION_SECRET", "").strip()
 STAFF_SESSION_HOURS = int(os.getenv("STAFF_SESSION_HOURS", "8"))
-STAFF_COOKIE_NAME = "pharmpulse_staff_session"
+# 每種角色使用獨立 Cookie，避免同網域的藥師與醫師分頁互相覆蓋登入狀態。
+PHARMACIST_COOKIE_NAME = "pharmpulse_pharmacist_session"
+DOCTOR_COOKIE_NAME = "pharmpulse_doctor_session"
+LEGACY_STAFF_COOKIE_NAME = "pharmpulse_staff_session"  # 舊版相容用，登入後會清除
 
 if not STAFF_SESSION_SECRET:
     # Local fallback only. Render should set STAFF_SESSION_SECRET so sessions survive restarts.
@@ -112,30 +112,12 @@ else:
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-_effective_database_url = DATABASE_URL if DATABASE_URL else "sqlite:///./pharmpulse.db"
-_is_sqlite = _effective_database_url.startswith("sqlite")
-connect_args = {"check_same_thread": False, "timeout": 30} if _is_sqlite else {}
+connect_args = {"check_same_thread": False} if "sqlite" in DATABASE_URL or not DATABASE_URL else {}
 engine = create_engine(
-    _effective_database_url,
+    DATABASE_URL if DATABASE_URL else "sqlite:///./pharmpulse.db",
     pool_pre_ping=True,
-    pool_recycle=1800,
     connect_args=connect_args
 )
-
-# SQLite may receive several concurrent requests when dashboards refresh multiple APIs.
-# Increase lock wait time and use WAL to reduce transient "database is locked" failures.
-if _is_sqlite:
-    from sqlalchemy import event
-
-    @event.listens_for(engine, "connect")
-    def _configure_sqlite_connection(dbapi_connection, connection_record):
-        cursor = dbapi_connection.cursor()
-        try:
-            cursor.execute("PRAGMA busy_timeout=30000")
-            cursor.execute("PRAGMA journal_mode=WAL")
-            cursor.execute("PRAGMA synchronous=NORMAL")
-        finally:
-            cursor.close()
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -475,14 +457,38 @@ def decode_staff_session_token(token: str) -> Optional[dict]:
         return None
 
 
-def get_staff_user_from_request(request: Request, db: Session) -> Optional[StaffUser]:
-    payload = decode_staff_session_token(request.cookies.get(STAFF_COOKIE_NAME, ""))
-    if not payload:
-        return None
-    staff = db.query(StaffUser).filter(StaffUser.id == payload.get("uid")).first()
-    if not staff or not staff.is_active or staff.role != payload.get("role"):
-        return None
-    return staff
+def staff_cookie_name(role: str) -> str:
+    """回傳指定角色的獨立登入 Cookie 名稱。"""
+    return DOCTOR_COOKIE_NAME if role == "DOCTOR" else PHARMACIST_COOKIE_NAME
+
+
+def get_staff_user_from_request(
+    request: Request,
+    db: Session,
+    required_role: Optional[str] = None
+) -> Optional[StaffUser]:
+    """依路由需要的角色讀取對應 Cookie；避免不同角色分頁互相覆蓋。"""
+    cookie_names = (
+        [staff_cookie_name(required_role)]
+        if required_role in {"PHARMACIST", "DOCTOR"}
+        else [PHARMACIST_COOKIE_NAME, DOCTOR_COOKIE_NAME, LEGACY_STAFF_COOKIE_NAME]
+    )
+
+    for cookie_name in cookie_names:
+        payload = decode_staff_session_token(request.cookies.get(cookie_name, ""))
+        if not payload:
+            continue
+        if required_role and payload.get("role") != required_role:
+            continue
+        staff = db.query(StaffUser).filter(StaffUser.id == payload.get("uid")).first()
+        if (
+            staff
+            and staff.is_active
+            and staff.role == payload.get("role")
+            and (not required_role or staff.role == required_role)
+        ):
+            return staff
+    return None
 
 
 def bootstrap_staff_accounts():
@@ -558,7 +564,7 @@ def verify_line_id_token(id_token: str, expected_user_id: str) -> bool:
 
         payload = res.json()
         token_sub = payload.get("sub", "")
-
+        
         if token_sub.strip().lower() != expected_user_id.strip().lower():
             print(f"[Auth Error] token_sub ({token_sub}) 與宣稱的 user_id ({expected_user_id}) 不符！")
             return False
@@ -1751,7 +1757,7 @@ async def staff_access_guard(request: Request, call_next):
 
     db = SessionLocal()
     try:
-        staff = get_staff_user_from_request(request, db)
+        staff = get_staff_user_from_request(request, db, required_role=required_role)
     finally:
         db.close()
 
@@ -1763,24 +1769,13 @@ async def staff_access_guard(request: Request, call_next):
             )
         return RedirectResponse(url=login_path, status_code=303)
 
-    staff_role = str(getattr(staff, "role", "") or "").strip().upper()
-    expected_role = str(required_role or "").strip().upper()
-
-    if staff_role != expected_role:
+    if staff.role != required_role:
         if path.startswith("/api/"):
             return JSONResponse(
                 status_code=403,
-                content={
-                    "status": "error",
-                    "detail": "Insufficient staff role",
-                    "expected_role": expected_role,
-                    "actual_role": staff_role
-                }
+                content={"status": "error", "detail": "Insufficient staff role"}
             )
-        return RedirectResponse(
-            url=f"{login_path}?role_error=1",
-            status_code=303
-        )
+        return RedirectResponse(url=f"{login_path}?role_error=1", status_code=303)
 
     request.state.staff_user = staff
     return await call_next(request)
@@ -1849,7 +1844,7 @@ def staff_login(req: StaffLoginRequest, request: Request, db: Session = Depends(
         }
     })
     response.set_cookie(
-        key=STAFF_COOKIE_NAME,
+        key=staff_cookie_name(staff.role),
         value=token,
         max_age=STAFF_SESSION_HOURS * 3600,
         httponly=True,
@@ -1857,12 +1852,18 @@ def staff_login(req: StaffLoginRequest, request: Request, db: Session = Depends(
         samesite="lax",
         path="/"
     )
+    # 清除舊版共用 Cookie，避免舊 Session 造成角色判斷混淆。
+    response.delete_cookie(key=LEGACY_STAFF_COOKIE_NAME, path="/", samesite="lax")
     return response
 
 
 @app.get("/api/v1/staff/me")
-def staff_me(request: Request, db: Session = Depends(get_db)):
-    staff = get_staff_user_from_request(request, db)
+def staff_me(request: Request, role: Optional[str] = None, db: Session = Depends(get_db)):
+    if role is not None:
+        role = role.strip().upper()
+        if role not in {"PHARMACIST", "DOCTOR"}:
+            raise HTTPException(status_code=400, detail="Invalid staff role")
+    staff = get_staff_user_from_request(request, db, required_role=role)
     if not staff:
         raise HTTPException(status_code=401, detail="Staff login required")
     return {
@@ -1878,13 +1879,25 @@ def staff_me(request: Request, db: Session = Depends(get_db)):
 
 
 @app.post("/api/v1/staff/logout")
-def staff_logout():
+def staff_logout(request: Request, role: Optional[str] = None):
+    """只登出指定角色，避免在藥師分頁登出時一併登出醫師分頁。"""
+    if role is not None:
+        role = role.strip().upper()
+        if role not in {"PHARMACIST", "DOCTOR"}:
+            raise HTTPException(status_code=400, detail="Invalid staff role")
+    else:
+        # 相容舊版呼叫：若未傳 role，依目前有效 Cookie 推斷。
+        pharmacist_payload = decode_staff_session_token(request.cookies.get(PHARMACIST_COOKIE_NAME, ""))
+        doctor_payload = decode_staff_session_token(request.cookies.get(DOCTOR_COOKIE_NAME, ""))
+        if pharmacist_payload and not doctor_payload:
+            role = "PHARMACIST"
+        elif doctor_payload and not pharmacist_payload:
+            role = "DOCTOR"
+
     response = JSONResponse({"status": "success", "message": "已登出"})
-    response.delete_cookie(
-        key=STAFF_COOKIE_NAME,
-        path="/",
-        samesite="lax"
-    )
+    if role:
+        response.delete_cookie(key=staff_cookie_name(role), path="/", samesite="lax")
+    response.delete_cookie(key=LEGACY_STAFF_COOKIE_NAME, path="/", samesite="lax")
     return response
 
 
@@ -1924,14 +1937,14 @@ def serve_my_health():
 def serve_pharmacy():
     """提供藥局端管理後台靜態頁面"""
     if os.path.exists("pharmacy.html"):
-        return FileResponse("pharmacy.html", headers=NO_CACHE_HEADERS)
+        return FileResponse("pharmacy.html")
     return {"status": "error", "message": "pharmacy.html not found"}
 
 @app.get("/hospital")
 def serve_hospital():
     """提供醫院端轉介個案管理頁面"""
     if os.path.exists("hospital.html"):
-        return FileResponse("hospital.html", headers=NO_CACHE_HEADERS)
+        return FileResponse("hospital.html")
     return {"status": "error", "message": "hospital.html not found"}
 
 if handler and MessageEvent:
@@ -1948,7 +1961,7 @@ if handler and MessageEvent:
         db = SessionLocal()
         try:
             reply_text = generate_ai_chat_response(db, user_line_id=user_id, question=user_text)
-
+            
             line_bot_api.reply_message(
                 event.reply_token,
                 TextSendMessage(text=reply_text)
@@ -2220,7 +2233,7 @@ def save_consent(req: ConsentRequest, db: Session = Depends(get_db)):
         else:
             record.agreed = "true"
             record.terms_version = req.terms_version
-
+        
         db.commit()
         return {"status": "success", "message": "Consent recorded"}
     except Exception as e:
@@ -2229,7 +2242,7 @@ def save_consent(req: ConsentRequest, db: Session = Depends(get_db)):
 
 @app.post("/callback")
 async def callback(
-    request: Request,
+    request: Request, 
     x_line_signature: str = Header(None, alias="X-Line-Signature")
 ):
     """LINE Messaging API Webhook 入口"""
@@ -2544,7 +2557,7 @@ def get_user_history(user_line_id: str, limit: int = 10, db: Session = Depends(g
                     .order_by(RPPGRecord.created_at.desc())\
                     .limit(limit)\
                     .all()
-
+        
         result = []
         for r in records:
             result.append({
@@ -2638,7 +2651,7 @@ def get_pharmacy_alerts(light: Optional[str] = None, db: Session = Depends(get_d
             )
         else:
             records = _current_pending_alerts(db)
-
+        
         user_ids = [r.user_line_id or r.user_uuid for r in records if (r.user_line_id or r.user_uuid)]
         profiles = db.query(PatientChronicProfile).filter(
             PatientChronicProfile.user_line_id.in_(user_ids)
@@ -2678,8 +2691,6 @@ def get_pharmacy_alerts(light: Optional[str] = None, db: Session = Depends(get_d
             "alerts": result
         }
     except Exception as e:
-        db.rollback()
-        logger.exception("藥局警示清單查詢失敗")
         return {"status": "error", "alerts": [], "message": str(e)}
 
 @app.get("/api/v1/pharmacy/dashboard")
@@ -2881,7 +2892,7 @@ def get_patient_7day_history(user_line_id: str, db: Session = Depends(get_db)):
                     .filter(RPPGRecord.created_at >= seven_days_ago)\
                     .order_by(RPPGRecord.created_at.desc())\
                     .all()
-
+        
         result = []
         for r in records:
             result.append({
@@ -3379,8 +3390,6 @@ def get_all_pharmacy_interventions(db: Session = Depends(get_db)):
         }
 
     except Exception as e:
-        db.rollback()
-        logger.exception("藥局關懷資料庫查詢失敗")
         return {
             "status": "error",
             "records": [],
@@ -3898,8 +3907,6 @@ def get_hospital_care_database(db: Session = Depends(get_db)):
         return {"status": "success", "count": len(result), "records": result}
 
     except Exception as e:
-        db.rollback()
-        logger.exception("醫師處置資料庫查詢失敗")
         return {"status": "error", "count": 0, "records": [], "message": str(e)}
 
 

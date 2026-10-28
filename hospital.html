@@ -265,7 +265,7 @@
 
   async function loadStaffIdentity() {
     try {
-      const res = await fetch('/api/v1/staff/me');
+      const res = await fetch('/api/v1/staff/me?role=DOCTOR');
       if (!res.ok) {
         window.location.replace('/staff/login');
         return false;
@@ -287,7 +287,7 @@
 
   async function staffLogout() {
     try {
-      await fetch('/api/v1/staff/logout', { method: 'POST' });
+      await fetch('/api/v1/staff/logout?role=DOCTOR', { method: 'POST' });
     } finally {
       window.location.replace('/staff/login');
     }

@@ -447,7 +447,7 @@
 
     async function loadStaffIdentity() {
       try {
-        const res = await fetch('/api/v1/staff/me');
+        const res = await fetch('/api/v1/staff/me?role=PHARMACIST');
         if (!res.ok) {
           window.location.replace('/staff/login');
           return false;
@@ -469,7 +469,7 @@
 
     async function staffLogout() {
       try {
-        await fetch('/api/v1/staff/logout', { method: 'POST' });
+        await fetch('/api/v1/staff/logout?role=PHARMACIST', { method: 'POST' });
       } finally {
         window.location.replace('/staff/login');
       }
@@ -690,9 +690,7 @@
         const data = await res.json();
         if (seq !== alertRequestSeq) return; // 已有更新的請求，丟棄這次舊結果
 
-        if (!res.ok || data.status !== "success") {
-          throw new Error(data.message || data.detail || `HTTP ${res.status}：載入失敗`);
-        }
+        if (data.status !== "success") throw new Error(data.message || "載入失敗");
 
         alertData = Array.isArray(data.alerts) ? data.alerts : [];
 
