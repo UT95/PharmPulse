@@ -468,10 +468,13 @@ def get_staff_user_from_request(
     required_role: Optional[str] = None
 ) -> Optional[StaffUser]:
     """依路由需要的角色讀取對應 Cookie；避免不同角色分頁互相覆蓋。"""
+    # 新版登入狀態只讀取角色專屬 Cookie。
+    # 不在未指定角色的 /api/v1/staff/me 中回退讀取舊共用 Cookie，
+    # 否則登入頁可能誤判為已登入、跳到工作台後又被角色守衛送回登入頁，形成循環。
     cookie_names = (
         [staff_cookie_name(required_role)]
         if required_role in {"PHARMACIST", "DOCTOR"}
-        else [PHARMACIST_COOKIE_NAME, DOCTOR_COOKIE_NAME, LEGACY_STAFF_COOKIE_NAME]
+        else [PHARMACIST_COOKIE_NAME, DOCTOR_COOKIE_NAME]
     )
 
     for cookie_name in cookie_names:
